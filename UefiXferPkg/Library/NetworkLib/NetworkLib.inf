@@ -1,0 +1,36 @@
+## @file
+#  NetworkLib — NIC discovery, DHCP, and static IP configuration.
+#
+#  Copyright (c) 2026, AximCode. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = NetworkLib
+  FILE_GUID      = 1A2B3C4D-5E6F-4718-A9B0-C1D2E3F40516
+  MODULE_TYPE    = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS  = NetworkLib|UEFI_APPLICATION UEFI_DRIVER
+
+[Sources]
+  Network.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  UefiXferPkg/UefiXferPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  UefiBootServicesTableLib
+  UefiLib
+  PrintLib
+
+[Protocols]
+  gEfiSimpleNetworkProtocolGuid
+  gEfiIp4Config2ProtocolGuid
+  gEfiDhcp4ServiceBindingProtocolGuid
+  gEfiDhcp4ProtocolGuid
+  gEfiTcp4ServiceBindingProtocolGuid

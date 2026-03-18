@@ -1,0 +1,25 @@
+## @file
+#  JsonLib — Minimal JSON parser for directory listings.
+#
+#  Copyright (c) 2026, AximCode. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = JsonLib
+  FILE_GUID      = 3C4D5E6F-7081-4930-C2D3-E4F506172839
+  MODULE_TYPE    = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS  = JsonLib|UEFI_APPLICATION UEFI_DRIVER
+
+[Sources]
+  Json.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  UefiXferPkg/UefiXferPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib

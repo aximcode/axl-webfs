@@ -725,6 +725,23 @@ are independent EDK2 libraries. Mount uses NetworkLib + HttpClientLib +
 JsonLib. Serve uses NetworkLib + HttpServerLib + FileTransferLib. Both
 benefit from the shared foundation without code duplication.
 
+## SoftBMC Reference Patterns
+
+UefiXfer reuses proven patterns from the SoftBMC project (`../softbmc/`).
+The table below maps each area to the SoftBMC source and notes what
+changes for UefiXfer.
+
+| Area | Reuse From SoftBMC | Adapt for UefiXfer |
+|------|--------------------|--------------------|
+| Build infra (.dec/.dsc) | `SoftBmcPkg.dec` structure, `SoftBmcPkg.dsc` LibraryClasses + `!include MdeLibs.dsc.inc` | Add `UefiDriverEntryPoint` for WebDavFsDxe. No CryptoPkg/MbedTls. |
+| Build script | `scripts/build.sh` — arg parsing, EDK2 env setup, per-arch loop, binary summary | Remove embed-assets, driver copy, gen-compdb. |
+| Network init | `Core/Network.c` — NIC enum via SNP, DHCP via IP4Config2 + DHCP4 fallback | Strip driver loading, DNS, API handler. Single `NetworkInit()` call. |
+| TCP | `Core/TcpClient.c` + `Core/TcpUtil.c` — connect pattern, 32 KB chunked send | Folded into HttpClientLib's TCP layer. |
+| HTTP server | `Core/HttpServer.h` — connection pool, cooperative poll, route dispatch | Strip WebSocket, TLS, auth, cache. 4 connections vs 16. (Phase 3) |
+| JSON | `Core/JsonParser.h` pattern (stack-allocated tokens, extract by key) | Custom tokenizer instead of JSMN. Add array iteration. |
+| Coding style | Already matches — 4-space indent, K&R braces, PascalCase, mPrefix, `/** @file **/` | Copyright year 2026. |
+| Logging | `SoftBmcLog()` ring buffer for long-running service | `Print()` directly — UefiXfer is a CLI tool, not a service. |
+
 ## Estimated Size
 
 | Component                | Lines (approx) |

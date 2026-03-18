@@ -1,0 +1,27 @@
+## @file
+#  UefiXfer — UEFI File Transfer Toolkit
+#
+#  Copyright (c) 2026, AximCode. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION = 0x00010005
+  PACKAGE_NAME      = UefiXferPkg
+  PACKAGE_GUID      = 3F8A1E6D-9C4B-47A2-B5D0-6E1F3A8C2D4B
+  PACKAGE_VERSION   = 0.1
+
+[Includes]
+  Include
+
+[LibraryClasses]
+  NetworkLib|Include/Library/NetworkLib.h
+  HttpClientLib|Include/Library/HttpClientLib.h
+  JsonLib|Include/Library/JsonLib.h
+
+[Guids]
+  gUefiXferVendorGuid = { 0x4A2B7C1D, 0x3E5F, 0x48A9, { 0xB6, 0x0C, 0x1D, 0x2E, 0x3F, 0x4A, 0x5B, 0x6C } }
+
+[Protocols]
+
+[PcdsFixedAtBuild]
