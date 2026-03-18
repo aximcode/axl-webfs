@@ -329,6 +329,8 @@ if [ "$RUN_QEMU" = true ]; then
     echo "mount test content" > "$QEMU_TEST_DIR/readme.txt"
     mkdir -p "$QEMU_TEST_DIR/tools"
     echo "tool data" > "$QEMU_TEST_DIR/tools/sample.txt"
+    # Large file for transfer test (~50KB of repeating text)
+    python3 -c "print('large file line\\n' * 3000, end='')" > "$QEMU_TEST_DIR/large.txt"
 
     python3 "$SCRIPT_DIR/xfer-server.py" --root "$QEMU_TEST_DIR" --port $SERVER_PORT --bind 0.0.0.0 &
     SERVER_PID=$!
@@ -371,6 +373,9 @@ if [ "$RUN_QEMU" = true ]; then
             skip "$QEMU_ARCH: firmware not found at $FW_CODE"
             continue
         fi
+
+        # Copy arch-specific TestApp for exec-from-mount test
+        cp "$APP_EFI" "$QEMU_TEST_DIR/TestApp.efi"
 
         # Build disk image with Shell + UefiXfer + WebDavFsDxe
         DISK="$QEMU_STATE/test-${QEMU_ARCH,,}.img"
@@ -428,6 +433,12 @@ echo "written from uefi" > fs0:\\write_test.txt
 cp fs0:\\write_test.txt fs1:\\from_uefi.txt
 echo === TEST: read subdir ===
 ls fs1:\\tools\\
+echo === TEST: exec from mount ===
+fs1:\\TestApp.efi -h
+echo === TEST: large file read ===
+type fs1:\\large.txt
+echo === TEST: umount ===
+UefiXfer.efi umount
 echo === TESTS COMPLETE ===
 reset -s
 NSHEOF
@@ -525,6 +536,27 @@ NSHEOF
             fail "$QEMU_ARCH: ls subdir" "sample.txt not in output"
         fi
 
+        # Test: Did exec from mounted volume work? (TestApp.efi = UefiXfer, prints version)
+        if grep -q "UefiXfer v0.1" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: exec .efi from mounted volume"
+        else
+            fail "$QEMU_ARCH: exec from mount" "UefiXfer v0.1 not in output"
+        fi
+
+        # Test: Did large file read work?
+        if grep -q "large file line" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: large file read (50KB)"
+        else
+            fail "$QEMU_ARCH: large file" "content not in output"
+        fi
+
+        # Test: Did umount work?
+        if grep -q "Unmounted" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: umount succeeded"
+        else
+            fail "$QEMU_ARCH: umount" "Unmounted not in output"
+        fi
+
         # Test: Did it reach TESTS COMPLETE?
         if grep -q "TESTS COMPLETE" "$SERIAL_LOG" 2>/dev/null; then
             pass "$QEMU_ARCH: all Shell commands completed"
@@ -564,7 +596,7 @@ NSHEOF
             APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_X64.efi"
             DRV_EFI="$PROJECT_ROOT/build/binaries/WebDavFsDxe_X64.efi"
             QEMU_MACHINE="-machine q35 -enable-kvm -cpu host"
-            BOOT_WAIT=15
+            BOOT_WAIT=30
         fi
 
         if [ ! -f "$APP_EFI" ] || [ ! -f "$QEMU_BIN" ] || [ ! -f "$FW_CODE" ]; then
@@ -643,12 +675,13 @@ NSHEOF
             > /dev/null 2>&1 &
         QEMU_PID=$!
 
-        # Wait for server to be ready (check serial for "Listening" or try curl)
+        # Wait for server to be ready (poll curl until it responds)
         READY=false
         for WAIT in $(seq 1 $BOOT_WAIT); do
             sleep 1
             if ! kill -0 "$QEMU_PID" 2>/dev/null; then break; fi
-            if curl -sf -o /dev/null "http://127.0.0.1:${SERVE_PORT}/" 2>/dev/null; then
+            HTTP_CHECK=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/" 2>/dev/null || true)
+            if [ "$HTTP_CHECK" = "200" ]; then
                 READY=true
                 break
             fi
@@ -722,11 +755,141 @@ NSHEOF
             fail "$QEMU_ARCH serve: mkdir" "expected 201, got $HTTP_CODE"
         fi
 
-        # Kill QEMU via monitor (send ESC key)
-        echo "sendkey esc" | socat - "UNIX-CONNECT:$MON_SOCK" > /dev/null 2>&1 || true
-        sleep 2
-        kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+        # Test: Range request (partial download)
+        # serve_test.txt contains "serve test file\n" (16 bytes)
+        PARTIAL=$(curl -sf -H "Range: bytes=6-9" "$BASE/fs0/serve_test.txt" 2>/dev/null)
+        RANGE_CODE=$(curl -sf -o /dev/null -w "%{http_code}" -H "Range: bytes=6-9" "$BASE/fs0/serve_test.txt" 2>/dev/null)
+        if [ "$RANGE_CODE" = "206" ] && [ "$PARTIAL" = "test" ]; then
+            pass "$QEMU_ARCH serve: Range request returns 206 + correct bytes"
+        else
+            fail "$QEMU_ARCH serve: Range" "code=$RANGE_CODE content='$PARTIAL'"
+        fi
+
+        # Test: 404 on bad volume
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fs99/anything" 2>/dev/null || true)
+        if [ "$HTTP_CODE" = "404" ]; then
+            pass "$QEMU_ARCH serve: bad volume returns 404"
+        else
+            fail "$QEMU_ARCH serve: bad volume" "expected 404, got $HTTP_CODE"
+        fi
+
+        # Test: 404 on nonexistent file
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fs0/nonexistent.xyz" 2>/dev/null || true)
+        if [ "$HTTP_CODE" = "404" ]; then
+            pass "$QEMU_ARCH serve: nonexistent file returns 404"
+        else
+            fail "$QEMU_ARCH serve: nonexistent" "expected 404, got $HTTP_CODE"
+        fi
+
+        # Kill QEMU — quit via monitor, then force kill
+        echo "quit" | socat - "UNIX-CONNECT:$MON_SOCK" > /dev/null 2>&1 || true
+        sleep 1
+        kill "$QEMU_PID" 2>/dev/null || true; sleep 1
+        kill -9 "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true
     done
+
+    # ====================================================================
+    # Serve read-only mode test (X64 only — same code path for AARCH64)
+    # ====================================================================
+
+    info "QEMU" "=== Serve read-only mode test: X64 ==="
+
+    QEMU_BIN="$QEMU_DIR/qemu-system-x86_64"
+    FW_CODE="/usr/share/edk2/ovmf/OVMF_CODE.fd"
+    FW_VARS_ORIG="/usr/share/edk2/ovmf/OVMF_VARS.fd"
+    APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_X64.efi"
+
+    DISK="$QEMU_STATE/serve-ro.img"
+    FW_VARS="$QEMU_STATE/vars-serve-ro.fd"
+    SERIAL_LOG="$QEMU_STATE/serial-serve-ro.log"
+    MON_SOCK="$QEMU_STATE/mon-serve-ro.sock"
+
+    cp "$FW_VARS_ORIG" "$FW_VARS"
+
+    dd if=/dev/zero of="$DISK" bs=1M count=64 status=none
+    sgdisk -Z "$DISK" >/dev/null 2>&1
+    sgdisk -o "$DISK" >/dev/null 2>&1
+    sgdisk -n "1:2048:0" -t 1:EF00 "$DISK" >/dev/null 2>&1
+    ESP_START=$(sgdisk -i 1 "$DISK" 2>/dev/null | awk '/First sector:/{print $3}')
+    ESP_LAST=$(sgdisk -i 1 "$DISK" 2>/dev/null | awk '/Last sector:/{print $3}')
+    ESP_SECTORS=$((ESP_LAST - ESP_START + 1))
+
+    ESP_IMG=$(mktemp)
+    dd if=/dev/zero of="$ESP_IMG" bs=512 count=$ESP_SECTORS status=none
+    mformat -i "$ESP_IMG" -F ::
+    mmd -i "$ESP_IMG" ::EFI ::EFI/BOOT
+    mcopy -i "$ESP_IMG" /usr/share/edk2/ovmf/Shell.efi "::EFI/BOOT/BOOTX64.EFI"
+    mcopy -i "$ESP_IMG" "$APP_EFI" ::UefiXfer.efi
+    echo "readonly test" > /tmp/ro_test.txt
+    mcopy -i "$ESP_IMG" /tmp/ro_test.txt ::ro_test.txt
+    rm -f /tmp/ro_test.txt
+
+    NSH=$(mktemp)
+    echo "@echo -off" > "$NSH"
+    echo "fs0:" >> "$NSH"
+    echo "UefiXfer.efi serve -p 8080 --read-only" >> "$NSH"
+    mcopy -i "$ESP_IMG" "$NSH" ::startup.nsh
+    rm -f "$NSH"
+
+    dd if="$ESP_IMG" of="$DISK" bs=512 seek=$ESP_START conv=notrunc status=none
+    rm -f "$ESP_IMG"
+
+    rm -f "$SERIAL_LOG" "$MON_SOCK"
+    $QEMU_BIN -enable-kvm -machine q35 -cpu host -m 512M \
+        -drive "if=pflash,format=raw,readonly=on,file=$FW_CODE" \
+        -drive "if=pflash,format=raw,file=$FW_VARS" \
+        -drive "format=raw,file=$DISK" \
+        -netdev "user,id=net0,hostfwd=tcp::${SERVE_PORT}-:8080" \
+        -device "virtio-net-pci,netdev=net0" \
+        -display none -serial "file:$SERIAL_LOG" \
+        -monitor "unix:${MON_SOCK},server,nowait" \
+        > /dev/null 2>&1 &
+    QEMU_PID=$!
+
+    READY=false
+    for WAIT in $(seq 1 30); do
+        sleep 1
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then break; fi
+        HTTP_CHECK=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/" 2>/dev/null || true)
+        if [ "$HTTP_CHECK" = "200" ]; then
+            READY=true; break
+        fi
+    done
+
+    BASE="http://127.0.0.1:${SERVE_PORT}"
+
+    if $READY; then
+        # GET should work
+        CONTENT=$(curl -sf "$BASE/fs0/ro_test.txt" 2>/dev/null)
+        if echo "$CONTENT" | grep -q "readonly test"; then
+            pass "serve --read-only: GET works"
+        else
+            fail "serve --read-only: GET" "unexpected: $CONTENT"
+        fi
+
+        # PUT should be blocked
+        HTTP_CODE=$(echo -n "blocked" | curl -s -o /dev/null -w "%{http_code}" -T - "$BASE/fs0/blocked.txt" 2>/dev/null || true)
+        if [ "$HTTP_CODE" = "403" ]; then
+            pass "serve --read-only: PUT blocked (403)"
+        else
+            fail "serve --read-only: PUT" "expected 403, got $HTTP_CODE"
+        fi
+
+        # DELETE should be blocked
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$BASE/fs0/ro_test.txt" 2>/dev/null || true)
+        if [ "$HTTP_CODE" = "403" ]; then
+            pass "serve --read-only: DELETE blocked (403)"
+        else
+            fail "serve --read-only: DELETE" "expected 403, got $HTTP_CODE"
+        fi
+    else
+        fail "serve --read-only: server start" "did not start within 15s"
+    fi
+
+    echo "quit" | socat - "UNIX-CONNECT:$MON_SOCK" > /dev/null 2>&1 || true
+    sleep 1
+    kill "$QEMU_PID" 2>/dev/null || true; sleep 1
+    kill -9 "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true
 fi
 
 # ============================================================================

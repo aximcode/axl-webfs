@@ -363,12 +363,10 @@ static EFI_STATUS DispatchRoute(HTTP_SERVER_CONN *Conn) {
     Req.RangeHeader = (Conn->RangeHeader[0] != '\0') ? Conn->RangeHeader : NULL;
     Req.AcceptHeader = (Conn->AcceptHeader[0] != '\0') ? Conn->AcceptHeader : NULL;
 
+    BOOLEAN PermissionBlocked = FALSE;
+
     for (UINTN i = 0; i < mRouteCount; i++) {
         HTTP_ROUTE_ENTRY *R = &mRoutes[i];
-
-        // Check permission flags
-        if ((R->Flags & HTTP_ROUTE_FLAG_WRITE) && mReadOnly) continue;
-        if ((R->Flags & HTTP_ROUTE_FLAG_READ) && mWriteOnly) continue;
 
         // Match method
         if (R->Method != NULL && AsciiStrCmp(R->Method, Conn->Method) != 0) continue;
@@ -380,13 +378,27 @@ static EFI_STATUS DispatchRoute(HTTP_SERVER_CONN *Conn) {
             if (AsciiStrCmp(Conn->Path, R->Path) != 0) continue;
         }
 
+        // Route matches — check permission flags
+        if ((R->Flags & HTTP_ROUTE_FLAG_WRITE) && mReadOnly) {
+            PermissionBlocked = TRUE;
+            continue;
+        }
+        if ((R->Flags & HTTP_ROUTE_FLAG_READ) && mWriteOnly) {
+            PermissionBlocked = TRUE;
+            continue;
+        }
+
         EFI_STATUS Status = R->Handler(&Req);
         mCurrentConn = NULL;
         return Status;
     }
 
-    // No route matched
-    HttpServerSendError(404, "Not Found");
+    // Route matched but blocked by permissions
+    if (PermissionBlocked) {
+        HttpServerSendError(403, "Forbidden");
+    } else {
+        HttpServerSendError(404, "Not Found");
+    }
     mCurrentConn = NULL;
     return EFI_NOT_FOUND;
 }
