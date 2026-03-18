@@ -1,0 +1,52 @@
+## @file
+#  UefiXfer — UEFI File Transfer Toolkit application.
+#
+#  CLI application providing serve, mount, and umount commands for
+#  bidirectional file transfer between UEFI and workstation.
+#
+#  Copyright (c) 2026, AximCode. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = UefiXfer
+  FILE_GUID      = 5E6F7081-9243-4A41-D4E5-F6071829304A
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 0.1
+  ENTRY_POINT    = UefiXferMain
+
+[Sources]
+  Main.c
+  CmdMount.c
+  UefiXferInternal.h
+
+[Packages]
+  MdePkg/MdePkg.dec
+  UefiXferPkg/UefiXferPkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiLib
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  UefiBootServicesTableLib
+  PrintLib
+  DevicePathLib
+  NetworkLib
+  HttpClientLib
+  JsonLib
+
+[Protocols]
+  gEfiSimpleNetworkProtocolGuid
+  gEfiTcp4ServiceBindingProtocolGuid
+  gEfiTcp4ProtocolGuid
+  gEfiIp4Config2ProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+  gEfiLoadedImageProtocolGuid
+  gEfiDevicePathProtocolGuid
+  gEfiShellParametersProtocolGuid
+
+[Guids]
+  gUefiXferVendorGuid
