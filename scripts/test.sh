@@ -26,12 +26,15 @@ info() { echo -e "${BLUE}[$1]${NC} $2"; }
 
 # Parse arguments
 RUN_QEMU=false
+RUN_AARCH64=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --qemu) RUN_QEMU=true; shift ;;
+        --aarch64) RUN_AARCH64=true; RUN_QEMU=true; shift ;;
         --help|-h)
-            echo "Usage: $0 [--qemu]"
-            echo "  --qemu   Also run QEMU integration tests"
+            echo "Usage: $0 [--qemu] [--aarch64]"
+            echo "  --qemu      Run QEMU integration tests (X64)"
+            echo "  --aarch64   Also test AARCH64 (implies --qemu)"
             exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -281,8 +284,233 @@ fi
 # ============================================================================
 
 if [ "$RUN_QEMU" = true ]; then
-    info "QEMU" "Integration tests not yet implemented (Phase 5)"
-    skip "QEMU integration tests"
+    # Run QEMU integration tests for each requested architecture.
+    # Default: X64 only. Use --qemu-arch to add AARCH64.
+    QEMU_ARCHS=(X64)
+    if [ "$RUN_AARCH64" = true ]; then
+        QEMU_ARCHS+=(AARCH64)
+    fi
+
+    QEMU_DIR="$HOME/projects/qemu/install/bin"
+    QEMU_STATE="$PROJECT_ROOT/build/qemu"
+    mkdir -p "$QEMU_STATE"
+
+    # Kill server from previous section, start fresh one on port 18080
+    kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null || true
+
+    # Create fresh test fixture
+    QEMU_TEST_DIR=$(mktemp -d)
+    echo "mount test content" > "$QEMU_TEST_DIR/readme.txt"
+    mkdir -p "$QEMU_TEST_DIR/tools"
+    echo "tool data" > "$QEMU_TEST_DIR/tools/sample.txt"
+
+    python3 "$SCRIPT_DIR/xfer-server.py" --root "$QEMU_TEST_DIR" --port $SERVER_PORT --bind 0.0.0.0 &
+    SERVER_PID=$!
+    sleep 0.5
+
+    for QEMU_ARCH in "${QEMU_ARCHS[@]}"; do
+        info "QEMU" "=== Integration tests: $QEMU_ARCH ==="
+
+        if [ "$QEMU_ARCH" = "AARCH64" ]; then
+            QEMU_BIN="$QEMU_DIR/qemu-system-aarch64"
+            FW_CODE="/usr/share/AAVMF/AAVMF_CODE.fd"
+            FW_VARS_ORIG="/usr/share/AAVMF/AAVMF_VARS.fd"
+            BOOT_EFI="BOOTAA64.EFI"
+            APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_AARCH64.efi"
+            DRV_EFI="$PROJECT_ROOT/build/binaries/WebDavFsDxe_AARCH64.efi"
+            QEMU_MACHINE="-machine virt -cpu cortex-a57"
+            BOOT_WAIT=60
+        else
+            QEMU_BIN="$QEMU_DIR/qemu-system-x86_64"
+            FW_CODE="/usr/share/edk2/ovmf/OVMF_CODE.fd"
+            FW_VARS_ORIG="/usr/share/edk2/ovmf/OVMF_VARS.fd"
+            BOOT_EFI="BOOTX64.EFI"
+            APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_X64.efi"
+            DRV_EFI="$PROJECT_ROOT/build/binaries/WebDavFsDxe_X64.efi"
+            QEMU_MACHINE="-machine q35 -enable-kvm -cpu host"
+            BOOT_WAIT=20
+        fi
+
+        if [ ! -f "$APP_EFI" ] || [ ! -f "$DRV_EFI" ]; then
+            skip "$QEMU_ARCH: binaries not built"
+            continue
+        fi
+
+        if [ ! -f "$QEMU_BIN" ]; then
+            skip "$QEMU_ARCH: QEMU binary not found at $QEMU_BIN"
+            continue
+        fi
+
+        if [ ! -f "$FW_CODE" ]; then
+            skip "$QEMU_ARCH: firmware not found at $FW_CODE"
+            continue
+        fi
+
+        # Build disk image with Shell + UefiXfer + WebDavFsDxe
+        DISK="$QEMU_STATE/test-${QEMU_ARCH,,}.img"
+        FW_VARS="$QEMU_STATE/vars-test-${QEMU_ARCH,,}.fd"
+        SERIAL_LOG="$QEMU_STATE/serial-${QEMU_ARCH,,}.log"
+        MON_SOCK="$QEMU_STATE/mon-test-${QEMU_ARCH,,}.sock"
+
+        cp "$FW_VARS_ORIG" "$FW_VARS"
+
+        dd if=/dev/zero of="$DISK" bs=1M count=64 status=none
+        sgdisk -Z "$DISK" >/dev/null 2>&1
+        sgdisk -o "$DISK" >/dev/null 2>&1
+        sgdisk -n "1:2048:0" -t 1:EF00 -c 1:"ESP" "$DISK" >/dev/null 2>&1
+
+        ESP_START=$(sgdisk -i 1 "$DISK" 2>/dev/null | awk '/First sector:/{print $3}')
+        ESP_LAST=$(sgdisk -i 1 "$DISK" 2>/dev/null | awk '/Last sector:/{print $3}')
+        ESP_SECTORS=$((ESP_LAST - ESP_START + 1))
+
+        ESP_IMG=$(mktemp)
+        dd if=/dev/zero of="$ESP_IMG" bs=512 count=$ESP_SECTORS status=none
+        mformat -i "$ESP_IMG" -F ::
+        mmd -i "$ESP_IMG" ::EFI
+        mmd -i "$ESP_IMG" ::EFI/BOOT
+
+        # Shell.efi as boot target (architecture-specific)
+        if [ "$QEMU_ARCH" = "AARCH64" ]; then
+            SHELL_EFI="$HOME/projects/edk2/Build/Shell/DEBUG_GCC5/AARCH64/ShellPkg/Application/Shell/Shell/OUTPUT/Shell.efi"
+        else
+            SHELL_EFI="/usr/share/edk2/ovmf/Shell.efi"
+        fi
+        if [ -f "$SHELL_EFI" ]; then
+            mcopy -i "$ESP_IMG" "$SHELL_EFI" "::EFI/BOOT/$BOOT_EFI"
+        else
+            skip "$QEMU_ARCH: Shell.efi not found at $SHELL_EFI"
+            continue
+        fi
+
+        mcopy -i "$ESP_IMG" "$APP_EFI" ::UefiXfer.efi
+        mcopy -i "$ESP_IMG" "$DRV_EFI" ::WebDavFsDxe.efi
+
+        # startup.nsh: run mount test automatically
+        NSH=$(mktemp)
+        cat > "$NSH" <<NSHEOF
+@echo -off
+echo === UefiXfer Integration Test ===
+fs0:
+UefiXfer.efi mount http://10.0.2.2:${SERVER_PORT}/
+map -r
+echo === TEST: ls mounted volume ===
+ls fs1:\\
+echo === TEST: read file ===
+type fs1:\\readme.txt
+echo === TEST: write file ===
+echo "written from uefi" > fs0:\\write_test.txt
+cp fs0:\\write_test.txt fs1:\\from_uefi.txt
+echo === TEST: read subdir ===
+ls fs1:\\tools\\
+echo === TESTS COMPLETE ===
+reset -s
+NSHEOF
+        mcopy -i "$ESP_IMG" "$NSH" ::startup.nsh
+        rm -f "$NSH"
+
+        dd if="$ESP_IMG" of="$DISK" bs=512 seek=$ESP_START conv=notrunc status=none
+        rm -f "$ESP_IMG"
+
+        info "QEMU" "$QEMU_ARCH: Booting (timeout ${BOOT_WAIT}s)..."
+
+        rm -f "$SERIAL_LOG" "$MON_SOCK"
+
+        # Launch QEMU with serial to file, user-mode networking with port forward
+        $QEMU_BIN \
+            $QEMU_MACHINE \
+            -m 512M \
+            -drive "if=pflash,format=raw,readonly=on,file=$FW_CODE" \
+            -drive "if=pflash,format=raw,file=$FW_VARS" \
+            -drive "format=raw,file=$DISK" \
+            -netdev "user,id=net0" \
+            -device "virtio-net-pci,netdev=net0" \
+            -display none \
+            -serial "file:$SERIAL_LOG" \
+            -monitor "unix:${MON_SOCK},server,nowait" \
+            -no-reboot \
+            > /dev/null 2>&1 &
+        QEMU_PID=$!
+
+        # Wait for QEMU to finish (reset -s in startup.nsh causes shutdown)
+        ELAPSED=0
+        while kill -0 "$QEMU_PID" 2>/dev/null && [ $ELAPSED -lt $BOOT_WAIT ]; do
+            sleep 1
+            ELAPSED=$((ELAPSED + 1))
+        done
+
+        # Kill if still running
+        if kill -0 "$QEMU_PID" 2>/dev/null; then
+            kill "$QEMU_PID" 2>/dev/null
+            wait "$QEMU_PID" 2>/dev/null || true
+        fi
+
+        # Analyze serial output
+        if [ ! -f "$SERIAL_LOG" ]; then
+            fail "$QEMU_ARCH: serial log" "no output captured"
+            continue
+        fi
+
+        info "QEMU" "$QEMU_ARCH: Checking results..."
+
+        # Test: Did UefiXfer.efi run?
+        if grep -q "UefiXfer" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: UefiXfer.efi executed"
+        else
+            fail "$QEMU_ARCH: UefiXfer.efi" "not found in serial output"
+            echo "--- Serial log ---"
+            cat "$SERIAL_LOG"
+            echo "--- End ---"
+            continue
+        fi
+
+        # Test: Did mount succeed? (WebDavFsDxe prints "Mounted successfully")
+        if grep -q "Mounted successfully" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: mount connected to xfer-server"
+        else
+            fail "$QEMU_ARCH: mount" "driver did not report success"
+            grep -i "error\|fail\|WebDavFs" "$SERIAL_LOG" 2>/dev/null || true
+        fi
+
+        # Test: Did ls show files from xfer-server?
+        if grep -q "readme.txt" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: ls shows remote files (readme.txt)"
+        else
+            fail "$QEMU_ARCH: ls" "readme.txt not found in directory listing"
+        fi
+
+        # Test: Did type read the file content?
+        if grep -q "mount test content" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: type reads remote file content"
+        else
+            fail "$QEMU_ARCH: type" "file content not in serial output"
+        fi
+
+        # Test: Did write create a file on the workstation?
+        if [ -f "$QEMU_TEST_DIR/from_uefi.txt" ]; then
+            pass "$QEMU_ARCH: cp wrote file to workstation"
+        else
+            fail "$QEMU_ARCH: write" "from_uefi.txt not found on workstation"
+        fi
+
+        # Test: Did subdir listing work?
+        if grep -q "sample.txt" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: ls subdir shows remote files"
+        else
+            fail "$QEMU_ARCH: ls subdir" "sample.txt not in output"
+        fi
+
+        # Test: Did it reach TESTS COMPLETE?
+        if grep -q "TESTS COMPLETE" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: all Shell commands completed"
+        else
+            fail "$QEMU_ARCH: completion" "startup.nsh did not finish"
+        fi
+
+        # Clean up for next arch
+        rm -f "$QEMU_TEST_DIR/from_uefi.txt"
+    done
+
+    rm -rf "$QEMU_TEST_DIR"
 fi
 
 # ============================================================================

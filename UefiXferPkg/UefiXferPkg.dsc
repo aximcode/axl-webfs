@@ -43,3 +43,4 @@
 
 [BuildOptions]
   GCC:*_*_*_CC_FLAGS = -Wno-unused-variable -Wno-unused-function
+  GCC:*_*_X64_CC_FLAGS = -mno-avx
