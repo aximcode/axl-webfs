@@ -181,15 +181,42 @@ class XferHandler(BaseHTTPRequestHandler):
         parent = os.path.dirname(local)
         os.makedirs(parent, exist_ok=True)
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        transfer_encoding = self.headers.get("Transfer-Encoding", "")
+        content_length = self.headers.get("Content-Length")
+
         with open(local, "wb") as f:
-            remaining = content_length
-            while remaining > 0:
-                chunk = self.rfile.read(min(65536, remaining))
-                if not chunk:
-                    break
-                f.write(chunk)
-                remaining -= len(chunk)
+            if "chunked" in transfer_encoding.lower():
+                # Read chunked transfer encoding
+                while True:
+                    line = self.rfile.readline().strip()
+                    chunk_size = int(line, 16)
+                    if chunk_size == 0:
+                        self.rfile.readline()  # trailing CRLF
+                        break
+                    data = self.rfile.read(chunk_size)
+                    f.write(data)
+                    self.rfile.readline()  # chunk-terminating CRLF
+            elif content_length is not None:
+                remaining = int(content_length)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    remaining -= len(chunk)
+            else:
+                # No Content-Length, no chunked — read until connection
+                # closes (common with curl -T -)
+                # Use a short timeout approach: try reading in chunks
+                import select
+                while True:
+                    ready, _, _ = select.select([self.rfile], [], [], 1.0)
+                    if not ready:
+                        break
+                    chunk = self.rfile.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
 
         self.send_response(201)
         self.send_header("Content-Type", "text/plain")
