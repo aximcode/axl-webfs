@@ -665,7 +665,61 @@ WebDavFsSetInfo (
     IN VOID               *Buffer
     )
 {
-    return EFI_UNSUPPORTED;
+    WEBDAVFS_FILE *F = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WEBDAVFS_PRIVATE *Private = F->Private;
+
+    if (!CompareGuid(InformationType, &gEfiFileInfoGuid)) {
+        return EFI_UNSUPPORTED;
+    }
+
+    if (Private->ReadOnly) return EFI_WRITE_PROTECTED;
+    if (Buffer == NULL || BufferSize < SIZE_OF_EFI_FILE_INFO) {
+        return EFI_INVALID_PARAMETER;
+    }
+
+    EFI_FILE_INFO *NewInfo = (EFI_FILE_INFO *)Buffer;
+
+    // Check if the filename changed (rename)
+    CONST CHAR8 *OldName = GetFileName(F->Path);
+    CHAR8 NewName8[256];
+    UINTN i = 0;
+    while (NewInfo->FileName[i] != L'\0' && i < sizeof(NewName8) - 1) {
+        NewName8[i] = (CHAR8)NewInfo->FileName[i];
+        i++;
+    }
+    NewName8[i] = '\0';
+
+    if (AsciiStrCmp(OldName, NewName8) == 0) {
+        return EFI_SUCCESS;  // No name change
+    }
+
+    // Build rename request: POST /files/<oldpath>?rename=<newname>
+    CHAR8 RenamePath[MAX_PATH_LEN];
+    AsciiSPrint(RenamePath, sizeof(RenamePath), "/files%a?rename=%a", F->Path, NewName8);
+
+    HTTP_RESPONSE_CTX Resp;
+    EFI_STATUS Status = WebDavFsHttpRequest(
+        Private, "POST", RenamePath, NULL, 0, NULL, 0, &Resp);
+
+    // Drain response
+    CHAR8 Drain[256];
+    UINTN Got = 0;
+    while (!EFI_ERROR(HttpClientReadBody(
+               &Private->HttpClient, &Resp, Drain, sizeof(Drain), &Got)) && Got > 0) {
+    }
+
+    if (EFI_ERROR(Status) || (Resp.StatusCode != 200 && Resp.StatusCode != 201)) {
+        return EFI_DEVICE_ERROR;
+    }
+
+    // Update internal path to reflect new name
+    CHAR8 ParentDir[MAX_PATH_LEN];
+    GetParentPath(F->Path, ParentDir, sizeof(ParentDir));
+    DirCacheInvalidate(Private, ParentDir);
+
+    AsciiSPrint(F->Path, MAX_PATH_LEN, "%a%a", ParentDir, NewName8);
+
+    return EFI_SUCCESS;
 }
 
 // ----------------------------------------------------------------------------

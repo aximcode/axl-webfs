@@ -272,6 +272,44 @@ class XferHandler(BaseHTTPRequestHandler):
             self._send_json({"created": os.path.basename(local)}, 201)
             return
 
+        # POST /files/<path>?rename=<newpath> — rename/move file or directory
+        if "rename" in qs:
+            src = self._resolve_path(parsed.path)
+            if src is None:
+                self._send_error(403, "Forbidden")
+                return
+            if not os.path.exists(src):
+                self._send_error(404, "Source not found")
+                return
+
+            new_name = qs["rename"][0] if isinstance(qs["rename"], list) else qs["rename"]
+            # new_name can be a relative name or absolute path within root
+            if "/" in new_name or "\\" in new_name:
+                # Absolute path — resolve it
+                dst = self._resolve_path("/files/" + new_name)
+            else:
+                # Just a filename — same directory
+                dst = os.path.join(os.path.dirname(src), new_name)
+                # Verify it stays within root
+                root_real = os.path.realpath(self.server.root_dir)
+                if not os.path.realpath(dst).startswith(root_real):
+                    self._send_error(403, "Forbidden")
+                    return
+
+            if dst is None:
+                self._send_error(403, "Forbidden")
+                return
+
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                os.rename(src, dst)
+            except OSError as e:
+                self._send_error(409, str(e))
+                return
+
+            self._send_json({"renamed": os.path.basename(dst)})
+            return
+
         self._send_error(400, "Unknown POST action")
 
 

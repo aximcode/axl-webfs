@@ -232,6 +232,32 @@ else
     fail "DELETE nonexistent" "expected 404, got $HTTP_CODE"
 fi
 
+# --- Rename (POST ?rename) ---
+info "SERVER" "Rename"
+echo "rename me" > "$TEST_DIR/before.txt"
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/files/before.txt?rename=after.txt")
+if [ "$HTTP_CODE" = "200" ] && [ -f "$TEST_DIR/after.txt" ] && [ ! -f "$TEST_DIR/before.txt" ]; then
+    pass "POST ?rename renames file"
+else
+    fail "POST ?rename" "expected 200 + file moved, got $HTTP_CODE"
+fi
+
+# Verify content preserved
+if [ -f "$TEST_DIR/after.txt" ] && [ "$(cat "$TEST_DIR/after.txt")" = "rename me" ]; then
+    pass "Renamed file content preserved"
+else
+    fail "Rename content" "content mismatch after rename"
+fi
+rm -f "$TEST_DIR/after.txt"
+
+# Rename nonexistent
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/files/ghost.txt?rename=other.txt")
+if [ "$HTTP_CODE" = "404" ]; then
+    pass "Rename nonexistent returns 404"
+else
+    fail "Rename nonexistent" "expected 404, got $HTTP_CODE"
+fi
+
 # --- Directory traversal protection ---
 info "SERVER" "Security"
 # Path traversal: ../../../etc/passwd should not return real /etc/passwd content
