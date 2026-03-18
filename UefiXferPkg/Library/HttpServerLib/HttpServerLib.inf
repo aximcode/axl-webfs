@@ -1,0 +1,33 @@
+## @file
+#  HttpServerLib — HTTP/1.1 server with cooperative polling.
+#
+#  Copyright (c) 2026, AximCode. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = HttpServerLib
+  FILE_GUID      = 5E6F7081-9243-4B3C-D5E6-F7081920A3B4
+  MODULE_TYPE    = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS  = HttpServerLib|UEFI_APPLICATION
+
+[Sources]
+  HttpServer.c
+  HttpServerInternal.h
+
+[Packages]
+  MdePkg/MdePkg.dec
+  UefiXferPkg/UefiXferPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  UefiBootServicesTableLib
+  PrintLib
+
+[Protocols]
+  gEfiTcp4ServiceBindingProtocolGuid
+  gEfiTcp4ProtocolGuid

@@ -511,6 +511,196 @@ NSHEOF
     done
 
     rm -rf "$QEMU_TEST_DIR"
+
+    # ========================================================================
+    # Serve integration tests (QEMU runs UefiXfer serve, host runs curl)
+    # ========================================================================
+
+    SERVE_PORT=18090
+
+    for QEMU_ARCH in "${QEMU_ARCHS[@]}"; do
+        info "QEMU" "=== Serve integration tests: $QEMU_ARCH ==="
+
+        if [ "$QEMU_ARCH" = "AARCH64" ]; then
+            QEMU_BIN="$QEMU_DIR/qemu-system-aarch64"
+            FW_CODE="/usr/share/AAVMF/AAVMF_CODE.fd"
+            FW_VARS_ORIG="/usr/share/AAVMF/AAVMF_VARS.fd"
+            BOOT_EFI="BOOTAA64.EFI"
+            APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_AARCH64.efi"
+            DRV_EFI="$PROJECT_ROOT/build/binaries/WebDavFsDxe_AARCH64.efi"
+            QEMU_MACHINE="-machine virt -cpu cortex-a57"
+            BOOT_WAIT=45
+        else
+            QEMU_BIN="$QEMU_DIR/qemu-system-x86_64"
+            FW_CODE="/usr/share/edk2/ovmf/OVMF_CODE.fd"
+            FW_VARS_ORIG="/usr/share/edk2/ovmf/OVMF_VARS.fd"
+            BOOT_EFI="BOOTX64.EFI"
+            APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_X64.efi"
+            DRV_EFI="$PROJECT_ROOT/build/binaries/WebDavFsDxe_X64.efi"
+            QEMU_MACHINE="-machine q35 -enable-kvm -cpu host"
+            BOOT_WAIT=15
+        fi
+
+        if [ ! -f "$APP_EFI" ] || [ ! -f "$QEMU_BIN" ] || [ ! -f "$FW_CODE" ]; then
+            skip "$QEMU_ARCH serve: missing prerequisites"
+            continue
+        fi
+
+        DISK="$QEMU_STATE/serve-${QEMU_ARCH,,}.img"
+        FW_VARS="$QEMU_STATE/vars-serve-${QEMU_ARCH,,}.fd"
+        SERIAL_LOG="$QEMU_STATE/serial-serve-${QEMU_ARCH,,}.log"
+        MON_SOCK="$QEMU_STATE/mon-serve-${QEMU_ARCH,,}.sock"
+
+        cp "$FW_VARS_ORIG" "$FW_VARS"
+
+        # Build disk with startup.nsh that runs serve
+        dd if=/dev/zero of="$DISK" bs=1M count=64 status=none
+        sgdisk -Z "$DISK" >/dev/null 2>&1
+        sgdisk -o "$DISK" >/dev/null 2>&1
+        sgdisk -n "1:2048:0" -t 1:EF00 "$DISK" >/dev/null 2>&1
+
+        ESP_START=$(sgdisk -i 1 "$DISK" 2>/dev/null | awk '/First sector:/{print $3}')
+        ESP_LAST=$(sgdisk -i 1 "$DISK" 2>/dev/null | awk '/Last sector:/{print $3}')
+        ESP_SECTORS=$((ESP_LAST - ESP_START + 1))
+
+        ESP_IMG=$(mktemp)
+        dd if=/dev/zero of="$ESP_IMG" bs=512 count=$ESP_SECTORS status=none
+        mformat -i "$ESP_IMG" -F ::
+        mmd -i "$ESP_IMG" ::EFI
+        mmd -i "$ESP_IMG" ::EFI/BOOT
+
+        if [ "$QEMU_ARCH" = "AARCH64" ]; then
+            SHELL_EFI="$HOME/projects/edk2/Build/Shell/DEBUG_GCC5/AARCH64/ShellPkg/Application/Shell/Shell/OUTPUT/Shell.efi"
+        else
+            SHELL_EFI="/usr/share/edk2/ovmf/Shell.efi"
+        fi
+        if [ ! -f "$SHELL_EFI" ]; then
+            skip "$QEMU_ARCH serve: Shell.efi not found"
+            rm -f "$ESP_IMG"
+            continue
+        fi
+        mcopy -i "$ESP_IMG" "$SHELL_EFI" "::EFI/BOOT/$BOOT_EFI"
+        mcopy -i "$ESP_IMG" "$APP_EFI" ::UefiXfer.efi
+
+        # Also put a test file on the ESP for download testing
+        echo "serve test file" > /tmp/serve_test.txt
+        mcopy -i "$ESP_IMG" /tmp/serve_test.txt ::serve_test.txt
+        rm -f /tmp/serve_test.txt
+
+        # startup.nsh: run serve (blocks until ESC)
+        NSH=$(mktemp)
+        echo "@echo -off" > "$NSH"
+        echo "fs0:" >> "$NSH"
+        echo "UefiXfer.efi serve -p 8080" >> "$NSH"
+        mcopy -i "$ESP_IMG" "$NSH" ::startup.nsh
+        rm -f "$NSH"
+
+        dd if="$ESP_IMG" of="$DISK" bs=512 seek=$ESP_START conv=notrunc status=none
+        rm -f "$ESP_IMG"
+
+        info "QEMU" "$QEMU_ARCH serve: Booting (wait ${BOOT_WAIT}s for server start)..."
+
+        rm -f "$SERIAL_LOG" "$MON_SOCK"
+
+        # Port forward: host SERVE_PORT -> guest 8080
+        $QEMU_BIN \
+            $QEMU_MACHINE \
+            -m 512M \
+            -drive "if=pflash,format=raw,readonly=on,file=$FW_CODE" \
+            -drive "if=pflash,format=raw,file=$FW_VARS" \
+            -drive "format=raw,file=$DISK" \
+            -netdev "user,id=net0,hostfwd=tcp::${SERVE_PORT}-:8080" \
+            -device "virtio-net-pci,netdev=net0" \
+            -display none \
+            -serial "file:$SERIAL_LOG" \
+            -monitor "unix:${MON_SOCK},server,nowait" \
+            > /dev/null 2>&1 &
+        QEMU_PID=$!
+
+        # Wait for server to be ready (check serial for "Listening" or try curl)
+        READY=false
+        for WAIT in $(seq 1 $BOOT_WAIT); do
+            sleep 1
+            if ! kill -0 "$QEMU_PID" 2>/dev/null; then break; fi
+            if curl -sf -o /dev/null "http://127.0.0.1:${SERVE_PORT}/" 2>/dev/null; then
+                READY=true
+                break
+            fi
+        done
+
+        if ! $READY; then
+            fail "$QEMU_ARCH serve: server did not start within ${BOOT_WAIT}s"
+            kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+            if [ -f "$SERIAL_LOG" ]; then
+                cat "$SERIAL_LOG" | strings | grep -i "error\|fail\|UefiXfer\|Listening" | head -10
+            fi
+            continue
+        fi
+
+        BASE="http://127.0.0.1:${SERVE_PORT}"
+
+        # Test: GET / (volume list)
+        RESP=$(curl -sf -H "Accept: application/json" "$BASE/" 2>/dev/null)
+        if echo "$RESP" | grep -q "fs0"; then
+            pass "$QEMU_ARCH serve: GET / returns volume list with fs0"
+        else
+            fail "$QEMU_ARCH serve: GET /" "no fs0 in response: $RESP"
+        fi
+
+        # Test: GET /fs0/ (directory listing)
+        RESP=$(curl -sf -H "Accept: application/json" "$BASE/fs0/" 2>/dev/null)
+        if echo "$RESP" | grep -q "UefiXfer.efi"; then
+            pass "$QEMU_ARCH serve: GET /fs0/ lists files"
+        else
+            fail "$QEMU_ARCH serve: GET /fs0/" "UefiXfer.efi not in listing"
+        fi
+
+        # Test: GET file download
+        CONTENT=$(curl -sf "$BASE/fs0/serve_test.txt" 2>/dev/null)
+        if echo "$CONTENT" | grep -q "serve test file"; then
+            pass "$QEMU_ARCH serve: GET /fs0/serve_test.txt downloads file"
+        else
+            fail "$QEMU_ARCH serve: file download" "unexpected: $CONTENT"
+        fi
+
+        # Test: PUT file upload
+        HTTP_CODE=$(echo -n "upload data!" | curl -sf -o /dev/null -w "%{http_code}" \
+            -T - "$BASE/fs0/uploaded.txt" 2>/dev/null)
+        if [ "$HTTP_CODE" = "201" ]; then
+            pass "$QEMU_ARCH serve: PUT /fs0/uploaded.txt returns 201"
+        else
+            fail "$QEMU_ARCH serve: PUT" "expected 201, got $HTTP_CODE"
+        fi
+
+        # Test: Read back uploaded file
+        CONTENT=$(curl -sf "$BASE/fs0/uploaded.txt" 2>/dev/null)
+        if echo "$CONTENT" | grep -q "upload data"; then
+            pass "$QEMU_ARCH serve: uploaded file readable"
+        else
+            fail "$QEMU_ARCH serve: read upload" "content: $CONTENT"
+        fi
+
+        # Test: DELETE file
+        HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" -X DELETE "$BASE/fs0/uploaded.txt" 2>/dev/null)
+        if [ "$HTTP_CODE" = "200" ]; then
+            pass "$QEMU_ARCH serve: DELETE returns 200"
+        else
+            fail "$QEMU_ARCH serve: DELETE" "expected 200, got $HTTP_CODE"
+        fi
+
+        # Test: POST mkdir
+        HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" -X POST "$BASE/fs0/testdir/?mkdir" 2>/dev/null)
+        if [ "$HTTP_CODE" = "201" ]; then
+            pass "$QEMU_ARCH serve: POST ?mkdir returns 201"
+        else
+            fail "$QEMU_ARCH serve: mkdir" "expected 201, got $HTTP_CODE"
+        fi
+
+        # Kill QEMU via monitor (send ESC key)
+        echo "sendkey esc" | socat - "UNIX-CONNECT:$MON_SOCK" > /dev/null 2>&1 || true
+        sleep 2
+        kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+    done
 fi
 
 # ============================================================================

@@ -14,5 +14,6 @@
 
 EFI_STATUS CmdMount (IN EFI_HANDLE ImageHandle, IN UINTN Argc, IN CHAR16 **Argv);
 EFI_STATUS CmdUmount (IN EFI_HANDLE ImageHandle, IN UINTN Argc, IN CHAR16 **Argv);
+EFI_STATUS CmdServe (IN EFI_HANDLE ImageHandle, IN UINTN Argc, IN CHAR16 **Argv);
 
 #endif // UEFIXFER_INTERNAL_H_

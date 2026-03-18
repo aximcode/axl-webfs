@@ -35,6 +35,8 @@
   # UefiXferPkg libraries
   NetworkLib|UefiXferPkg/Library/NetworkLib/NetworkLib.inf
   HttpClientLib|UefiXferPkg/Library/HttpClientLib/HttpClientLib.inf
+  HttpServerLib|UefiXferPkg/Library/HttpServerLib/HttpServerLib.inf
+  FileTransferLib|UefiXferPkg/Library/FileTransferLib/FileTransferLib.inf
   JsonLib|UefiXferPkg/Library/JsonLib/JsonLib.inf
 
 [Components]

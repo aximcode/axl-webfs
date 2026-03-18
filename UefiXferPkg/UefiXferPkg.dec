@@ -17,6 +17,8 @@
 [LibraryClasses]
   NetworkLib|Include/Library/NetworkLib.h
   HttpClientLib|Include/Library/HttpClientLib.h
+  HttpServerLib|Include/Library/HttpServerLib.h
+  FileTransferLib|Include/Library/FileTransferLib.h
   JsonLib|Include/Library/JsonLib.h
 
 [Guids]

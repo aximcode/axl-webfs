@@ -71,8 +71,7 @@ UefiXferMain (
     }
 
     if (StrCmp(Cmd, L"serve") == 0) {
-        Print(L"serve: not yet implemented (Phase 3)\n");
-        return EFI_UNSUPPORTED;
+        return CmdServe(ImageHandle, Argc - 2, &Argv[2]);
     }
 
     Print(L"ERROR: Unknown command '%s'\n\n", Cmd);
