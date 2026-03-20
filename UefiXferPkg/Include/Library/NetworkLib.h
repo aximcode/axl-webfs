@@ -110,4 +110,18 @@ NetworkCleanup (
     VOID
     );
 
+/**
+  List all available network interfaces.
+
+  Enumerates SNP handles and prints index, MAC, link status, and
+  current IP (if configured). Does not modify network state.
+
+  @param[in] ImageHandle  The caller's image handle.
+**/
+VOID
+EFIAPI
+NetworkListNics (
+    IN EFI_HANDLE  ImageHandle
+    );
+
 #endif // NETWORK_LIB_H_

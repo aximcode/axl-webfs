@@ -11,6 +11,7 @@
 #include "UefiXferInternal.h"
 
 #include <Library/BaseLib.h>
+#include <Library/NetworkLib.h>
 #include <Protocol/ShellParameters.h>
 
 #define UEFIXFER_VERSION  L"0.1"
@@ -21,6 +22,7 @@ static VOID PrintUsage(VOID) {
     Print(L"  UefiXfer mount <url> [-r]   Mount remote directory as UEFI volume\n");
     Print(L"  UefiXfer umount             Unmount remote volume\n");
     Print(L"  UefiXfer serve [options]    Run HTTP file server (Phase 3)\n");
+    Print(L"  UefiXfer list-nics          List network interfaces\n");
     Print(L"  UefiXfer -h                 Show this help\n");
     Print(L"\nExamples:\n");
     Print(L"  UefiXfer mount http://10.0.0.5:8080/\n");
@@ -72,6 +74,11 @@ UefiXferMain (
 
     if (StrCmp(Cmd, L"serve") == 0) {
         return CmdServe(ImageHandle, Argc - 2, &Argv[2]);
+    }
+
+    if (StrCmp(Cmd, L"list-nics") == 0) {
+        NetworkListNics(ImageHandle);
+        return EFI_SUCCESS;
     }
 
     Print(L"ERROR: Unknown command '%s'\n\n", Cmd);
