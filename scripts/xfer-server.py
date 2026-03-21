@@ -11,6 +11,8 @@ Usage:
     ./xfer-server.py --read-only
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -22,16 +24,35 @@ from urllib.parse import unquote, urlparse, parse_qs
 VERSION = "1.0"
 
 
+class XferServer(HTTPServer):
+    """HTTPServer subclass with typed attributes for root_dir and read_only."""
+
+    root_dir: str
+    read_only: bool
+
+    def __init__(self, server_address: tuple[str, int],
+                 handler: type[BaseHTTPRequestHandler],
+                 root_dir: str, read_only: bool) -> None:
+        super().__init__(server_address, handler)
+        self.root_dir = root_dir
+        self.read_only = read_only
+
+
 class XferHandler(BaseHTTPRequestHandler):
     """HTTP request handler for UefiXfer mount protocol."""
 
     server_version = f"xfer-server/{VERSION}"
 
-    def log_message(self, fmt, *args):
-        """Override to use cleaner log format."""
-        sys.stderr.write(f"  {self.address_string()} {fmt % args}\n")
+    @property
+    def xfer_server(self) -> XferServer:
+        assert isinstance(self.server, XferServer)
+        return self.server
 
-    def _resolve_path(self, url_path):
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+        """Override to use cleaner log format."""
+        sys.stderr.write(f"  {self.address_string()} {format % args}\n")
+
+    def _resolve_path(self, url_path: str) -> str | None:
         """Resolve URL path to local filesystem path, preventing traversal."""
         clean = unquote(url_path).replace("\\", "/")
         # Strip leading prefix (/files/ or /list/)
@@ -41,14 +62,14 @@ class XferHandler(BaseHTTPRequestHandler):
                 break
         # Prevent directory traversal
         parts = [p for p in clean.split("/") if p and p != ".."]
-        local = os.path.join(self.server.root_dir, *parts)
+        local = os.path.join(self.xfer_server.root_dir, *parts)
         real = os.path.realpath(local)
-        root_real = os.path.realpath(self.server.root_dir)
+        root_real = os.path.realpath(self.xfer_server.root_dir)
         if not real.startswith(root_real):
             return None
         return real
 
-    def _send_json(self, data, status=200):
+    def _send_json(self, data: object, status: int = 200) -> None:
         body = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -57,7 +78,7 @@ class XferHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_error(self, code, msg):
+    def _send_error(self, code: int, msg: str) -> None:
         body = msg.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "text/plain")
@@ -65,7 +86,7 @@ class XferHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
@@ -73,8 +94,8 @@ class XferHandler(BaseHTTPRequestHandler):
         if path == "/info":
             self._send_json({
                 "version": VERSION,
-                "root": self.server.root_dir,
-                "read_only": self.server.read_only,
+                "root": self.xfer_server.root_dir,
+                "read_only": self.xfer_server.read_only,
             })
             return
 
@@ -88,7 +109,7 @@ class XferHandler(BaseHTTPRequestHandler):
                 self._send_error(404, "Not a directory")
                 return
 
-            entries = []
+            entries: list[dict[str, object]] = []
             for name in sorted(os.listdir(local)):
                 full = os.path.join(local, name)
                 try:
@@ -163,8 +184,8 @@ class XferHandler(BaseHTTPRequestHandler):
 
         self._send_error(404, "Unknown endpoint")
 
-    def do_PUT(self):
-        if self.server.read_only:
+    def do_PUT(self) -> None:
+        if self.xfer_server.read_only:
             self._send_error(403, "Server is read-only")
             return
 
@@ -226,8 +247,8 @@ class XferHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_DELETE(self):
-        if self.server.read_only:
+    def do_DELETE(self) -> None:
+        if self.xfer_server.read_only:
             self._send_error(403, "Server is read-only")
             return
 
@@ -255,8 +276,8 @@ class XferHandler(BaseHTTPRequestHandler):
 
         self._send_json({"deleted": os.path.basename(local)})
 
-    def do_POST(self):
-        if self.server.read_only:
+    def do_POST(self) -> None:
+        if self.xfer_server.read_only:
             self._send_error(403, "Server is read-only")
             return
 
@@ -282,7 +303,7 @@ class XferHandler(BaseHTTPRequestHandler):
                 self._send_error(404, "Source not found")
                 return
 
-            new_name = qs["rename"][0] if isinstance(qs["rename"], list) else qs["rename"]
+            new_name = qs["rename"][0]
             # new_name can be a relative name or absolute path within root
             if "/" in new_name or "\\" in new_name:
                 # Absolute path — resolve it
@@ -291,7 +312,7 @@ class XferHandler(BaseHTTPRequestHandler):
                 # Just a filename — same directory
                 dst = os.path.join(os.path.dirname(src), new_name)
                 # Verify it stays within root
-                root_real = os.path.realpath(self.server.root_dir)
+                root_real = os.path.realpath(self.xfer_server.root_dir)
                 if not os.path.realpath(dst).startswith(root_real):
                     self._send_error(403, "Forbidden")
                     return
@@ -313,7 +334,7 @@ class XferHandler(BaseHTTPRequestHandler):
         self._send_error(400, "Unknown POST action")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="xfer-server — Workstation file server for UefiXfer")
     parser.add_argument("--root", default=".",
@@ -331,9 +352,7 @@ def main():
         print(f"Error: {root} is not a directory", file=sys.stderr)
         sys.exit(1)
 
-    server = HTTPServer((args.bind, args.port), XferHandler)
-    server.root_dir = root
-    server.read_only = args.read_only
+    server = XferServer((args.bind, args.port), XferHandler, root, args.read_only)
 
     mode = "read-only" if args.read_only else "read-write"
     print(f"xfer-server v{VERSION}")

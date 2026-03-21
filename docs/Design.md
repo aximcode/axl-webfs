@@ -465,17 +465,57 @@ UefiXferPkg/
 
 ## Network Initialization
 
-Pattern from SoftBMC (implemented in NetworkLib):
+Pattern from SoftBMC (implemented in NetworkLib), with ConnectController
+added for platforms that don't auto-connect the network stack:
 
-1. Enumerate all handles with `EFI_SIMPLE_NETWORK_PROTOCOL`
-2. If `-n <index>` specified, filter to that NIC
-3. If `-i <ip>` specified, configure static IP on selected NIC
-4. Otherwise, check `EFI_IP4_CONFIG2_PROTOCOL` for existing IP config
-5. If unconfigured, set DHCP policy and wait (up to 10s) for lease
-6. Fallback to `EFI_DHCP4_PROTOCOL` direct if IP4Config2 unavailable
-7. Print IP address and return
+1. Check for `EFI_IP4_CONFIG2_PROTOCOL` handles
+2. If none found, enumerate `EFI_SIMPLE_NETWORK_PROTOCOL` (SNP) handles
+   and call `ConnectController(SNP, NULL, NULL, TRUE)` to recursively
+   load the network stack (MNP, ARP, IP4, TCP4, DHCP4) on top of SNP
+3. If `-n <index>` specified, connect only that NIC (faster on multi-NIC)
+4. Check link status via `SNP->Mode->MediaPresent` before DHCP — fail
+   fast with a clear error if cable is unplugged
+5. If `-i <ip>` specified, configure static IP on selected NIC
+6. Otherwise, set DHCP policy via IP4Config2 and wait (up to 10s)
+7. Fallback to `EFI_DHCP4_PROTOCOL` direct if IP4Config2 unavailable
+8. Print IP address and return
 
 If no NIC has an IP after configuration, print error and exit.
+
+The `list-nics` command enumerates all SNP handles and prints NIC index,
+MAC address, link status, and current IP (if configured). Use this to
+identify which NIC index to pass with `-n`.
+
+### Platform Compatibility: ConnectController vs Driver Loading
+
+UefiXfer uses a **ConnectController-only** approach — it assumes NIC
+drivers are already present in firmware ROM and just needs to connect
+the upper network stack layers. This is sufficient when:
+
+- Firmware includes NIC ROM drivers (x86 workstations, most servers)
+- PXE boot was attempted (pre-loads the full network stack)
+- QEMU or other simulators (virtual NICs have built-in drivers)
+
+**This approach will NOT work** on platforms where:
+
+- Firmware has no NIC driver at all (no SNP handles to connect)
+- Firmware's NIC driver locks the PCI handle but doesn't produce SNP
+  (seen on some HP ZBook and Lenovo systems)
+
+SoftBMC handles these cases with explicit driver loading: it calls
+`LoadImage`/`StartImage` on external `.efi` NIC drivers from a
+`\drivers\<arch>\` directory on the boot device, then does a targeted
+`ConnectController` with only those loaded driver handles. It also
+disconnects broken firmware drivers before rebinding (NIC takeover).
+
+**For ARM64 server**: unknown whether firmware includes
+working NIC drivers. To diagnose:
+
+1. Boot UefiXfer and run `list-nics`
+2. If SNP handles appear with MAC addresses — ConnectController is
+   sufficient, current approach works
+3. If no handles appear — need to add SoftBMC-style driver loading
+   (port `NetworkLoadDrivers()` from SoftBMC `Core/Network.c`)
 
 ## Implementation Plan
 
@@ -735,7 +775,7 @@ changes for UefiXfer.
 |------|--------------------|--------------------|
 | Build infra (.dec/.dsc) | `SoftBmcPkg.dec` structure, `SoftBmcPkg.dsc` LibraryClasses + `!include MdeLibs.dsc.inc` | Add `UefiDriverEntryPoint` for WebDavFsDxe. No CryptoPkg/MbedTls. |
 | Build script | `scripts/build.sh` — arg parsing, EDK2 env setup, per-arch loop, binary summary | Remove embed-assets, driver copy, gen-compdb. |
-| Network init | `Core/Network.c` — NIC enum via SNP, DHCP via IP4Config2 + DHCP4 fallback | Strip driver loading, DNS, API handler. Single `NetworkInit()` call. |
+| Network init | `Core/Network.c` — NIC enum via SNP, DHCP via IP4Config2 + DHCP4 fallback | Strip driver loading, DNS, API handler. Add ConnectController for ARM64. Add link check and `list-nics`. Single `NetworkInit()` call. |
 | TCP | `Core/TcpClient.c` + `Core/TcpUtil.c` — connect pattern, 32 KB chunked send | Folded into HttpClientLib's TCP layer. |
 | HTTP server | `Core/HttpServer.h` — connection pool, cooperative poll, route dispatch | Strip WebSocket, TLS, auth, cache. 4 connections vs 16. (Phase 3) |
 | JSON | `Core/JsonParser.h` pattern (stack-allocated tokens, extract by key) | Custom tokenizer instead of JSMN. Add array iteration. |
