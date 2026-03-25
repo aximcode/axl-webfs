@@ -2,7 +2,7 @@
 
 # UefiXfer QEMU Launcher
 # Boots UefiXfer.efi in QEMU with port forwarding for xfer-server.py
-# Thin wrapper around uefi-bootkit common.sh qemu_launch
+# Thin wrapper around uefi-devkit common.sh qemu_launch
 
 set -e
 
@@ -10,8 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Shared library
-BOOTKIT_DIR="${BOOTKIT_DIR:-$HOME/projects/aximcode/uefi-bootkit}"
-source "$BOOTKIT_DIR/common.sh"
+DEVKIT_DIR="${DEVKIT_DIR:-$HOME/projects/aximcode/uefi-devkit}"
+source "$DEVKIT_DIR/common.sh"
 
 # Defaults
 QEMU_ARCH="X64"

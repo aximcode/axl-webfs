@@ -13,8 +13,8 @@ PARALLEL_JOBS=$(nproc)
 BUILD_TIMEOUT=600
 
 # Shared library (logging, EDK2 setup, QEMU/firmware discovery)
-BOOTKIT_DIR="${BOOTKIT_DIR:-$HOME/projects/aximcode/uefi-bootkit}"
-source "$BOOTKIT_DIR/common.sh"
+DEVKIT_DIR="${DEVKIT_DIR:-$HOME/projects/aximcode/uefi-devkit}"
+source "$DEVKIT_DIR/common.sh"
 
 # Parse arguments
 CLEAN_BUILD="FALSE"
