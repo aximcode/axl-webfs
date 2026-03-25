@@ -1,10 +1,10 @@
 /** @file
   NetworkLib — NIC discovery, DHCP configuration, and static IP setup.
 
-  Adapted from SoftBMC Core/Network.c. Simplified for UefiXfer: no driver
-  loading, no DNS. Connects network stack drivers on SNP handles before
-  NIC discovery. Single-NIC init with IP4Config2 DHCP + DHCP4 direct
-  fallback.
+  Adapted from SoftBMC Core/Network.c. Auto-loads NIC drivers from
+  \drivers\{arch}\ on mounted filesystems, connects network stack
+  drivers, and auto-selects the first NIC with an IP. Single-NIC init
+  with IP4Config2 DHCP + DHCP4 direct fallback.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -18,12 +18,24 @@
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiLib.h>
 #include <Library/PrintLib.h>
+#include <Library/DevicePathLib.h>
 
 #include <Protocol/SimpleNetwork.h>
 #include <Protocol/Ip4Config2.h>
 #include <Protocol/Dhcp4.h>
 #include <Protocol/ServiceBinding.h>
 #include <Protocol/Tcp4.h>
+#include <Protocol/SimpleFileSystem.h>
+#include <Protocol/LoadedImage.h>
+#include <Guid/FileInfo.h>
+
+#if defined(MDE_CPU_X64)
+  #define DRIVER_DIR_PATH  L"\\drivers\\x64"
+#elif defined(MDE_CPU_AARCH64)
+  #define DRIVER_DIR_PATH  L"\\drivers\\aa64"
+#else
+  #define DRIVER_DIR_PATH  L"\\drivers"
+#endif
 
 // ----------------------------------------------------------------------------
 // Module state
@@ -202,11 +214,104 @@ static EFI_STATUS CheckLinkStatus(
     }
 
     if (Snp->Mode->MediaPresentSupported && !Snp->Mode->MediaPresent) {
-        Print(L"ERROR: No link on NIC (cable unplugged?)\n");
-        return EFI_NO_MEDIA;
+        Print(L"WARNING: NIC reports no link (cable unplugged?)\n");
+        Print(L"  Some firmware reports link-down incorrectly — continuing anyway.\n");
     }
 
     return EFI_SUCCESS;
+}
+
+// ----------------------------------------------------------------------------
+// Auto-load NIC drivers from filesystem
+// ----------------------------------------------------------------------------
+
+/// Search mounted filesystems for \drivers\{arch}\*.efi and load them.
+/// Adapted from SoftBMC NetworkLoadDrivers(). Stops after the first
+/// filesystem that has a drivers directory.
+static UINTN LoadNicDrivers(VOID) {
+    EFI_STATUS Status;
+    EFI_HANDLE *FsHandles = NULL;
+    UINTN FsCount = 0;
+    UINTN DriversLoaded = 0;
+
+    Status = gBS->LocateHandleBuffer(
+        ByProtocol, &gEfiSimpleFileSystemProtocolGuid, NULL,
+        &FsCount, &FsHandles);
+    if (EFI_ERROR(Status) || FsCount == 0) {
+        if (FsHandles) FreePool(FsHandles);
+        return 0;
+    }
+
+    for (UINTN i = 0; i < FsCount; i++) {
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs = NULL;
+        EFI_FILE_PROTOCOL *Root = NULL;
+        EFI_FILE_PROTOCOL *DirHandle = NULL;
+
+        Status = gBS->OpenProtocol(
+            FsHandles[i], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs,
+            mImageHandle, NULL, EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL);
+        if (EFI_ERROR(Status)) continue;
+
+        Status = Fs->OpenVolume(Fs, &Root);
+        if (EFI_ERROR(Status)) continue;
+
+        Status = Root->Open(Root, &DirHandle, DRIVER_DIR_PATH, EFI_FILE_MODE_READ, 0);
+        if (EFI_ERROR(Status)) {
+            Root->Close(Root);
+            continue;
+        }
+
+        // Enumerate .efi files in the drivers directory
+        UINT8 Buffer[512];
+        for (;;) {
+            UINTN BufSize = sizeof(Buffer);
+            Status = DirHandle->Read(DirHandle, &BufSize, Buffer);
+            if (EFI_ERROR(Status) || BufSize == 0) break;
+
+            EFI_FILE_INFO *FileInfo = (EFI_FILE_INFO *)Buffer;
+            if (FileInfo->Attribute & EFI_FILE_DIRECTORY) continue;
+
+            UINTN NameLen = StrLen(FileInfo->FileName);
+            if (NameLen <= 4) continue;
+            if (StrnCmp(&FileInfo->FileName[NameLen - 4], L".efi", 4) != 0 &&
+                StrnCmp(&FileInfo->FileName[NameLen - 4], L".EFI", 4) != 0) {
+                continue;
+            }
+
+            CHAR16 FullPath[256];
+            UnicodeSPrint(FullPath, sizeof(FullPath),
+                          L"%s\\%s", DRIVER_DIR_PATH, FileInfo->FileName);
+
+            EFI_DEVICE_PATH_PROTOCOL *DevicePath = FileDevicePath(FsHandles[i], FullPath);
+            if (DevicePath == NULL) continue;
+
+            EFI_HANDLE DriverHandle = NULL;
+            Print(L"  Loading %s ... ", FileInfo->FileName);
+            Status = gBS->LoadImage(FALSE, mImageHandle, DevicePath, NULL, 0, &DriverHandle);
+            if (!EFI_ERROR(Status)) {
+                Status = gBS->StartImage(DriverHandle, NULL, NULL);
+                if (!EFI_ERROR(Status)) {
+                    DriversLoaded++;
+                    Print(L"OK\n");
+                } else {
+                    Print(L"start failed: %r\n", Status);
+                    gBS->UnloadImage(DriverHandle);
+                }
+            } else {
+                Print(L"load failed: %r\n", Status);
+            }
+
+            FreePool(DevicePath);
+        }
+
+        DirHandle->Close(DirHandle);
+        Root->Close(Root);
+
+        if (DriversLoaded > 0) break;
+    }
+
+    FreePool(FsHandles);
+    return DriversLoaded;
 }
 
 // ----------------------------------------------------------------------------
@@ -262,17 +367,14 @@ static EFI_STATUS ConfigureDhcp4Direct(
             continue;
         }
 
-        // Check link before DHCP4 discover
+        // Check link before DHCP4 discover (warn only — firmware may misreport)
         {
             EFI_SIMPLE_NETWORK_PROTOCOL *Snp = NULL;
             gBS->HandleProtocol(
                 Handles[i], &gEfiSimpleNetworkProtocolGuid, (VOID **)&Snp);
             if (Snp != NULL &&
                 Snp->Mode->MediaPresentSupported && !Snp->Mode->MediaPresent) {
-                Print(L"  NIC %d: no link, skipping\n", i);
-                Dhcp4->Configure(Dhcp4, NULL);
-                Dhcp4Sb->DestroyChild(Dhcp4Sb, ChildHandle);
-                continue;
+                Print(L"  NIC %d: reports no link (may be incorrect)\n", i);
             }
         }
 
@@ -320,6 +422,124 @@ static EFI_STATUS ConfigureDhcp4Direct(
 // Public API
 // ----------------------------------------------------------------------------
 
+/// Try to bring up the network stack: connect SNP handles, optionally
+/// load drivers from filesystem first. Returns the number of IP4Config2
+/// handles found after connecting.
+static UINTN BringUpNetworkStack(VOID) {
+    EFI_HANDLE *SnpHandles = NULL;
+    UINTN SnpCount = 0;
+    EFI_STATUS Status;
+
+    Status = gBS->LocateHandleBuffer(
+        ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL,
+        &SnpCount, &SnpHandles);
+
+    if (EFI_ERROR(Status) || SnpCount == 0) {
+        // No SNP at all — try loading NIC drivers from filesystem
+        if (SnpHandles) FreePool(SnpHandles);
+        UINTN Loaded = LoadNicDrivers();
+        if (Loaded > 0) {
+            Status = gBS->LocateHandleBuffer(
+                ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL,
+                &SnpCount, &SnpHandles);
+            if (EFI_ERROR(Status) || SnpCount == 0) {
+                if (SnpHandles) FreePool(SnpHandles);
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+    }
+
+    // Recursively connect all SNP handles to bring up MNP/ARP/IP4/TCP4
+    Print(L"  Connecting network stack on %d NIC(s)...\n", SnpCount);
+    for (UINTN i = 0; i < SnpCount; i++) {
+        gBS->ConnectController(SnpHandles[i], NULL, NULL, TRUE);
+    }
+    FreePool(SnpHandles);
+
+    // Count IP4Config2 handles now available
+    EFI_HANDLE *Ip4Handles = NULL;
+    UINTN Ip4Count = 0;
+    Status = gBS->LocateHandleBuffer(
+        ByProtocol, &gEfiIp4Config2ProtocolGuid, NULL,
+        &Ip4Count, &Ip4Handles);
+    if (Ip4Handles) FreePool(Ip4Handles);
+    return EFI_ERROR(Status) ? 0 : Ip4Count;
+}
+
+/// Find the IP4Config2 handle that corresponds to a given SNP handle.
+/// SNP and IP4Config2 may be on the same handle or on parent/child handles
+/// sharing the same MAC address.
+static EFI_HANDLE FindIp4HandleForSnp(
+    IN EFI_HANDLE  SnpHandle
+) {
+    EFI_STATUS Status;
+
+    // Fast path: IP4Config2 is on the same handle as SNP
+    Status = gBS->OpenProtocol(
+        SnpHandle, &gEfiIp4Config2ProtocolGuid, NULL,
+        mImageHandle, NULL, EFI_OPEN_PROTOCOL_TEST_PROTOCOL);
+    if (!EFI_ERROR(Status)) {
+        return SnpHandle;
+    }
+
+    // Slow path: match by MAC address
+    EFI_SIMPLE_NETWORK_PROTOCOL *Snp = NULL;
+    Status = gBS->OpenProtocol(
+        SnpHandle, &gEfiSimpleNetworkProtocolGuid, (VOID **)&Snp,
+        mImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+    if (EFI_ERROR(Status) || Snp == NULL) return NULL;
+
+    EFI_HANDLE *Ip4Handles = NULL;
+    UINTN Ip4Count = 0;
+    Status = gBS->LocateHandleBuffer(
+        ByProtocol, &gEfiIp4Config2ProtocolGuid, NULL,
+        &Ip4Count, &Ip4Handles);
+    if (EFI_ERROR(Status) || Ip4Count == 0) {
+        if (Ip4Handles) FreePool(Ip4Handles);
+        return NULL;
+    }
+
+    EFI_HANDLE Match = NULL;
+    for (UINTN i = 0; i < Ip4Count; i++) {
+        NETWORK_INTERFACE_INFO TmpInfo;
+        if (!EFI_ERROR(CheckExistingIp(Ip4Handles[i], &TmpInfo)) ||
+            TmpInfo.MacLen > 0) {
+            // CheckExistingIp only fills info if IP is non-zero.
+            // For MAC-only match, query IP4Config2 directly.
+        }
+        EFI_IP4_CONFIG2_PROTOCOL *Ip4Cfg2 = NULL;
+        Status = gBS->OpenProtocol(
+            Ip4Handles[i], &gEfiIp4Config2ProtocolGuid, (VOID **)&Ip4Cfg2,
+            mImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+        if (EFI_ERROR(Status)) continue;
+
+        UINTN DataSize = 0;
+        Status = Ip4Cfg2->GetData(
+            Ip4Cfg2, Ip4Config2DataTypeInterfaceInfo, &DataSize, NULL);
+        if (Status != EFI_BUFFER_TOO_SMALL || DataSize == 0) continue;
+
+        EFI_IP4_CONFIG2_INTERFACE_INFO *IfInfo = AllocatePool(DataSize);
+        if (IfInfo == NULL) continue;
+
+        Status = Ip4Cfg2->GetData(
+            Ip4Cfg2, Ip4Config2DataTypeInterfaceInfo, &DataSize, IfInfo);
+        if (!EFI_ERROR(Status)) {
+            if (CompareMem(&IfInfo->HwAddress, &Snp->Mode->CurrentAddress,
+                           Snp->Mode->HwAddressSize) == 0) {
+                Match = Ip4Handles[i];
+                FreePool(IfInfo);
+                break;
+            }
+        }
+        FreePool(IfInfo);
+    }
+
+    FreePool(Ip4Handles);
+    return Match;
+}
+
 EFI_STATUS
 EFIAPI
 NetworkInit (
@@ -334,59 +554,24 @@ NetworkInit (
     mImageHandle = ImageHandle;
     SetMem(&mIfaceInfo, sizeof(mIfaceInfo), 0);
 
-    // Enumerate IP4Config2 handles (these correspond to NICs with network stack)
-    EFI_HANDLE *Handles = NULL;
-    UINTN HandleCount = 0;
+    //
+    // Phase 1: Ensure IP4Config2 handles exist.
+    // Try direct enumeration first, then connect SNP, then load drivers.
+    //
+    EFI_HANDLE *Ip4Handles = NULL;
+    UINTN Ip4Count = 0;
     EFI_STATUS Status = gBS->LocateHandleBuffer(
         ByProtocol, &gEfiIp4Config2ProtocolGuid, NULL,
-        &HandleCount, &Handles);
+        &Ip4Count, &Ip4Handles);
 
-    if (EFI_ERROR(Status) || HandleCount == 0) {
-        if (Handles) FreePool(Handles);
-        Handles = NULL;
+    if (EFI_ERROR(Status) || Ip4Count == 0) {
+        if (Ip4Handles) FreePool(Ip4Handles);
+        Ip4Handles = NULL;
+        Ip4Count = 0;
 
-        //
-        // No IP4Config2 found — network stack drivers may not be connected.
-        // This is common on ARM64 server hardware where firmware doesn't auto-connect
-        // the full network stack unless PXE boot is attempted.
-        // Recursively connect all SNP handles to bring up MNP/ARP/IP4/TCP4.
-        //
-        EFI_HANDLE *SnpHandles = NULL;
-        UINTN SnpCount = 0;
-        BOOLEAN DidSelectiveConnect = FALSE;
-        Status = gBS->LocateHandleBuffer(
-            ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL,
-            &SnpCount, &SnpHandles);
-        if (!EFI_ERROR(Status) && SnpCount > 0) {
-            if (NicIndex != (UINTN)-1) {
-                // Connect only the requested NIC
-                if (NicIndex >= SnpCount) {
-                    Print(L"ERROR: NIC index %d out of range (0-%d)\n",
-                          NicIndex, SnpCount - 1);
-                    FreePool(SnpHandles);
-                    return EFI_NOT_FOUND;
-                }
-                Print(L"  Connecting network stack on NIC %d...\n", NicIndex);
-                gBS->ConnectController(SnpHandles[NicIndex], NULL, NULL, TRUE);
-                DidSelectiveConnect = TRUE;
-            } else {
-                // Connect all NICs
-                Print(L"  Connecting network stack on %d NIC(s)...\n", SnpCount);
-                for (UINTN i = 0; i < SnpCount; i++) {
-                    gBS->ConnectController(SnpHandles[i], NULL, NULL, TRUE);
-                }
-            }
-            FreePool(SnpHandles);
-
-            // Retry IP4Config2 after connecting drivers
-            Status = gBS->LocateHandleBuffer(
-                ByProtocol, &gEfiIp4Config2ProtocolGuid, NULL,
-                &HandleCount, &Handles);
-        }
-
-        if (EFI_ERROR(Status) || HandleCount == 0) {
-            if (Handles) FreePool(Handles);
-            // No IP4Config2 — try DHCP4 direct fallback
+        UINTN NewCount = BringUpNetworkStack();
+        if (NewCount == 0) {
+            // Last resort: DHCP4 direct fallback
             Status = ConfigureDhcp4Direct(TimeoutSeconds);
             if (EFI_ERROR(Status)) {
                 Print(L"ERROR: No network interface found\n");
@@ -396,62 +581,102 @@ NetworkInit (
             return EFI_SUCCESS;
         }
 
-        // After selective connect, use first handle (only one NIC connected)
-        if (DidSelectiveConnect) {
-            NicIndex = (UINTN)-1;
+        // Re-enumerate after bringing up the stack
+        Status = gBS->LocateHandleBuffer(
+            ByProtocol, &gEfiIp4Config2ProtocolGuid, NULL,
+            &Ip4Count, &Ip4Handles);
+        if (EFI_ERROR(Status) || Ip4Count == 0) {
+            if (Ip4Handles) FreePool(Ip4Handles);
+            Status = ConfigureDhcp4Direct(TimeoutSeconds);
+            if (EFI_ERROR(Status)) {
+                Print(L"ERROR: No network interface found\n");
+                return EFI_NOT_FOUND;
+            }
+            mInitialized = TRUE;
+            return EFI_SUCCESS;
         }
     }
 
-    // Select NIC by index or first available
-    UINTN SelectedIdx = 0;
+    //
+    // Phase 2: Select a NIC.
+    // NicIndex uses SNP handle ordering (consistent with list-nics).
+    // Map it to the corresponding IP4Config2 handle.
+    //
+    EFI_HANDLE SelectedIp4Handle = NULL;
+
     if (NicIndex != (UINTN)-1) {
-        if (NicIndex >= HandleCount) {
+        // User specified -n: use SNP-based indexing (matches list-nics)
+        EFI_HANDLE *SnpHandles = NULL;
+        UINTN SnpCount = 0;
+        Status = gBS->LocateHandleBuffer(
+            ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL,
+            &SnpCount, &SnpHandles);
+        if (EFI_ERROR(Status) || NicIndex >= SnpCount) {
             Print(L"ERROR: NIC index %d out of range (0-%d)\n",
-                  NicIndex, HandleCount - 1);
-            FreePool(Handles);
+                  NicIndex, EFI_ERROR(Status) ? 0 : SnpCount - 1);
+            if (SnpHandles) FreePool(SnpHandles);
+            FreePool(Ip4Handles);
             return EFI_NOT_FOUND;
         }
-        SelectedIdx = NicIndex;
+        SelectedIp4Handle = FindIp4HandleForSnp(SnpHandles[NicIndex]);
+        if (SelectedIp4Handle == NULL) {
+            Print(L"ERROR: NIC %d has no IP4 stack (try 'connect -r' first)\n", NicIndex);
+            FreePool(SnpHandles);
+            FreePool(Ip4Handles);
+            return EFI_NOT_FOUND;
+        }
+        FreePool(SnpHandles);
+    } else {
+        // Auto-select: find first NIC that already has an IP
+        for (UINTN i = 0; i < Ip4Count; i++) {
+            NETWORK_INTERFACE_INFO TmpInfo;
+            if (!EFI_ERROR(CheckExistingIp(Ip4Handles[i], &TmpInfo))) {
+                SelectedIp4Handle = Ip4Handles[i];
+                Print(L"  Found NIC with IP %d.%d.%d.%d\n",
+                      TmpInfo.Ip.Addr[0], TmpInfo.Ip.Addr[1],
+                      TmpInfo.Ip.Addr[2], TmpInfo.Ip.Addr[3]);
+                break;
+            }
+        }
+        // If none have an IP yet, use first handle and DHCP
+        if (SelectedIp4Handle == NULL) {
+            SelectedIp4Handle = Ip4Handles[0];
+        }
     }
 
-    EFI_HANDLE SelectedHandle = Handles[SelectedIdx];
-    mNicHandle = SelectedHandle;
-    FreePool(Handles);
+    mNicHandle = SelectedIp4Handle;
+    FreePool(Ip4Handles);
 
-    // Check link before attempting IP configuration
-    Status = CheckLinkStatus(SelectedHandle);
-    if (EFI_ERROR(Status)) {
-        return Status;
-    }
+    // Check link (warning only)
+    CheckLinkStatus(SelectedIp4Handle);
 
     // Static IP requested?
     if (StaticIp != NULL) {
-        Status = ConfigureStaticIp(SelectedHandle, StaticIp);
+        Status = ConfigureStaticIp(SelectedIp4Handle, StaticIp);
         if (EFI_ERROR(Status)) {
             Print(L"ERROR: Failed to set static IP: %r\n", Status);
             return Status;
         }
-        // Brief wait for the stack to apply the config
         gBS->Stall(500000);
     }
 
     // Check if NIC already has an IP
-    Status = CheckExistingIp(SelectedHandle, &mIfaceInfo);
+    Status = CheckExistingIp(SelectedIp4Handle, &mIfaceInfo);
     if (!EFI_ERROR(Status)) {
         mInitialized = TRUE;
         return EFI_SUCCESS;
     }
 
     // No IP yet — run DHCP via IP4Config2
-    Print(L"  DHCP on interface %d...\n", SelectedIdx);
-    Status = ConfigureDhcpViaIp4Config2(SelectedHandle, TimeoutSeconds);
+    Print(L"  DHCP...\n");
+    Status = ConfigureDhcpViaIp4Config2(SelectedIp4Handle, TimeoutSeconds);
     if (EFI_ERROR(Status)) {
         Print(L"ERROR: DHCP timeout after %ds\n", TimeoutSeconds);
         return EFI_TIMEOUT;
     }
 
     // Re-read the assigned IP
-    Status = CheckExistingIp(SelectedHandle, &mIfaceInfo);
+    Status = CheckExistingIp(SelectedIp4Handle, &mIfaceInfo);
     if (EFI_ERROR(Status)) {
         Print(L"ERROR: DHCP completed but no IP assigned\n");
         return EFI_DEVICE_ERROR;

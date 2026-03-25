@@ -27,6 +27,10 @@
   UefiBootServicesTableLib
   UefiLib
   PrintLib
+  DevicePathLib
+
+[Guids]
+  gEfiFileInfoGuid
 
 [Protocols]
   gEfiSimpleNetworkProtocolGuid
@@ -34,3 +38,5 @@
   gEfiDhcp4ServiceBindingProtocolGuid
   gEfiDhcp4ProtocolGuid
   gEfiTcp4ServiceBindingProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+  gEfiLoadedImageProtocolGuid
