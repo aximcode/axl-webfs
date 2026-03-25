@@ -9,21 +9,12 @@ SCRIPT_START_TIME=$(date +%s)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-EDK2_DIR="${EDK2_DIR:-$HOME/projects/edk2}"
 PARALLEL_JOBS=$(nproc)
 BUILD_TIMEOUT=600
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
-log_warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error()   { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+# Shared library (logging, EDK2 setup, QEMU/firmware discovery)
+BOOTKIT_DIR="${BOOTKIT_DIR:-$HOME/projects/aximcode/uefi-bootkit}"
+source "$BOOTKIT_DIR/common.sh"
 
 # Parse arguments
 CLEAN_BUILD="FALSE"
@@ -73,13 +64,6 @@ if [ ${#BUILD_ARCHS[@]} -eq 0 ]; then
     BUILD_ARCHS=(X64 AARCH64)
 fi
 
-# Verify EDK2
-if [ ! -d "$EDK2_DIR" ]; then
-    log_error "EDK2 not found at $EDK2_DIR"
-    log_error "Set EDK2_DIR or clone edk2 to ~/projects/edk2"
-    exit 1
-fi
-
 # Verify source
 log_info "Verifying source code..."
 REQUIRED_FILES=(
@@ -105,23 +89,7 @@ if [ "$CLEAN_BUILD" = "TRUE" ]; then
 fi
 
 # Set up build environment
-log_info "Setting up build environment..."
-
-cd "$PROJECT_ROOT"
-export WORKSPACE="$PROJECT_ROOT"
-export PACKAGES_PATH="$PROJECT_ROOT:$EDK2_DIR"
-export EDK_TOOLS_PATH="$EDK2_DIR/BaseTools"
-export CONF_PATH="$PROJECT_ROOT/Conf"
-export GCC5_AARCH64_PREFIX=aarch64-linux-gnu-
-
-mkdir -p "$CONF_PATH"
-
-pushd "$EDK2_DIR" > /dev/null
-source edksetup.sh BaseTools
-popd > /dev/null
-
-cd "$PROJECT_ROOT"
-log_success "Build environment ready"
+setup_edk2 "$PROJECT_ROOT" || exit 1
 
 # Build for each architecture
 mkdir -p "$PROJECT_ROOT/build/binaries"
