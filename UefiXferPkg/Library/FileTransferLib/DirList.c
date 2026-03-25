@@ -41,12 +41,25 @@ EFI_STATUS EFIAPI FileTransferListVolumes(
         Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, "]");
     } else {
         Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-            "<html><head><title>UefiXfer — Volumes</title>"
-            "<style>body{font-family:monospace;margin:2em}"
-            "a{text-decoration:none}table{border-collapse:collapse}"
-            "td,th{padding:4px 12px;text-align:left}"
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            "<title>UefiXfer &mdash; Volumes</title>"
+            "<style>"
+            "body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,"
+            "BlinkMacSystemFont,\"Segoe UI\",Roboto,monospace;margin:0;padding:2em}"
+            "a{color:#4a9eff;text-decoration:none}a:hover{color:#6ab4ff}"
+            "h2{color:#4a9eff;margin-bottom:.3em}"
+            ".crumb{color:#8888aa;margin-bottom:1.5em;font-size:.9em}"
+            ".card{background:#16213e;border:1px solid #0f3460;border-radius:8px;"
+            "padding:1.5em;max-width:900px}"
+            "table{border-collapse:collapse;width:100%%}"
+            "th{text-align:left;padding:8px 12px;border-bottom:2px solid #0f3460;"
+            "color:#8888aa;font-size:.85em;text-transform:uppercase}"
+            "td{padding:8px 12px;border-bottom:1px solid #0f3460}"
+            "tr:hover{background:#1a4a80}"
             "</style></head><body>"
-            "<h2>UefiXfer — UEFI Volumes</h2><table>"
+            "<h2>UefiXfer</h2>"
+            "<div class=\"crumb\">Volumes</div>"
+            "<div class=\"card\"><table>"
             "<tr><th>Volume</th></tr>");
 
         for (UINTN i = 0; i < Count; i++) {
@@ -57,7 +70,7 @@ EFI_STATUS EFIAPI FileTransferListVolumes(
         }
 
         Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-            "</table></body></html>");
+            "</table></div></body></html>");
     }
 
     *Written = Pos;
@@ -105,16 +118,101 @@ EFI_STATUS EFIAPI FileTransferListDir(
     if (AsJson) {
         Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, "[");
     } else {
-        // Build path string for title
         Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-            "<html><head><title>%s:%s</title>"
-            "<style>body{font-family:monospace;margin:2em}"
-            "a{text-decoration:none}table{border-collapse:collapse}"
-            "td,th{padding:4px 12px;text-align:left}"
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            "<title>%s:%s</title>"
+            "<style>"
+            "body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,"
+            "BlinkMacSystemFont,\"Segoe UI\",Roboto,monospace;margin:0;padding:2em}"
+            "a{color:#4a9eff;text-decoration:none}a:hover{color:#6ab4ff}"
+            "h2{color:#4a9eff;margin-bottom:.3em}"
+            ".crumb{color:#8888aa;margin-bottom:1.5em;font-size:.9em}"
+            ".crumb a{color:#4a9eff}"
+            ".card{background:#16213e;border:1px solid #0f3460;border-radius:8px;"
+            "padding:1.5em;max-width:900px}"
+            "table{border-collapse:collapse;width:100%%}"
+            "th{text-align:left;padding:8px 12px;border-bottom:2px solid #0f3460;"
+            "color:#8888aa;font-size:.85em;text-transform:uppercase}"
+            "td{padding:8px 12px;border-bottom:1px solid #0f3460}"
+            "tr:hover{background:#1a4a80}"
+            ".sz{text-align:right;color:#8888aa;white-space:nowrap}"
+            ".dt{color:#8888aa;white-space:nowrap}.ty{color:#8888aa}"
             "</style></head><body>"
-            "<h2>%s:%s</h2><table>"
-            "<tr><th>Name</th><th>Size</th><th>Type</th></tr>",
-            Volume->Name, Path, Volume->Name, Path);
+            "<h2>UefiXfer</h2>",
+            Volume->Name, Path);
+
+        // Breadcrumb: Volumes / fs0: / path / subdir
+        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+            "<div class=\"crumb\"><a href=\"/\">Volumes</a>"
+            " / <a href=\"/%s/\">%s:</a>", Volume->Name, Volume->Name);
+
+        // Add path segments as breadcrumb links
+        {
+            CHAR8 Href[512];
+            UINTN HrefLen = AsciiSPrint(Href, sizeof(Href), "/%s", Volume->Name);
+            CHAR8 SegBuf[256];
+            UINTN si = 0;
+            UINTN pi = 0;
+            if (Path[0] == L'/') pi = 1;
+
+            while (Path[pi] != L'\0') {
+                if (Path[pi] == L'/') {
+                    SegBuf[si] = '\0';
+                    if (si > 0) {
+                        HrefLen += AsciiSPrint(Href + HrefLen,
+                            sizeof(Href) - HrefLen, "/%a", SegBuf);
+                        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+                            " / <a href=\"%a/\">%a</a>", Href, SegBuf);
+                    }
+                    si = 0;
+                } else {
+                    if (si < 255) SegBuf[si++] = (CHAR8)Path[pi];
+                }
+                pi++;
+            }
+            // Last segment (current directory — not a link)
+            if (si > 0) {
+                SegBuf[si] = '\0';
+                Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+                    " / %a", SegBuf);
+            }
+        }
+
+        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, "</div>");
+
+        // Determine parent link
+        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+            "<div class=\"card\"><table>"
+            "<tr><th>Name</th><th class=\"sz\">Size</th><th>Modified</th><th>Type</th></tr>");
+
+        // ".." parent directory link
+        {
+            // Find parent path: strip last segment from Path
+            CHAR8 ParentHref[512];
+            UINTN pi = 0;
+            while (Path[pi] != L'\0' && pi < 511) {
+                ParentHref[pi] = (CHAR8)Path[pi];
+                pi++;
+            }
+            ParentHref[pi] = '\0';
+            // Remove trailing slash
+            if (pi > 0 && ParentHref[pi - 1] == '/') ParentHref[--pi] = '\0';
+            // Find last slash
+            INTN Last = (INTN)pi - 1;
+            while (Last >= 0 && ParentHref[Last] != '/') Last--;
+            if (Last >= 0) {
+                ParentHref[Last + 1] = '\0';
+                Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+                    "<tr><td><a href=\"/%s%a\">..</a></td>"
+                    "<td class=\"sz\">&mdash;</td><td class=\"dt\"></td><td class=\"ty\">dir</td></tr>",
+                    Volume->Name, ParentHref);
+            } else {
+                // At volume root — parent is volume list
+                Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+                    "<tr><td><a href=\"/\">..</a></td>"
+                    "<td class=\"sz\">&mdash;</td><td class=\"dt\"></td><td class=\"ty\">dir</td></tr>");
+            }
+        }
     }
 
     // Read directory entries
@@ -140,14 +238,23 @@ EFI_STATUS EFIAPI FileTransferListDir(
                 Info->FileName, Info->FileSize,
                 IsDir ? "true" : "false");
         } else {
+            EFI_TIME *Mt = &Info->ModificationTime;
             if (IsDir) {
                 Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-                    "<tr><td><a href=\"%s/\">%s/</a></td><td>—</td><td>dir</td></tr>",
-                    Info->FileName, Info->FileName);
+                    "<tr><td><a href=\"%s/\">%s/</a></td>"
+                    "<td class=\"sz\">&mdash;</td>"
+                    "<td class=\"dt\">%04d-%02d-%02d %02d:%02d</td>"
+                    "<td class=\"ty\">dir</td></tr>",
+                    Info->FileName, Info->FileName,
+                    Mt->Year, Mt->Month, Mt->Day, Mt->Hour, Mt->Minute);
             } else {
                 Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-                    "<tr><td><a href=\"%s\">%s</a></td><td>%llu</td><td>file</td></tr>",
-                    Info->FileName, Info->FileName, Info->FileSize);
+                    "<tr><td><a href=\"%s\">%s</a></td>"
+                    "<td class=\"sz\">%llu</td>"
+                    "<td class=\"dt\">%04d-%02d-%02d %02d:%02d</td>"
+                    "<td class=\"ty\">file</td></tr>",
+                    Info->FileName, Info->FileName, Info->FileSize,
+                    Mt->Year, Mt->Month, Mt->Day, Mt->Hour, Mt->Minute);
             }
         }
 
@@ -158,7 +265,7 @@ EFI_STATUS EFIAPI FileTransferListDir(
         Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, "]");
     } else {
         Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-            "</table></body></html>");
+            "</table></div></body></html>");
     }
 
     Dir->Close(Dir);
