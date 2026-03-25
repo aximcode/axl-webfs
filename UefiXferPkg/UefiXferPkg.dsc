@@ -45,4 +45,5 @@
 
 [BuildOptions]
   GCC:*_*_*_CC_FLAGS = -Wno-unused-variable -Wno-unused-function
-  GCC:*_*_X64_CC_FLAGS = -mno-avx
+  # UEFI firmware does not enable AVX in CR4 — prevent GCC auto-vectorization
+  GCC:*_*_X64_CC_FLAGS = -mno-avx -mno-avx2
