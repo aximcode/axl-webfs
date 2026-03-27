@@ -74,7 +74,7 @@ NSH
 
 # Pass-through QEMU arguments
 QEMU_EXTRA_ARGS=()
-if [[ ${#QEMU_PASSTHROUGH[@]+x} && ${#QEMU_PASSTHROUGH[@]} -gt 0 ]]; then
+if [[ -n "${QEMU_PASSTHROUGH+x}" && ${#QEMU_PASSTHROUGH[@]} -gt 0 ]]; then
     QEMU_EXTRA_ARGS=("${QEMU_PASSTHROUGH[@]}")
 fi
 
