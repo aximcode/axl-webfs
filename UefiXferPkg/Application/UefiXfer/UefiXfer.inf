@@ -24,7 +24,10 @@
 
 [Packages]
   MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  ShellPkg/ShellPkg.dec
   UefiXferPkg/UefiXferPkg.dec
+  UdkLib/UdkLib.dec
 
 [LibraryClasses]
   UefiApplicationEntryPoint
@@ -35,11 +38,15 @@
   UefiBootServicesTableLib
   PrintLib
   DevicePathLib
+  ShellLib
   NetworkLib
   HttpClientLib
-  HttpServerLib
   FileTransferLib
   JsonLib
+  UdkLogLib
+  UdkDataLib
+  UdkLoopLib
+  UdkNetLib
 
 [Protocols]
   gEfiSimpleNetworkProtocolGuid
