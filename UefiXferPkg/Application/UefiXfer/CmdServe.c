@@ -589,6 +589,11 @@ CmdServe (
   UdkHttpServerSetBodyLimit (Server, 128 * 1024 * 1024);  // 128 MB
 
   //
+  // Disable keep-alive (avoids blocking on single-threaded server)
+  //
+  UdkHttpServerSetKeepAlive (Server, 0);
+
+  //
   // Permission middleware
   //
   if (Opts.ReadOnly || Opts.WriteOnly) {
