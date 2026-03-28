@@ -32,6 +32,28 @@
   DevicePathLib|MdePkg/Library/UefiDevicePathLib/UefiDevicePathLib.inf
   PcdLib|MdePkg/Library/BasePcdLibNull/BasePcdLibNull.inf
 
+  # Shell/HII support (needed by UdkLib)
+  ShellLib|ShellPkg/Library/UefiShellLib/UefiShellLib.inf
+  FileHandleLib|MdePkg/Library/UefiFileHandleLib/UefiFileHandleLib.inf
+  HiiLib|MdeModulePkg/Library/UefiHiiLib/UefiHiiLib.inf
+  SortLib|MdeModulePkg/Library/UefiSortLib/UefiSortLib.inf
+  UefiHiiServicesLib|MdeModulePkg/Library/UefiHiiServicesLib/UefiHiiServicesLib.inf
+  SynchronizationLib|MdePkg/Library/BaseSynchronizationLib/BaseSynchronizationLib.inf
+  CpuLib|MdePkg/Library/BaseCpuLib/BaseCpuLib.inf
+  TimerLib|MdePkg/Library/BaseTimerLibNullTemplate/BaseTimerLibNullTemplate.inf
+  RegisterFilterLib|MdePkg/Library/RegisterFilterLibNull/RegisterFilterLibNull.inf
+  NULL|MdePkg/Library/CompilerIntrinsicsLib/CompilerIntrinsicsLib.inf
+  StackCheckLib|MdePkg/Library/StackCheckLibNull/StackCheckLibNull.inf
+  StackCheckFailureHookLib|MdePkg/Library/StackCheckFailureHookLibNull/StackCheckFailureHookLibNull.inf
+
+  # UdkLib (from uefi-devkit via PACKAGES_PATH)
+  UdkLogLib|UdkLib/Log/UdkLog.inf
+  UdkDataLib|UdkLib/Data/UdkData.inf
+  UdkUtilLib|UdkLib/Util/UdkUtil.inf
+  UdkLoopLib|UdkLib/Loop/UdkLoop.inf
+  UdkTaskLib|UdkLib/Task/UdkTask.inf
+  UdkNetLib|UdkLib/Net/UdkNet.inf
+
   # UefiXferPkg libraries
   NetworkLib|UefiXferPkg/Library/NetworkLib/NetworkLib.inf
   HttpClientLib|UefiXferPkg/Library/HttpClientLib/HttpClientLib.inf
