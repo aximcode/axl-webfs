@@ -162,6 +162,13 @@ WebDavFsDriverEntry (
         return Status;
     }
 
+    // Build base URL for AxlHttpClient
+    AsciiSPrint(Private->BaseUrl, sizeof(Private->BaseUrl),
+                "http://%d.%d.%d.%d:%d",
+                Private->ServerAddr.Addr[0], Private->ServerAddr.Addr[1],
+                Private->ServerAddr.Addr[2], Private->ServerAddr.Addr[3],
+                Private->ServerPort);
+
     Print(L"WebDavFsDxe: Connecting to %d.%d.%d.%d:%d%a\n",
           Private->ServerAddr.Addr[0], Private->ServerAddr.Addr[1],
           Private->ServerAddr.Addr[2], Private->ServerAddr.Addr[3],
@@ -175,46 +182,30 @@ WebDavFsDriverEntry (
         return Status;
     }
 
-    // Get TCP ServiceBinding handle
-    Status = NetworkGetTcpServiceBinding(&Private->TcpSbHandle);
-    if (EFI_ERROR(Status)) {
-        Print(L"WebDavFsDxe: No TCP4 ServiceBinding: %r\n", Status);
+    // Create HTTP client
+    Private->HttpClient = AxlHttpClientNew();
+    if (Private->HttpClient == NULL) {
+        Print(L"WebDavFsDxe: Failed to create HTTP client\n");
         NetworkCleanup();
         FreePool(Private);
-        return Status;
-    }
-
-    // Connect to server
-    Status = HttpClientConnect(
-        ImageHandle, Private->TcpSbHandle,
-        Private->ServerAddr, Private->ServerPort,
-        HTTP_CONNECT_TIMEOUT_MS, &Private->HttpClient);
-    if (EFI_ERROR(Status)) {
-        Print(L"WebDavFsDxe: HTTP connect failed: %r\n", Status);
-        NetworkCleanup();
-        FreePool(Private);
-        return Status;
+        return EFI_OUT_OF_RESOURCES;
     }
 
     // Validate server with GET /info
-    HTTP_RESPONSE_CTX InfoResp;
-    Status = HttpClientRequest(
-        &Private->HttpClient, "GET", "/info", NULL, 0, NULL, 0, &InfoResp);
-    if (EFI_ERROR(Status) || InfoResp.StatusCode != 200) {
+    CHAR8 InfoUrl[320];
+    AsciiSPrint(InfoUrl, sizeof(InfoUrl), "%a/info", Private->BaseUrl);
+
+    AXL_HTTP_CLIENT_RESPONSE *InfoResp = NULL;
+    Status = AxlHttpGet(Private->HttpClient, InfoUrl, &InfoResp);
+    if (EFI_ERROR(Status) || InfoResp == NULL || InfoResp->StatusCode != 200) {
         Print(L"WebDavFsDxe: Server validation failed\n");
-        HttpClientClose(&Private->HttpClient);
+        if (InfoResp != NULL) AxlHttpClientResponseFree(InfoResp);
+        AxlHttpClientFree(Private->HttpClient);
         NetworkCleanup();
         FreePool(Private);
         return EFI_DEVICE_ERROR;
     }
-
-    // Drain info response body
-    CHAR8 Drain[256];
-    UINTN DrainGot = 0;
-    while (!EFI_ERROR(HttpClientReadBody(
-               &Private->HttpClient, &InfoResp, Drain,
-               sizeof(Drain), &DrainGot)) && DrainGot > 0) {
-    }
+    AxlHttpClientResponseFree(InfoResp);
 
     // Set up SimpleFileSystem protocol
     Private->SimpleFs.Revision = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_REVISION;
@@ -224,7 +215,7 @@ WebDavFsDriverEntry (
     WEBDAVFS_DEVICE_PATH *DevPath = AllocateCopyPool(
         sizeof(WEBDAVFS_DEVICE_PATH), &mDevicePathTemplate);
     if (DevPath == NULL) {
-        HttpClientClose(&Private->HttpClient);
+        AxlHttpClientFree(Private->HttpClient);
         NetworkCleanup();
         FreePool(Private);
         return EFI_OUT_OF_RESOURCES;
@@ -242,7 +233,7 @@ WebDavFsDriverEntry (
     if (EFI_ERROR(Status)) {
         Print(L"WebDavFsDxe: Protocol install failed: %r\n", Status);
         FreePool(DevPath);
-        HttpClientClose(&Private->HttpClient);
+        AxlHttpClientFree(Private->HttpClient);
         NetworkCleanup();
         FreePool(Private);
         return Status;
@@ -271,8 +262,8 @@ WebDavFsDriverUnload (
         &gEfiDevicePathProtocolGuid, mPrivate->DevicePath,
         NULL);
 
-    // Close HTTP connection
-    HttpClientClose(&mPrivate->HttpClient);
+    // Close HTTP client
+    AxlHttpClientFree(mPrivate->HttpClient);
 
     // Clean up networking
     NetworkCleanup();

@@ -109,32 +109,32 @@ VOID DirCacheInvalidate(
 // ----------------------------------------------------------------------------
 
 EFI_STATUS WebDavFsHttpRequest(
-    IN  WEBDAVFS_PRIVATE   *Private,
-    IN  CONST CHAR8        *Method,
-    IN  CONST CHAR8        *Path,
-    IN  HTTP_HEADER        *Headers      OPTIONAL,
-    IN  UINTN              HeaderCount,
-    IN  CONST VOID         *Body         OPTIONAL,
-    IN  UINTN              BodyLen,
-    OUT HTTP_RESPONSE_CTX  *Response
+    IN  WEBDAVFS_PRIVATE          *Private,
+    IN  CONST CHAR8               *Method,
+    IN  CONST CHAR8               *Path,
+    IN  AXL_HASH_TABLE            *ExtraHeaders  OPTIONAL,
+    IN  CONST VOID                *Body          OPTIONAL,
+    IN  UINTN                     BodyLen,
+    OUT AXL_HTTP_CLIENT_RESPONSE  **Response
 ) {
-    EFI_STATUS Status = HttpClientRequest(
-        &Private->HttpClient, Method, Path, Headers, HeaderCount,
-        Body, BodyLen, Response);
+    // Build full URL from base + path
+    CHAR8 Url[MAX_PATH_LEN + 280];
+    AsciiSPrint(Url, sizeof(Url), "%a%a", Private->BaseUrl, Path);
 
-    if (Status == EFI_CONNECTION_RESET || !Private->HttpClient.Connected) {
-        // Attempt reconnect
-        HttpClientClose(&Private->HttpClient);
-        Status = HttpClientConnect(
-            Private->ImageHandle, Private->TcpSbHandle,
-            Private->ServerAddr, Private->ServerPort,
-            HTTP_CONNECT_TIMEOUT_MS, &Private->HttpClient);
-        if (EFI_ERROR(Status)) return Status;
+    EFI_STATUS Status = AxlHttpRequest(
+        Private->HttpClient, Method, Url, Body, BodyLen,
+        NULL, ExtraHeaders, Response);
 
-        // Retry the request
-        Status = HttpClientRequest(
-            &Private->HttpClient, Method, Path, Headers, HeaderCount,
-            Body, BodyLen, Response);
+    if (EFI_ERROR(Status)) {
+        // Attempt reconnect: destroy client and recreate
+        AxlHttpClientFree(Private->HttpClient);
+        Private->HttpClient = AxlHttpClientNew();
+        if (Private->HttpClient == NULL) return EFI_OUT_OF_RESOURCES;
+
+        // Retry once
+        Status = AxlHttpRequest(
+            Private->HttpClient, Method, Url, Body, BodyLen,
+            NULL, ExtraHeaders, Response);
     }
 
     return Status;
@@ -162,30 +162,31 @@ EFI_STATUS DirCacheFetch(
     CHAR8 ListPath[MAX_PATH_LEN];
     AsciiSPrint(ListPath, sizeof(ListPath), "/list%a", Path);
 
-    HTTP_RESPONSE_CTX Response;
+    AXL_HTTP_CLIENT_RESPONSE *Response = NULL;
     EFI_STATUS Status = WebDavFsHttpRequest(
-        Private, "GET", ListPath, NULL, 0, NULL, 0, &Response);
-    if (EFI_ERROR(Status)) return Status;
+        Private, "GET", ListPath, NULL, NULL, 0, &Response);
+    if (EFI_ERROR(Status) || Response == NULL) return EFI_ERROR(Status) ? Status : EFI_DEVICE_ERROR;
 
-    if (Response.StatusCode == 404) return EFI_NOT_FOUND;
-    if (Response.StatusCode != 200) return EFI_DEVICE_ERROR;
-
-    // Read body
-    CHAR8 BodyBuf[HTTP_BODY_BUF_SIZE];
-    UINTN TotalRead = 0;
-    while (TotalRead < sizeof(BodyBuf) - 1) {
-        UINTN Got = 0;
-        Status = HttpClientReadBody(
-            &Private->HttpClient, &Response,
-            BodyBuf + TotalRead, sizeof(BodyBuf) - 1 - TotalRead, &Got);
-        if (EFI_ERROR(Status) || Got == 0) break;
-        TotalRead += Got;
+    if (Response->StatusCode == 404) {
+        AxlHttpClientResponseFree(Response);
+        return EFI_NOT_FOUND;
     }
-    BodyBuf[TotalRead] = '\0';
+    if (Response->StatusCode != 200) {
+        AxlHttpClientResponseFree(Response);
+        return EFI_DEVICE_ERROR;
+    }
+
+    // NUL-terminate body for JSON parsing
+    UINTN BodySize = Response->BodySize;
+    if (BodySize >= HTTP_BODY_BUF_SIZE) BodySize = HTTP_BODY_BUF_SIZE - 1;
+    CHAR8 BodyBuf[HTTP_BODY_BUF_SIZE];
+    CopyMem(BodyBuf, Response->Body, BodySize);
+    BodyBuf[BodySize] = '\0';
+    AxlHttpClientResponseFree(Response);
 
     // Parse JSON array
     JSON_CTX Ctx;
-    Status = JsonParse(BodyBuf, TotalRead, &Ctx);
+    Status = JsonParse(BodyBuf, BodySize, &Ctx);
     if (EFI_ERROR(Status)) return EFI_DEVICE_ERROR;
 
     // Find the root array (should be token 0)

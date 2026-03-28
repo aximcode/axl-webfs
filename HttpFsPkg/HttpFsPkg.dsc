@@ -32,7 +32,7 @@
   DevicePathLib|MdePkg/Library/UefiDevicePathLib/UefiDevicePathLib.inf
   PcdLib|MdePkg/Library/BasePcdLibNull/BasePcdLibNull.inf
 
-  # Shell/HII support (needed by UdkLib)
+  # Shell/HII support (needed by AxlLib)
   ShellLib|ShellPkg/Library/UefiShellLib/UefiShellLib.inf
   FileHandleLib|MdePkg/Library/UefiFileHandleLib/UefiFileHandleLib.inf
   HiiLib|MdeModulePkg/Library/UefiHiiLib/UefiHiiLib.inf
@@ -46,18 +46,16 @@
   StackCheckLib|MdePkg/Library/StackCheckLibNull/StackCheckLibNull.inf
   StackCheckFailureHookLib|MdePkg/Library/StackCheckFailureHookLibNull/StackCheckFailureHookLibNull.inf
 
-  # UdkLib (from uefi-devkit via PACKAGES_PATH)
-  UdkLogLib|UdkLib/Log/UdkLog.inf
-  UdkDataLib|UdkLib/Data/UdkData.inf
-  UdkUtilLib|UdkLib/Util/UdkUtil.inf
-  UdkLoopLib|UdkLib/Loop/UdkLoop.inf
-  UdkTaskLib|UdkLib/Task/UdkTask.inf
-  UdkNetLib|UdkLib/Net/UdkNet.inf
+  # AxlLib (from uefi-devkit via PACKAGES_PATH)
+  AxlLogLib|AxlPkg/Lib/Log/AxlLog.inf
+  AxlDataLib|AxlPkg/Lib/Data/AxlData.inf
+  AxlUtilLib|AxlPkg/Lib/Util/AxlUtil.inf
+  AxlLoopLib|AxlPkg/Lib/Loop/AxlLoop.inf
+  AxlTaskLib|AxlPkg/Lib/Task/AxlTask.inf
+  AxlNetLib|AxlPkg/Lib/Net/AxlNet.inf
 
   # HttpFsPkg libraries
   NetworkLib|HttpFsPkg/Library/NetworkLib/NetworkLib.inf
-  HttpClientLib|HttpFsPkg/Library/HttpClientLib/HttpClientLib.inf
-  HttpServerLib|HttpFsPkg/Library/HttpServerLib/HttpServerLib.inf
   FileTransferLib|HttpFsPkg/Library/FileTransferLib/FileTransferLib.inf
   JsonLib|HttpFsPkg/Library/JsonLib/JsonLib.inf
 

@@ -27,7 +27,7 @@
   MdeModulePkg/MdeModulePkg.dec
   ShellPkg/ShellPkg.dec
   HttpFsPkg/HttpFsPkg.dec
-  UdkLib/UdkLib.dec
+  AxlPkg/AxlPkg.dec
 
 [LibraryClasses]
   UefiApplicationEntryPoint
@@ -40,13 +40,12 @@
   DevicePathLib
   ShellLib
   NetworkLib
-  HttpClientLib
   FileTransferLib
   JsonLib
-  UdkLogLib
-  UdkDataLib
-  UdkLoopLib
-  UdkNetLib
+  AxlLogLib
+  AxlDataLib
+  AxlLoopLib
+  AxlNetLib
 
 [Protocols]
   gEfiSimpleNetworkProtocolGuid

@@ -25,7 +25,10 @@
 
 [Packages]
   MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  ShellPkg/ShellPkg.dec
   HttpFsPkg/HttpFsPkg.dec
+  AxlPkg/AxlPkg.dec
 
 [LibraryClasses]
   UefiDriverEntryPoint
@@ -38,15 +41,15 @@
   PrintLib
   DevicePathLib
   NetworkLib
-  HttpClientLib
   JsonLib
+  AxlLogLib
+  AxlDataLib
+  AxlNetLib
 
 [Protocols]
   gEfiSimpleFileSystemProtocolGuid
   gEfiDevicePathProtocolGuid
   gEfiLoadedImageProtocolGuid
-  gEfiTcp4ServiceBindingProtocolGuid
-  gEfiTcp4ProtocolGuid
   gEfiIp4Config2ProtocolGuid
   gEfiSimpleNetworkProtocolGuid
 

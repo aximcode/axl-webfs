@@ -31,8 +31,9 @@
 #include <Guid/FileSystemVolumeLabelInfo.h>
 
 #include <Library/NetworkLib.h>
-#include <Library/HttpClientLib.h>
 #include <Library/JsonLib.h>
+#include <Library/AxlLib.h>
+#include <Library/AxlNet.h>
 
 // ----------------------------------------------------------------------------
 // Constants
@@ -46,7 +47,6 @@
 #define DIR_CACHE_MAX_ENTRIES        64       ///< Max files per cached directory.
 #define READAHEAD_BUF_SIZE           (64 * 1024)
 #define MAX_PATH_LEN                 512
-#define HTTP_CONNECT_TIMEOUT_MS      5000
 #define HTTP_BODY_BUF_SIZE           4096
 #define DEFAULT_SERVER_PORT          8080
 
@@ -86,12 +86,12 @@ typedef struct {
     EFI_DEVICE_PATH_PROTOCOL            *DevicePath;
 
     /// Server connection.
-    HTTP_CLIENT                         HttpClient;
+    AXL_HTTP_CLIENT                     *HttpClient;
     EFI_IPv4_ADDRESS                    ServerAddr;
     UINT16                              ServerPort;
     CHAR8                               BasePath[256];
+    CHAR8                               BaseUrl[280];
     BOOLEAN                             ReadOnly;
-    EFI_HANDLE                          TcpSbHandle;
 
     /// Directory cache.
     DIR_CACHE_SLOT                      DirCache[DIR_CACHE_MAX_SLOTS];
@@ -165,6 +165,7 @@ EFI_STATUS DirCacheLookupEntry (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Di
 VOID DirCacheInvalidate (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Path);
 
 /// Issue an HTTP request with automatic reconnect on connection error.
-EFI_STATUS WebDavFsHttpRequest (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Method, IN CONST CHAR8 *Path, IN HTTP_HEADER *Headers OPTIONAL, IN UINTN HeaderCount, IN CONST VOID *Body OPTIONAL, IN UINTN BodyLen, OUT HTTP_RESPONSE_CTX *Response);
+/// Caller must free *Response with AxlHttpClientResponseFree().
+EFI_STATUS WebDavFsHttpRequest (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Method, IN CONST CHAR8 *Path, IN AXL_HASH_TABLE *ExtraHeaders OPTIONAL, IN CONST VOID *Body OPTIONAL, IN UINTN BodyLen, OUT AXL_HTTP_CLIENT_RESPONSE **Response);
 
 #endif // WEBDAVFS_INTERNAL_H_

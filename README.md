@@ -49,11 +49,10 @@ Two consumers backed by shared libraries:
 |-----------|------|-------------|
 | HttpFS.efi | Application | CLI: `serve`, `mount`, `umount`, `list-nics` |
 | WebDavFsDxe.efi | DXE Driver | Mounts remote directory as UEFI volume |
-| HttpServerLib | Library | TCP/HTTP/WebDAV server |
-| HttpClientLib | Library | HTTP client for mount |
 | FileTransferLib | Library | File I/O, streaming, SHA-256 |
 | NetworkLib | Library | NIC discovery, DHCP, static IP, link detection |
 | JsonLib | Library | Minimal JSON tokenizer |
+| UdkLib (external) | Library | HTTP server, HTTP client, logging, data structures |
 
 ## Build
 

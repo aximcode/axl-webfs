@@ -1,7 +1,7 @@
 /** @file
   HttpFS — serve command handler.
 
-  HTTP file server using UdkNet's UdkHttpServer. Registers route
+  HTTP file server using AxlNet's AxlHttpServer. Registers route
   handlers that map REST API endpoints to FileTransferLib operations.
 
   Copyright (c) 2026, AximCode. All rights reserved.
@@ -16,10 +16,10 @@
 #include <Library/PrintLib.h>
 #include <Library/NetworkLib.h>
 #include <Library/FileTransferLib.h>
-#include <Library/UdkLib.h>
-#include <Library/UdkNet.h>
+#include <Library/AxlLib.h>
+#include <Library/AxlNet.h>
 
-UDK_LOG_DOMAIN ("serve");
+AXL_LOG_DOMAIN ("serve");
 
 // ----------------------------------------------------------------------------
 // Options (passed as handler Data via route registration)
@@ -85,10 +85,10 @@ ParseVolumePath (
 /// Check if Accept header requests JSON.
 STATIC BOOLEAN
 WantsJson (
-  IN UDK_HTTP_REQUEST  *Req
+  IN AXL_HTTP_REQUEST  *Req
   )
 {
-  CONST CHAR8  *Accept = (CONST CHAR8 *)UdkHashGet (Req->Headers, "accept");
+  CONST CHAR8  *Accept = (CONST CHAR8 *)AxlHashGet (Req->Headers, "accept");
 
   if (Accept == NULL) {
     return FALSE;
@@ -114,8 +114,8 @@ STATIC
 EFI_STATUS
 EFIAPI
 PermissionMiddleware (
-  UDK_HTTP_REQUEST   *Req,
-  UDK_HTTP_RESPONSE  *Resp,
+  AXL_HTTP_REQUEST   *Req,
+  AXL_HTTP_RESPONSE  *Resp,
   VOID               *Data
   )
 {
@@ -126,14 +126,14 @@ PermissionMiddleware (
        AsciiStrCmp (Req->Method, "DELETE") == 0 ||
        AsciiStrCmp (Req->Method, "POST") == 0))
   {
-    UdkHttpResponseSetText (Resp, "Read-only mode\n");
-    UdkHttpResponseSetStatus (Resp, 403);
+    AxlHttpResponseSetText (Resp, "Read-only mode\n");
+    AxlHttpResponseSetStatus (Resp, 403);
     return EFI_ACCESS_DENIED;
   }
 
   if (Opts->WriteOnly && AsciiStrCmp (Req->Method, "GET") == 0) {
-    UdkHttpResponseSetText (Resp, "Write-only mode\n");
-    UdkHttpResponseSetStatus (Resp, 403);
+    AxlHttpResponseSetText (Resp, "Write-only mode\n");
+    AxlHttpResponseSetStatus (Resp, 403);
     return EFI_ACCESS_DENIED;
   }
 
@@ -149,8 +149,8 @@ STATIC
 EFI_STATUS
 EFIAPI
 HandleGetRoot (
-  UDK_HTTP_REQUEST   *Req,
-  UDK_HTTP_RESPONSE  *Resp,
+  AXL_HTTP_REQUEST   *Req,
+  AXL_HTTP_RESPONSE  *Resp,
   VOID               *Data
   )
 {
@@ -163,7 +163,7 @@ HandleGetRoot (
   FileTransferListVolumes (AsJson, Buf, sizeof (Buf), &Written);
 
   if (AsJson) {
-    UdkHttpResponseSetJson (Resp, Buf);
+    AxlHttpResponseSetJson (Resp, Buf);
   } else {
     Resp->Body = AllocatePool (Written);
     if (Resp->Body != NULL) {
@@ -183,8 +183,8 @@ STATIC
 EFI_STATUS
 EFIAPI
 HandleGetPath (
-  UDK_HTTP_REQUEST   *Req,
-  UDK_HTTP_RESPONSE  *Resp,
+  AXL_HTTP_REQUEST   *Req,
+  AXL_HTTP_RESPONSE  *Resp,
   VOID               *Data
   )
 {
@@ -197,16 +197,16 @@ HandleGetPath (
 
   Status = ParseVolumePath (Req->Path, &Volume, SubPath, 512);
   if (EFI_ERROR (Status)) {
-    UdkHttpResponseSetText (Resp, "Volume not found\n");
-    UdkHttpResponseSetStatus (Resp, 404);
+    AxlHttpResponseSetText (Resp, "Volume not found\n");
+    AxlHttpResponseSetStatus (Resp, 404);
     return EFI_SUCCESS;
   }
 
   IsDir = FALSE;
   Status = FileTransferIsDir (&Volume, SubPath, &IsDir);
   if (EFI_ERROR (Status)) {
-    UdkHttpResponseSetText (Resp, "Not found\n");
-    UdkHttpResponseSetStatus (Resp, 404);
+    AxlHttpResponseSetText (Resp, "Not found\n");
+    AxlHttpResponseSetStatus (Resp, 404);
     return EFI_SUCCESS;
   }
 
@@ -217,13 +217,13 @@ HandleGetPath (
 
     Status = FileTransferListDir (&Volume, SubPath, AsJson, Buf, sizeof (Buf), &Written);
     if (EFI_ERROR (Status)) {
-      UdkHttpResponseSetText (Resp, "Directory listing failed\n");
-      UdkHttpResponseSetStatus (Resp, 500);
+      AxlHttpResponseSetText (Resp, "Directory listing failed\n");
+      AxlHttpResponseSetStatus (Resp, 500);
       return EFI_SUCCESS;
     }
 
     if (AsJson) {
-      UdkHttpResponseSetJson (Resp, Buf);
+      AxlHttpResponseSetJson (Resp, Buf);
     } else {
       Resp->Body = AllocatePool (Written);
       if (Resp->Body != NULL) {
@@ -244,8 +244,8 @@ HandleGetPath (
   UINT64  FileSize = 0;
   Status = FileTransferGetFileSize (&Volume, SubPath, &FileSize);
   if (EFI_ERROR (Status)) {
-    UdkHttpResponseSetText (Resp, "File not found\n");
-    UdkHttpResponseSetStatus (Resp, 404);
+    AxlHttpResponseSetText (Resp, "File not found\n");
+    AxlHttpResponseSetStatus (Resp, 404);
     return EFI_SUCCESS;
   }
 
@@ -255,7 +255,7 @@ HandleGetPath (
   //
   // Handle Range header
   //
-  CONST CHAR8  *RangeHdr = (CONST CHAR8 *)UdkHashGet (Req->Headers, "range");
+  CONST CHAR8  *RangeHdr = (CONST CHAR8 *)AxlHashGet (Req->Headers, "range");
   if (RangeHdr != NULL && AsciiStrnCmp (RangeHdr, "bytes=", 6) == 0) {
     CONST CHAR8  *R = RangeHdr + 6;
     UINT64       Start = 0;
@@ -286,14 +286,14 @@ HandleGetPath (
       // Set Content-Range header
       //
       if (Resp->Headers == NULL) {
-        Resp->Headers = UdkHashNew ();
+        Resp->Headers = AxlHashNew ();
       }
 
       if (Resp->Headers != NULL) {
         CHAR8  RangeBuf[128];
         AsciiSPrint (RangeBuf, sizeof (RangeBuf),
           "bytes %Lu-%Lu/%Lu", (UINT64)Start, (UINT64)End, (UINT64)FileSize);
-        UdkHashSet (Resp->Headers, "content-range", UdkStrDup (RangeBuf));
+        AxlHashSet (Resp->Headers, "content-range", AxlStrDup (RangeBuf));
       }
     }
   }
@@ -304,16 +304,16 @@ HandleGetPath (
   FT_READ_CTX  ReadCtx;
   Status = FileTransferOpenRead (&Volume, SubPath, Offset, NULL, NULL, &ReadCtx);
   if (EFI_ERROR (Status)) {
-    UdkHttpResponseSetText (Resp, "Cannot open file\n");
-    UdkHttpResponseSetStatus (Resp, 500);
+    AxlHttpResponseSetText (Resp, "Cannot open file\n");
+    AxlHttpResponseSetStatus (Resp, 500);
     return EFI_SUCCESS;
   }
 
   VOID  *FileBuf = AllocatePool (SendSize);
   if (FileBuf == NULL) {
     FileTransferCloseRead (&ReadCtx);
-    UdkHttpResponseSetText (Resp, "Out of memory\n");
-    UdkHttpResponseSetStatus (Resp, 500);
+    AxlHttpResponseSetText (Resp, "Out of memory\n");
+    AxlHttpResponseSetStatus (Resp, 500);
     return EFI_SUCCESS;
   }
 
@@ -350,8 +350,8 @@ STATIC
 EFI_STATUS
 EFIAPI
 HandlePutPath (
-  UDK_HTTP_REQUEST   *Req,
-  UDK_HTTP_RESPONSE  *Resp,
+  AXL_HTTP_REQUEST   *Req,
+  AXL_HTTP_RESPONSE  *Resp,
   VOID               *Data
   )
 {
@@ -363,21 +363,21 @@ HandlePutPath (
 
   Status = ParseVolumePath (Req->Path, &Volume, SubPath, 512);
   if (EFI_ERROR (Status)) {
-    UdkHttpResponseSetText (Resp, "Volume not found\n");
-    UdkHttpResponseSetStatus (Resp, 404);
+    AxlHttpResponseSetText (Resp, "Volume not found\n");
+    AxlHttpResponseSetStatus (Resp, 404);
     return EFI_SUCCESS;
   }
 
   FT_WRITE_CTX  WriteCtx;
   Status = FileTransferOpenWrite (&Volume, SubPath, NULL, NULL, &WriteCtx);
   if (EFI_ERROR (Status)) {
-    UdkHttpResponseSetText (Resp, "Cannot create file\n");
-    UdkHttpResponseSetStatus (Resp, 500);
+    AxlHttpResponseSetText (Resp, "Cannot create file\n");
+    AxlHttpResponseSetStatus (Resp, 500);
     return EFI_SUCCESS;
   }
 
   //
-  // Write request body (already fully read by UdkHttpServer)
+  // Write request body (already fully read by AxlHttpServer)
   //
   if (Req->Body != NULL && Req->BodySize > 0) {
     UINTN  Written = 0;
@@ -398,8 +398,8 @@ HandlePutPath (
   }
 
   FileTransferCloseWrite (&WriteCtx);
-  UdkHttpResponseSetText (Resp, "Created\n");
-  UdkHttpResponseSetStatus (Resp, 201);
+  AxlHttpResponseSetText (Resp, "Created\n");
+  AxlHttpResponseSetStatus (Resp, 201);
   return EFI_SUCCESS;
 }
 
@@ -408,8 +408,8 @@ STATIC
 EFI_STATUS
 EFIAPI
 HandleDeletePath (
-  UDK_HTTP_REQUEST   *Req,
-  UDK_HTTP_RESPONSE  *Resp,
+  AXL_HTTP_REQUEST   *Req,
+  AXL_HTTP_RESPONSE  *Resp,
   VOID               *Data
   )
 {
@@ -421,19 +421,19 @@ HandleDeletePath (
 
   Status = ParseVolumePath (Req->Path, &Volume, SubPath, 512);
   if (EFI_ERROR (Status)) {
-    UdkHttpResponseSetText (Resp, "Volume not found\n");
-    UdkHttpResponseSetStatus (Resp, 404);
+    AxlHttpResponseSetText (Resp, "Volume not found\n");
+    AxlHttpResponseSetStatus (Resp, 404);
     return EFI_SUCCESS;
   }
 
   Status = FileTransferDelete (&Volume, SubPath);
   if (EFI_ERROR (Status)) {
-    UdkHttpResponseSetText (Resp, "Not found\n");
-    UdkHttpResponseSetStatus (Resp, 404);
+    AxlHttpResponseSetText (Resp, "Not found\n");
+    AxlHttpResponseSetStatus (Resp, 404);
     return EFI_SUCCESS;
   }
 
-  UdkHttpResponseSetText (Resp, "Deleted\n");
+  AxlHttpResponseSetText (Resp, "Deleted\n");
   return EFI_SUCCESS;
 }
 
@@ -442,8 +442,8 @@ STATIC
 EFI_STATUS
 EFIAPI
 HandlePostPath (
-  UDK_HTTP_REQUEST   *Req,
-  UDK_HTTP_RESPONSE  *Resp,
+  AXL_HTTP_REQUEST   *Req,
+  AXL_HTTP_RESPONSE  *Resp,
   VOID               *Data
   )
 {
@@ -454,27 +454,27 @@ HandlePostPath (
   (VOID)Data;
 
   if (Req->Query == NULL || AsciiStrCmp (Req->Query, "mkdir") != 0) {
-    UdkHttpResponseSetText (Resp, "Use ?mkdir\n");
-    UdkHttpResponseSetStatus (Resp, 400);
+    AxlHttpResponseSetText (Resp, "Use ?mkdir\n");
+    AxlHttpResponseSetStatus (Resp, 400);
     return EFI_SUCCESS;
   }
 
   Status = ParseVolumePath (Req->Path, &Volume, SubPath, 512);
   if (EFI_ERROR (Status)) {
-    UdkHttpResponseSetText (Resp, "Volume not found\n");
-    UdkHttpResponseSetStatus (Resp, 404);
+    AxlHttpResponseSetText (Resp, "Volume not found\n");
+    AxlHttpResponseSetStatus (Resp, 404);
     return EFI_SUCCESS;
   }
 
   Status = FileTransferMkdir (&Volume, SubPath);
   if (EFI_ERROR (Status)) {
-    UdkHttpResponseSetText (Resp, "mkdir failed\n");
-    UdkHttpResponseSetStatus (Resp, 500);
+    AxlHttpResponseSetText (Resp, "mkdir failed\n");
+    AxlHttpResponseSetStatus (Resp, 500);
     return EFI_SUCCESS;
   }
 
-  UdkHttpResponseSetText (Resp, "Created\n");
-  UdkHttpResponseSetStatus (Resp, 201);
+  AxlHttpResponseSetText (Resp, "Created\n");
+  AxlHttpResponseSetStatus (Resp, 201);
   return EFI_SUCCESS;
 }
 
@@ -482,7 +482,7 @@ HandlePostPath (
 // ESC key handler for the event loop
 // ----------------------------------------------------------------------------
 
-STATIC UDK_LOOP  *mServeLoop = NULL;
+STATIC AXL_LOOP  *mServeLoop = NULL;
 
 STATIC
 BOOLEAN
@@ -497,7 +497,7 @@ EscKeyHandler (
   if (Key.ScanCode == SCAN_ESC) {
     Print (L"\nESC \u2014 stopping server.\n");
     if (mServeLoop != NULL) {
-      UdkLoopQuit (mServeLoop);
+      AxlLoopQuit (mServeLoop);
     }
 
     return FALSE;
@@ -519,7 +519,7 @@ CmdServe (
 {
   SERVE_OPTIONS    Opts;
   EFI_STATUS       Status;
-  UDK_HTTP_SERVER  *Server;
+  AXL_HTTP_SERVER  *Server;
 
   Opts.Port = 8080;
   Opts.NicIndex = (UINTN)-1;
@@ -579,35 +579,35 @@ CmdServe (
   //
   // Create HTTP server
   //
-  Server = UdkHttpServerNew (Opts.Port);
+  Server = AxlHttpServerNew (Opts.Port);
   if (Server == NULL) {
     Print (L"ERROR: HTTP server creation failed\n");
     NetworkCleanup ();
     return EFI_OUT_OF_RESOURCES;
   }
 
-  UdkHttpServerSetBodyLimit (Server, 128 * 1024 * 1024);  // 128 MB
+  AxlHttpServerSetBodyLimit (Server, 128 * 1024 * 1024);  // 128 MB
 
   //
   // Disable keep-alive (avoids blocking on single-threaded server)
   //
-  UdkHttpServerSetKeepAlive (Server, 0);
+  AxlHttpServerSetKeepAlive (Server, 0);
 
   //
   // Permission middleware
   //
   if (Opts.ReadOnly || Opts.WriteOnly) {
-    UdkHttpServerUse (Server, PermissionMiddleware, &Opts);
+    AxlHttpServerUse (Server, PermissionMiddleware, &Opts);
   }
 
   //
   // Register routes (exact root match first, then prefix matches)
   //
-  UdkHttpServerAddRoute (Server, "GET",    "/",  HandleGetRoot,   NULL);
-  UdkHttpServerAddRoute (Server, "GET",    "/*", HandleGetPath,   NULL);
-  UdkHttpServerAddRoute (Server, "PUT",    "/*", HandlePutPath,   NULL);
-  UdkHttpServerAddRoute (Server, "DELETE", "/*", HandleDeletePath, NULL);
-  UdkHttpServerAddRoute (Server, "POST",   "/*", HandlePostPath,  NULL);
+  AxlHttpServerAddRoute (Server, "GET",    "/",  HandleGetRoot,   NULL);
+  AxlHttpServerAddRoute (Server, "GET",    "/*", HandleGetPath,   NULL);
+  AxlHttpServerAddRoute (Server, "PUT",    "/*", HandlePutPath,   NULL);
+  AxlHttpServerAddRoute (Server, "DELETE", "/*", HandleDeletePath, NULL);
+  AxlHttpServerAddRoute (Server, "POST",   "/*", HandlePostPath,  NULL);
 
   //
   // Print banner
@@ -640,30 +640,30 @@ CmdServe (
   //
   // Run server with event loop (ESC to quit)
   //
-  UDK_LOOP  *Loop = UdkLoopNew ();
+  AXL_LOOP  *Loop = AxlLoopNew ();
   if (Loop == NULL) {
-    UdkHttpServerFree (Server);
+    AxlHttpServerFree (Server);
     NetworkCleanup ();
     return EFI_OUT_OF_RESOURCES;
   }
 
   mServeLoop = Loop;
-  UdkLoopAddKeyPress (Loop, EscKeyHandler, NULL);
+  AxlLoopAddKeyPress (Loop, EscKeyHandler, NULL);
 
-  Status = UdkHttpServerAttach (Server, Loop);
+  Status = AxlHttpServerAttach (Server, Loop);
   if (EFI_ERROR (Status)) {
     Print (L"ERROR: Server attach failed: %r\n", Status);
-    UdkLoopFree (Loop);
-    UdkHttpServerFree (Server);
+    AxlLoopFree (Loop);
+    AxlHttpServerFree (Server);
     NetworkCleanup ();
     return Status;
   }
 
-  Status = UdkLoopRun (Loop);
+  Status = AxlLoopRun (Loop);
 
   mServeLoop = NULL;
-  UdkLoopFree (Loop);
-  UdkHttpServerFree (Server);
+  AxlLoopFree (Loop);
+  AxlHttpServerFree (Server);
   NetworkCleanup ();
   return Status;
 }
