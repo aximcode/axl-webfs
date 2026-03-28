@@ -1,7 +1,7 @@
 /** @file
-  UefiXfer — mount and umount command handlers.
+  HttpFS — mount and umount command handlers.
 
-  mount: Locates WebDavFsDxe.efi in the same directory as UefiXfer.efi,
+  mount: Locates WebDavFsDxe.efi in the same directory as HttpFS.efi,
   loads it via LoadImage/StartImage with the server URL in load options.
   umount: Finds the driver by vendor GUID device path and unloads it.
 
@@ -9,7 +9,7 @@
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
-#include "UefiXferInternal.h"
+#include "HttpFsInternal.h"
 
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
@@ -21,7 +21,7 @@
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/DevicePath.h>
 
-extern EFI_GUID gUefiXferVendorGuid;
+extern EFI_GUID gHttpFsVendorGuid;
 
 #define DRIVER_FILENAME  L"WebDavFsDxe.efi"
 
@@ -29,7 +29,7 @@ extern EFI_GUID gUefiXferVendorGuid;
 // Helpers
 // ----------------------------------------------------------------------------
 
-/// Build a device path to WebDavFsDxe.efi in the same directory as UefiXfer.efi.
+/// Build a device path to WebDavFsDxe.efi in the same directory as HttpFS.efi.
 static EFI_DEVICE_PATH_PROTOCOL * BuildDriverDevicePath(
     IN EFI_HANDLE  ImageHandle
 ) {
@@ -45,7 +45,7 @@ static EFI_DEVICE_PATH_PROTOCOL * BuildDriverDevicePath(
     if (FilePath == NULL) return NULL;
 
     // Walk the device path to find the file path node and extract directory
-    // The file path node contains something like "\UefiXfer.efi"
+    // The file path node contains something like "\HttpFS.efi"
     // We need to replace the filename with DRIVER_FILENAME
 
     // Build a new file path for the driver in the same directory
@@ -61,7 +61,7 @@ static BOOLEAN HasXferVendorNode(IN EFI_DEVICE_PATH_PROTOCOL *DevPath) {
         if (DevicePathType(DevPath) == HARDWARE_DEVICE_PATH &&
             DevicePathSubType(DevPath) == HW_VENDOR_DP) {
             VENDOR_DEVICE_PATH *Vendor = (VENDOR_DEVICE_PATH *)DevPath;
-            if (CompareGuid(&Vendor->Guid, &gUefiXferVendorGuid)) {
+            if (CompareGuid(&Vendor->Guid, &gHttpFsVendorGuid)) {
                 return TRUE;
             }
         }
@@ -80,7 +80,7 @@ EFI_STATUS CmdMount(
     IN CHAR16      **Argv
 ) {
     if (Argc < 1) {
-        Print(L"Usage: UefiXfer mount <url> [-r]\n");
+        Print(L"Usage: HttpFS mount <url> [-r]\n");
         Print(L"  url: http://<ip>:<port>/[path]\n");
         Print(L"  -r:  mount read-only\n");
         return EFI_INVALID_PARAMETER;

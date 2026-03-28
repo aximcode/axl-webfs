@@ -1,5 +1,5 @@
 /** @file
-  UefiXfer — serve command handler.
+  HttpFS — serve command handler.
 
   HTTP file server using UdkNet's UdkHttpServer. Registers route
   handlers that map REST API endpoints to FileTransferLib operations.
@@ -8,7 +8,7 @@
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
-#include "UefiXferInternal.h"
+#include "HttpFsInternal.h"
 
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
@@ -543,7 +543,7 @@ CmdServe (
     } else if (StrCmp (Argv[I], L"-v") == 0) {
       Opts.Verbose = TRUE;
     } else if (StrCmp (Argv[I], L"-h") == 0) {
-      Print (L"Usage: UefiXfer serve [options]\n");
+      Print (L"Usage: HttpFS serve [options]\n");
       Print (L"  -p <port>       Listen port (default: 8080)\n");
       Print (L"  -n <index>      NIC index\n");
       Print (L"  -t <seconds>    Idle timeout\n");
@@ -612,7 +612,7 @@ CmdServe (
   //
   // Print banner
   //
-  Print (L"\nUefiXfer v0.1 \u2014 UEFI HTTP File Server\n");
+  Print (L"\nHttpFS v0.1 \u2014 UEFI HTTP File Server\n");
   Print (L"Listening on %d.%d.%d.%d:%d\n",
     Addr.Addr[0], Addr.Addr[1], Addr.Addr[2], Addr.Addr[3], Opts.Port);
 

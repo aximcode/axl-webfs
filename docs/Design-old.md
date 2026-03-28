@@ -1,8 +1,8 @@
-# UefiXfer Design Document
+# HttpFS Design Document
 
 ## Overview
 
-UefiXfer is a lightweight UEFI Shell application that runs an HTTP file
+HttpFS is a lightweight UEFI Shell application that runs an HTTP file
 server, enabling bidirectional file transfer between a remote workstation
 and a UEFI host over the network. It exposes all UEFI filesystem volumes
 (FS0:, FS1:, etc.) via a simple REST API accessible with `curl`, a browser,
@@ -32,7 +32,7 @@ Strict separation of concerns — three layers with shared libraries:
 ┌─────────────────────────────────────────────────────────┐
 │  Application Layer                                      │
 │  ┌────────────────────────────────────────────────────┐ │
-│  │ Application/UefiXfer/Main.c                        │ │
+│  │ Application/HttpFS/Main.c                        │ │
 │  │   CLI parsing, mode dispatch, progress display,    │ │
 │  │   main poll loop, ESC handling                     │ │
 │  └──────────┬──────────────────────┬──────────────────┘ │
@@ -150,7 +150,7 @@ curl -C - http://192.168.1.100:8080/fs0/large.bin -o large.bin
 ## CLI Interface
 
 ```
-UefiXfer.efi [serve] [path] [options]
+HttpFS.efi [serve] [path] [options]
 
 Commands:
   serve [path]     Start HTTP file server (default command)
@@ -172,7 +172,7 @@ Press ESC to stop the server.
 ### Startup Output
 
 ```
-UefiXfer v1.0 — UEFI HTTP File Server
+HttpFS v1.0 — UEFI HTTP File Server
 Listening on 192.168.1.100:8080
 Mode: read-write
 Volumes:
@@ -210,9 +210,9 @@ scripts/
   qemu.sh                            QEMU launcher with port forwarding
   test.sh                            curl-based integration tests
   xfer.sh                            Client-side helper for recursive xfer
-UefiXferPkg/
-  UefiXferPkg.dec                    Package declaration
-  UefiXferPkg.dsc                    Build descriptor
+HttpFsPkg/
+  HttpFsPkg.dec                    Package declaration
+  HttpFsPkg.dsc                    Build descriptor
   Include/Library/
     HttpServerLib.h                  HTTP server public API
     FileTransferLib.h                File transfer public API
@@ -229,8 +229,8 @@ UefiXferPkg/
     NetworkLib/
       NetworkLib.inf                 Build file
       Network.c                      NIC discovery, DHCP, static IP
-  Application/UefiXfer/
-    UefiXfer.inf                     Module build file
+  Application/HttpFS/
+    HttpFS.inf                     Module build file
     Main.c                           Entry point, CLI, poll loop, progress
 ```
 
@@ -343,7 +343,7 @@ and serves volume/directory listings.
 ### Phase 4: Build + Test
 
 - `scripts/qemu.sh` — QEMU launcher with port forwarding
-  (`hostfwd=tcp::8080-:8080`), boots UefiXfer.efi via startup.nsh
+  (`hostfwd=tcp::8080-:8080`), boots HttpFS.efi via startup.nsh
 - `scripts/test.sh` — automated curl-based integration tests
 - Test both X64 and AARCH64 in QEMU
 
@@ -421,7 +421,7 @@ tools) to reuse the networking and file I/O without code duplication.
 
 ### QEMU Integration Tests
 
-`scripts/qemu.sh` boots UefiXfer.efi in QEMU with port forwarding
+`scripts/qemu.sh` boots HttpFS.efi in QEMU with port forwarding
 (`hostfwd=tcp::8080-:8080`). `scripts/test.sh` runs curl commands
 against `localhost:8080` and validates responses:
 
@@ -444,7 +444,7 @@ Tests run on both X64 and AARCH64 QEMU targets.
 
 On real ARM64 server hardware:
 1. Boot to UEFI Shell
-2. Run `UefiXfer.efi -v`
+2. Run `HttpFS.efi -v`
 3. From workstation: `curl -T IpmiTool.efi http://<server-ip>:8080/fs0/`
 4. Verify progress display on UEFI console
 5. In UEFI Shell: verify `ls fs0:\IpmiTool.efi` shows the file
@@ -472,7 +472,7 @@ mount_webdav http://192.168.1.100:8080/dav/fs0 /mnt/uefi
 
 **Remote command execution** via a "command drop" mechanism:
 
-- A companion DXE driver (`UefiXferCmdDxe`) watches a designated
+- A companion DXE driver (`HttpFSCmdDxe`) watches a designated
   directory (e.g., `fs0:\xfer\cmd\`) for `.nsh` files.
 - When a script appears (uploaded via WebDAV or HTTP PUT), the driver
   executes it via `EFI_SHELL_PROTOCOL->Execute()`.
@@ -481,7 +481,7 @@ mount_webdav http://192.168.1.100:8080/dav/fs0 /mnt/uefi
 
 This requires:
 - WebDAV protocol handler in HttpServerLib (~800 lines of XML/PROPFIND)
-- UefiXferCmdDxe driver (filesystem watcher + shell execution)
+- HttpFSCmdDxe driver (filesystem watcher + shell execution)
 - Security consideration: command execution should be opt-in (`--enable-cmd`)
 
 The library split (HttpServerLib, FileTransferLib, NetworkLib) is designed

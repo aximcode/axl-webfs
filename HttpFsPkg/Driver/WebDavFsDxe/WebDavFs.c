@@ -229,7 +229,7 @@ WebDavFsDriverEntry (
         FreePool(Private);
         return EFI_OUT_OF_RESOURCES;
     }
-    CopyMem(&DevPath->Vendor.Guid, &gUefiXferVendorGuid, sizeof(EFI_GUID));
+    CopyMem(&DevPath->Vendor.Guid, &gHttpFsVendorGuid, sizeof(EFI_GUID));
     Private->DevicePath = (EFI_DEVICE_PATH_PROTOCOL *)DevPath;
 
     // Install protocols on a new handle

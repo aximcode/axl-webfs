@@ -1,8 +1,8 @@
-# UefiXfer Design Document
+# HttpFS Design Document
 
 ## Overview
 
-UefiXfer is a UEFI toolkit for bidirectional file transfer and remote
+HttpFS is a UEFI toolkit for bidirectional file transfer and remote
 filesystem access between a workstation and a UEFI host. It provides
 two core capabilities:
 
@@ -51,7 +51,7 @@ Strict separation of concerns with shared libraries:
 │  Application / Driver Layer                                     │
 │                                                                 │
 │  ┌──────────────────────┐  ┌─────────────────────────────────┐ │
-│  │ Application/UefiXfer  │  │ Driver/WebDavFsDxe              │ │
+│  │ Application/HttpFS  │  │ Driver/WebDavFsDxe              │ │
 │  │                       │  │                                 │ │
 │  │ CLI: serve, mount,    │  │ DXE driver (stays resident)     │ │
 │  │      umount           │  │ Installs EFI_SIMPLE_FILE_SYSTEM │ │
@@ -91,7 +91,7 @@ Strict separation of concerns with shared libraries:
 
 ### Layer Rules
 
-1. **UefiXfer.efi** (Application) — CLI parsing, dispatch `serve`/
+1. **HttpFS.efi** (Application) — CLI parsing, dispatch `serve`/
    `mount`/`umount` commands. For `serve`: progress display, poll loop,
    ESC handling. For `mount`: load WebDavFsDxe driver, pass URL, exit.
 2. **WebDavFsDxe.efi** (DXE Driver) — stays resident after load.
@@ -139,7 +139,7 @@ Workstation                              UEFI Host
 
 ### Protocol (v1 — Simple HTTP/JSON)
 
-The workstation runs `xfer-server.py` (provided with UefiXfer). The
+The workstation runs `xfer-server.py` (provided with HttpFS). The
 protocol is plain HTTP with JSON directory listings — no WebDAV XML
 parsing needed on the UEFI side:
 
@@ -191,27 +191,27 @@ workstation always has the latest data and avoids data loss.
 ### CLI
 
 ```
-UefiXfer.efi mount <url> [options]
-UefiXfer.efi umount <volume>
+HttpFS.efi mount <url> [options]
+HttpFS.efi umount <volume>
 
 Mount options:
   -r               Mount read-only
   -c <seconds>     Directory cache TTL (default: 2)
 
 Examples:
-  UefiXfer.efi mount http://10.0.0.5:8080/
+  HttpFS.efi mount http://10.0.0.5:8080/
   Mounting http://10.0.0.5:8080/ ...
   Loading WebDavFs driver... OK
   Mapped as FS1:
 
   Shell> ls fs1:\builds\
     IpmiTool.efi    48,384  03/17/2026
-    UefiXfer.efi    62,720  03/17/2026
+    HttpFS.efi    62,720  03/17/2026
 
   Shell> fs1:\builds\IpmiTool.efi mc info
     Device ID: 0x20 ...
 
-  UefiXfer.efi umount fs1:
+  HttpFS.efi umount fs1:
   Unmounting FS1:... OK
 ```
 
@@ -235,7 +235,7 @@ Output:
 ```
 xfer-server v1.0
 Serving /home/user/share on 0.0.0.0:8080
-Ready for UefiXfer mount connections.
+Ready for HttpFS mount connections.
 ```
 
 ## Serve Command
@@ -348,7 +348,7 @@ net use Z: \\192.168.1.100@8080\fs0
 ### CLI
 
 ```
-UefiXfer.efi [serve] [path] [options]
+HttpFS.efi [serve] [path] [options]
 
 Options:
   -p <port>        HTTP listen port (default: 8080)
@@ -367,7 +367,7 @@ Press ESC to stop the server.
 ### Startup Output
 
 ```
-UefiXfer v1.0 — UEFI HTTP File Server
+HttpFS v1.0 — UEFI HTTP File Server
 Listening on 192.168.1.100:8080
 Mode: read-write (WebDAV enabled)
 Volumes:
@@ -406,9 +406,9 @@ scripts/
   test.sh                              Automated integration tests
   xfer.sh                              Client-side recursive transfer helper
   xfer-server.py                       Workstation file server for mount
-UefiXferPkg/
-  UefiXferPkg.dec                      Package declaration
-  UefiXferPkg.dsc                      Build descriptor
+HttpFsPkg/
+  HttpFsPkg.dec                      Package declaration
+  HttpFsPkg.dsc                      Build descriptor
   Include/Library/
     NetworkLib.h                       Network init public API
     HttpClientLib.h                    HTTP client public API
@@ -440,8 +440,8 @@ UefiXferPkg/
     WebDavFsFile.c                     EFI_FILE_PROTOCOL implementation
     WebDavFsCache.c                    Directory cache + read-ahead buffer
     WebDavFsInternal.h                 Internal types
-  Application/UefiXfer/
-    UefiXfer.inf                       Module build file
+  Application/HttpFS/
+    HttpFS.inf                       Module build file
     Main.c                             Entry point, CLI dispatch
     CmdServe.c                         serve command: poll loop, progress
     CmdMount.c                         mount/umount: driver load/unload
@@ -488,7 +488,7 @@ identify which NIC index to pass with `-n`.
 
 ### Platform Compatibility: ConnectController vs Driver Loading
 
-UefiXfer uses a **ConnectController-only** approach — it assumes NIC
+HttpFS uses a **ConnectController-only** approach — it assumes NIC
 drivers are already present in firmware ROM and just needs to connect
 the upper network stack layers. This is sufficient when:
 
@@ -511,7 +511,7 @@ disconnects broken firmware drivers before rebinding (NIC takeover).
 **For ARM64 server**: unknown whether firmware includes
 working NIC drivers. To diagnose:
 
-1. Boot UefiXfer and run `list-nics`
+1. Boot HttpFS and run `list-nics`
 2. If SNP handles appear with MAC addresses — ConnectController is
    sufficient, current approach works
 3. If no handles appear — need to add SoftBMC-style driver loading
@@ -583,15 +583,15 @@ The killer feature — mount remote filesystem as UEFI volume.
 - Read-ahead buffer (64 KB prefetch for sequential reads)
 - Install protocol on new device handle with device path
 
-**CmdMount.c (in UefiXfer.efi):**
+**CmdMount.c (in HttpFS.efi):**
 - `mount <url>` — locate WebDavFsDxe.efi (same directory as
-  UefiXfer.efi), call `LoadImage()` + `StartImage()` with URL
+  HttpFS.efi), call `LoadImage()` + `StartImage()` with URL
   in load options
 - `umount <volume>` — locate driver handle by volume mapping,
   call `UnloadImage()`
 - Print volume mapping after successful mount
 
-**Delivers:** `UefiXfer.efi mount http://10.0.0.5:8080/` creates FS1:
+**Delivers:** `HttpFS.efi mount http://10.0.0.5:8080/` creates FS1:
 accessible from the UEFI Shell. Files on the workstation are instantly
 visible and executable.
 
@@ -621,7 +621,7 @@ HTTP file server on the UEFI host.
 - `FileTransferInit()`, `FileTransferListVolumes()`,
   `FileTransferReadFile()`, `FileTransferWriteFile()`, etc.
 
-**CmdServe.c (in UefiXfer.efi):**
+**CmdServe.c (in HttpFS.efi):**
 - Wire route handlers: GET/PUT/DELETE/POST → FileTransferLib calls
 - scp-style progress display with speed, percentage, bytes
 - `--read-only` / `--write-only` enforcement
@@ -663,21 +663,21 @@ Add WebDAV protocol support to the serve command.
 ### Phase 5: Testing + Polish
 
 - `scripts/qemu.sh` — QEMU launcher with port forwarding, boots
-  UefiXfer.efi and loads WebDavFsDxe.efi via startup.nsh
+  HttpFS.efi and loads WebDavFsDxe.efi via startup.nsh
 - `scripts/test.sh` — automated integration tests:
 
   **Mount tests:**
   1. Start xfer-server.py with test fixture directory
-  2. Boot QEMU, run `UefiXfer.efi mount http://host:port/`
+  2. Boot QEMU, run `HttpFS.efi mount http://host:port/`
   3. Verify `ls fs1:\` shows expected files
   4. Verify file read — copy from mounted volume, compare content
   5. Verify file write — create file, check on workstation
   6. Verify delete — remove file, check on workstation
   7. Verify executable — run `.efi` directly from mounted volume
-  8. Verify umount — `UefiXfer.efi umount fs1:`
+  8. Verify umount — `HttpFS.efi umount fs1:`
 
   **Serve tests:**
-  9. Boot QEMU with `UefiXfer.efi serve`
+  9. Boot QEMU with `HttpFS.efi serve`
   10. `GET /` — volume list contains `fs0`
   11. `PUT /fs0/test.txt` — upload, check 201 + X-SHA256
   12. `GET /fs0/test.txt` — download and compare
@@ -711,7 +711,7 @@ lines). We control both sides (xfer-server.py + WebDavFsDxe), so
 there's no interop concern. A future version can add WebDAV client
 support for mounting standard WebDAV servers.
 
-### Two Binaries (UefiXfer.efi + WebDavFsDxe.efi)
+### Two Binaries (HttpFS.efi + WebDavFsDxe.efi)
 `mount` needs a persistent protocol that survives after the command
 returns. UEFI's mechanism for this is a DXE driver that stays resident.
 The Shell app loads/unloads the driver, giving users a clean CLI
@@ -767,11 +767,11 @@ benefit from the shared foundation without code duplication.
 
 ## SoftBMC Reference Patterns
 
-UefiXfer reuses proven patterns from the SoftBMC project (`../softbmc/`).
+HttpFS reuses proven patterns from the SoftBMC project (`../softbmc/`).
 The table below maps each area to the SoftBMC source and notes what
-changes for UefiXfer.
+changes for HttpFS.
 
-| Area | Reuse From SoftBMC | Adapt for UefiXfer |
+| Area | Reuse From SoftBMC | Adapt for HttpFS |
 |------|--------------------|--------------------|
 | Build infra (.dec/.dsc) | `SoftBmcPkg.dec` structure, `SoftBmcPkg.dsc` LibraryClasses + `!include MdeLibs.dsc.inc` | Add `UefiDriverEntryPoint` for WebDavFsDxe. No CryptoPkg/MbedTls. |
 | Build script | `scripts/build.sh` — arg parsing, EDK2 env setup, per-arch loop, binary summary | Remove embed-assets, driver copy, gen-compdb. |
@@ -780,7 +780,7 @@ changes for UefiXfer.
 | HTTP server | `Core/HttpServer.h` — connection pool, cooperative poll, route dispatch | Strip WebSocket, TLS, auth, cache. 4 connections vs 16. (Phase 3) |
 | JSON | `Core/JsonParser.h` pattern (stack-allocated tokens, extract by key) | Custom tokenizer instead of JSMN. Add array iteration. |
 | Coding style | Already matches — 4-space indent, K&R braces, PascalCase, mPrefix, `/** @file **/` | Copyright year 2026. |
-| Logging | `SoftBmcLog()` ring buffer for long-running service | `Print()` directly — UefiXfer is a CLI tool, not a service. |
+| Logging | `SoftBmcLog()` ring buffer for long-running service | `Print()` directly — HttpFS is a CLI tool, not a service. |
 
 ## Estimated Size
 
@@ -792,7 +792,7 @@ changes for UefiXfer.
 | FileTransferLib          | 500            |
 | JsonLib                  | 200            |
 | WebDavFsDxe driver       | 800            |
-| UefiXfer application     | 400            |
+| HttpFS application     | 400            |
 | WebDAV extension         | 600            |
 | xfer-server.py           | 200            |
 | Build files (.dec/dsc/inf)| 200           |
@@ -808,7 +808,7 @@ standard WebDAV server (Apache mod_dav, IIS, etc.) without needing
 xfer-server.py.
 
 ### Remote Command Execution
-A companion DXE driver (`UefiXferCmdDxe`) watches a designated
+A companion DXE driver (`HttpFSCmdDxe`) watches a designated
 directory (e.g., `fs0:\xfer\cmd\`) for `.nsh` files. When a script
 appears (uploaded via WebDAV, HTTP PUT, or written through a mounted
 volume), the driver executes it via `EFI_SHELL_PROTOCOL->Execute()`.

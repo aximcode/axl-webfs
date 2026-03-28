@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# UefiXfer — Client-side recursive file transfer helper.
-# Wraps curl to upload/download entire directory trees from a UefiXfer serve instance.
+# HttpFS — Client-side recursive file transfer helper.
+# Wraps curl to upload/download entire directory trees from a HttpFS serve instance.
 
 set -e
 
@@ -14,8 +14,8 @@ show_usage() {
     echo "Usage: $0 {download|upload} <url> <local-path>"
     echo ""
     echo "Commands:"
-    echo "  download <url> <local-dir>   Download directory tree from UefiXfer serve"
-    echo "  upload   <local-dir> <url>   Upload directory tree to UefiXfer serve"
+    echo "  download <url> <local-dir>   Download directory tree from HttpFS serve"
+    echo "  upload   <local-dir> <url>   Upload directory tree to HttpFS serve"
     echo ""
     echo "Examples:"
     echo "  $0 download http://192.168.1.100:8080/fs0/EFI/ ./local-copy/"

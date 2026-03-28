@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# UefiXfer Test Suite
+# HttpFS Test Suite
 # Tests xfer-server.py endpoints and optionally runs QEMU integration tests.
 
 set -e
@@ -344,7 +344,7 @@ if [ "$RUN_QEMU" = true ]; then
             FW_CODE="/usr/share/AAVMF/AAVMF_CODE.fd"
             FW_VARS_ORIG="/usr/share/AAVMF/AAVMF_VARS.fd"
             BOOT_EFI="BOOTAA64.EFI"
-            APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_AARCH64.efi"
+            APP_EFI="$PROJECT_ROOT/build/binaries/HttpFS_AARCH64.efi"
             DRV_EFI="$PROJECT_ROOT/build/binaries/WebDavFsDxe_AARCH64.efi"
             QEMU_MACHINE="-machine virt -cpu cortex-a57"
             BOOT_WAIT=60
@@ -353,7 +353,7 @@ if [ "$RUN_QEMU" = true ]; then
             FW_CODE="/usr/share/edk2/ovmf/OVMF_CODE.fd"
             FW_VARS_ORIG="/usr/share/edk2/ovmf/OVMF_VARS.fd"
             BOOT_EFI="BOOTX64.EFI"
-            APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_X64.efi"
+            APP_EFI="$PROJECT_ROOT/build/binaries/HttpFS_X64.efi"
             DRV_EFI="$PROJECT_ROOT/build/binaries/WebDavFsDxe_X64.efi"
             QEMU_MACHINE="-machine q35 -enable-kvm -cpu host"
             BOOT_WAIT=20
@@ -377,7 +377,7 @@ if [ "$RUN_QEMU" = true ]; then
         # Copy arch-specific TestApp for exec-from-mount test
         cp "$APP_EFI" "$QEMU_TEST_DIR/TestApp.efi"
 
-        # Build disk image with Shell + UefiXfer + WebDavFsDxe
+        # Build disk image with Shell + HttpFS + WebDavFsDxe
         DISK="$QEMU_STATE/test-${QEMU_ARCH,,}.img"
         FW_VARS="$QEMU_STATE/vars-test-${QEMU_ARCH,,}.fd"
         SERIAL_LOG="$QEMU_STATE/serial-${QEMU_ARCH,,}.log"
@@ -413,16 +413,16 @@ if [ "$RUN_QEMU" = true ]; then
             continue
         fi
 
-        mcopy -i "$ESP_IMG" "$APP_EFI" ::UefiXfer.efi
+        mcopy -i "$ESP_IMG" "$APP_EFI" ::HttpFS.efi
         mcopy -i "$ESP_IMG" "$DRV_EFI" ::WebDavFsDxe.efi
 
         # startup.nsh: run mount test automatically
         NSH=$(mktemp)
         cat > "$NSH" <<NSHEOF
 @echo -off
-echo === UefiXfer Integration Test ===
+echo === HttpFS Integration Test ===
 fs0:
-UefiXfer.efi mount http://10.0.2.2:${SERVER_PORT}/
+HttpFS.efi mount http://10.0.2.2:${SERVER_PORT}/
 map -r
 echo === TEST: ls mounted volume ===
 ls fs1:\\
@@ -438,7 +438,7 @@ fs1:\\TestApp.efi -h
 echo === TEST: large file read ===
 type fs1:\\large.txt
 echo === TEST: umount ===
-UefiXfer.efi umount
+HttpFS.efi umount
 echo === TESTS COMPLETE ===
 reset -s
 NSHEOF
@@ -489,11 +489,11 @@ NSHEOF
 
         info "QEMU" "$QEMU_ARCH: Checking results..."
 
-        # Test: Did UefiXfer.efi run?
-        if grep -q "UefiXfer" "$SERIAL_LOG" 2>/dev/null; then
-            pass "$QEMU_ARCH: UefiXfer.efi executed"
+        # Test: Did HttpFS.efi run?
+        if grep -q "HttpFS" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: HttpFS.efi executed"
         else
-            fail "$QEMU_ARCH: UefiXfer.efi" "not found in serial output"
+            fail "$QEMU_ARCH: HttpFS.efi" "not found in serial output"
             echo "--- Serial log ---"
             cat "$SERIAL_LOG"
             echo "--- End ---"
@@ -536,11 +536,11 @@ NSHEOF
             fail "$QEMU_ARCH: ls subdir" "sample.txt not in output"
         fi
 
-        # Test: Did exec from mounted volume work? (TestApp.efi = UefiXfer, prints version)
-        if grep -q "UefiXfer v0.1" "$SERIAL_LOG" 2>/dev/null; then
+        # Test: Did exec from mounted volume work? (TestApp.efi = HttpFS, prints version)
+        if grep -q "HttpFS v0.1" "$SERIAL_LOG" 2>/dev/null; then
             pass "$QEMU_ARCH: exec .efi from mounted volume"
         else
-            fail "$QEMU_ARCH: exec from mount" "UefiXfer v0.1 not in output"
+            fail "$QEMU_ARCH: exec from mount" "HttpFS v0.1 not in output"
         fi
 
         # Test: Did large file read work?
@@ -571,7 +571,7 @@ NSHEOF
     rm -rf "$QEMU_TEST_DIR"
 
     # ========================================================================
-    # Serve integration tests (QEMU runs UefiXfer serve, host runs curl)
+    # Serve integration tests (QEMU runs HttpFS serve, host runs curl)
     # ========================================================================
 
     SERVE_PORT=18090
@@ -584,7 +584,7 @@ NSHEOF
             FW_CODE="/usr/share/AAVMF/AAVMF_CODE.fd"
             FW_VARS_ORIG="/usr/share/AAVMF/AAVMF_VARS.fd"
             BOOT_EFI="BOOTAA64.EFI"
-            APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_AARCH64.efi"
+            APP_EFI="$PROJECT_ROOT/build/binaries/HttpFS_AARCH64.efi"
             DRV_EFI="$PROJECT_ROOT/build/binaries/WebDavFsDxe_AARCH64.efi"
             QEMU_MACHINE="-machine virt -cpu cortex-a57"
             BOOT_WAIT=45
@@ -593,7 +593,7 @@ NSHEOF
             FW_CODE="/usr/share/edk2/ovmf/OVMF_CODE.fd"
             FW_VARS_ORIG="/usr/share/edk2/ovmf/OVMF_VARS.fd"
             BOOT_EFI="BOOTX64.EFI"
-            APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_X64.efi"
+            APP_EFI="$PROJECT_ROOT/build/binaries/HttpFS_X64.efi"
             DRV_EFI="$PROJECT_ROOT/build/binaries/WebDavFsDxe_X64.efi"
             QEMU_MACHINE="-machine q35 -enable-kvm -cpu host"
             BOOT_WAIT=30
@@ -638,7 +638,7 @@ NSHEOF
             continue
         fi
         mcopy -i "$ESP_IMG" "$SHELL_EFI" "::EFI/BOOT/$BOOT_EFI"
-        mcopy -i "$ESP_IMG" "$APP_EFI" ::UefiXfer.efi
+        mcopy -i "$ESP_IMG" "$APP_EFI" ::HttpFS.efi
 
         # Also put a test file on the ESP for download testing
         echo "serve test file" > /tmp/serve_test.txt
@@ -649,7 +649,7 @@ NSHEOF
         NSH=$(mktemp)
         echo "@echo -off" > "$NSH"
         echo "fs0:" >> "$NSH"
-        echo "UefiXfer.efi serve -p 8080" >> "$NSH"
+        echo "HttpFS.efi serve -p 8080" >> "$NSH"
         mcopy -i "$ESP_IMG" "$NSH" ::startup.nsh
         rm -f "$NSH"
 
@@ -691,7 +691,7 @@ NSHEOF
             fail "$QEMU_ARCH serve: server did not start within ${BOOT_WAIT}s"
             kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
             if [ -f "$SERIAL_LOG" ]; then
-                cat "$SERIAL_LOG" | strings | grep -i "error\|fail\|UefiXfer\|Listening" | head -10
+                cat "$SERIAL_LOG" | strings | grep -i "error\|fail\|HttpFS\|Listening" | head -10
             fi
             continue
         fi
@@ -708,10 +708,10 @@ NSHEOF
 
         # Test: GET /fs0/ (directory listing)
         RESP=$(curl -sf -H "Accept: application/json" "$BASE/fs0/" 2>/dev/null)
-        if echo "$RESP" | grep -q "UefiXfer.efi"; then
+        if echo "$RESP" | grep -q "HttpFS.efi"; then
             pass "$QEMU_ARCH serve: GET /fs0/ lists files"
         else
-            fail "$QEMU_ARCH serve: GET /fs0/" "UefiXfer.efi not in listing"
+            fail "$QEMU_ARCH serve: GET /fs0/" "HttpFS.efi not in listing"
         fi
 
         # Test: GET file download
@@ -797,7 +797,7 @@ NSHEOF
     QEMU_BIN="$QEMU_DIR/qemu-system-x86_64"
     FW_CODE="/usr/share/edk2/ovmf/OVMF_CODE.fd"
     FW_VARS_ORIG="/usr/share/edk2/ovmf/OVMF_VARS.fd"
-    APP_EFI="$PROJECT_ROOT/build/binaries/UefiXfer_X64.efi"
+    APP_EFI="$PROJECT_ROOT/build/binaries/HttpFS_X64.efi"
 
     DISK="$QEMU_STATE/serve-ro.img"
     FW_VARS="$QEMU_STATE/vars-serve-ro.fd"
@@ -819,7 +819,7 @@ NSHEOF
     mformat -i "$ESP_IMG" -F ::
     mmd -i "$ESP_IMG" ::EFI ::EFI/BOOT
     mcopy -i "$ESP_IMG" /usr/share/edk2/ovmf/Shell.efi "::EFI/BOOT/BOOTX64.EFI"
-    mcopy -i "$ESP_IMG" "$APP_EFI" ::UefiXfer.efi
+    mcopy -i "$ESP_IMG" "$APP_EFI" ::HttpFS.efi
     echo "readonly test" > /tmp/ro_test.txt
     mcopy -i "$ESP_IMG" /tmp/ro_test.txt ::ro_test.txt
     rm -f /tmp/ro_test.txt
@@ -827,7 +827,7 @@ NSHEOF
     NSH=$(mktemp)
     echo "@echo -off" > "$NSH"
     echo "fs0:" >> "$NSH"
-    echo "UefiXfer.efi serve -p 8080 --read-only" >> "$NSH"
+    echo "HttpFS.efi serve -p 8080 --read-only" >> "$NSH"
     mcopy -i "$ESP_IMG" "$NSH" ::startup.nsh
     rm -f "$NSH"
 
@@ -898,7 +898,7 @@ fi
 
 echo ""
 echo "=========================================="
-echo "       UefiXfer Test Summary"
+echo "       HttpFS Test Summary"
 echo "=========================================="
 TOTAL=$((PASS + FAIL + SKIP))
 echo -e "${GREEN}Passed:${NC}  $PASS"

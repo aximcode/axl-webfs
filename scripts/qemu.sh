@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# UefiXfer QEMU Launcher
-# Boots UefiXfer.efi in QEMU with port forwarding for xfer-server.py
+# HttpFS QEMU Launcher
+# Boots HttpFS.efi in QEMU with port forwarding for xfer-server.py
 # Thin wrapper around uefi-devkit common.sh qemu_launch
 
 set -e
@@ -22,7 +22,7 @@ show_usage() {
     echo "Usage: $0 [OPTIONS] {start|stop|status|logs} [-- QEMU_ARGS...]"
     echo ""
     echo "Commands:"
-    echo "  start     Boot UEFI Shell with UefiXfer + WebDavFsDxe on ESP"
+    echo "  start     Boot UEFI Shell with HttpFS + WebDavFsDxe on ESP"
     echo "  stop      Stop QEMU"
     echo "  status    Check if running"
     echo "  logs      Show serial output"
@@ -54,19 +54,19 @@ if [[ "${1:-}" == "--" ]]; then shift; QEMU_PASSTHROUGH=("$@"); fi
 if [[ -z "$COMMAND" ]]; then show_usage; exit 1; fi
 
 # Project-specific configuration
-QEMU_NAME="UefiXfer"
+QEMU_NAME="HttpFS"
 QEMU_STATE_DIR="$PROJECT_ROOT/build/qemu"
 QEMU_APPS=(
-    "$PROJECT_ROOT/build/binaries/UefiXfer_${QEMU_ARCH}.efi:UefiXfer.efi"
+    "$PROJECT_ROOT/build/binaries/HttpFS_${QEMU_ARCH}.efi:HttpFS.efi"
     "$PROJECT_ROOT/build/binaries/WebDavFsDxe_${QEMU_ARCH}.efi:WebDavFsDxe.efi"
 )
 QEMU_PORTS=("${XFER_PORT}:${XFER_PORT}")
 
 QEMU_STARTUP_NSH="$(cat <<NSH
 @echo -off
-echo UefiXfer QEMU Test Environment
+echo HttpFS QEMU Test Environment
 echo
-echo UefiXfer.efi and WebDavFsDxe.efi are on the ESP
+echo HttpFS.efi and WebDavFsDxe.efi are on the ESP
 echo Host xfer-server port forwarded: guest 10.0.2.2:${XFER_PORT}
 echo
 NSH

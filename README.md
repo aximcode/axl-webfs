@@ -1,4 +1,4 @@
-# UefiXfer
+# HttpFS
 
 Bidirectional file transfer and remote filesystem access for UEFI.
 Build on your workstation, run immediately in the UEFI Shell.
@@ -22,12 +22,12 @@ scripts/build.sh
 scripts/xfer-server.py --root /path/to/efi/tools
 
 # In the UEFI Shell — mount and use
-UefiXfer.efi mount http://10.0.0.5:8080/
+HttpFS.efi mount http://10.0.0.5:8080/
 ls fs1:
 fs1:\IpmiTool.efi
 
 # Or serve files from UEFI to your workstation
-UefiXfer.efi serve
+HttpFS.efi serve
 # Then from workstation: curl http://<uefi-ip>:8080/fs0/
 ```
 
@@ -47,7 +47,7 @@ Two consumers backed by shared libraries:
 
 | Component | Type | Description |
 |-----------|------|-------------|
-| UefiXfer.efi | Application | CLI: `serve`, `mount`, `umount`, `list-nics` |
+| HttpFS.efi | Application | CLI: `serve`, `mount`, `umount`, `list-nics` |
 | WebDavFsDxe.efi | DXE Driver | Mounts remote directory as UEFI volume |
 | HttpServerLib | Library | TCP/HTTP/WebDAV server |
 | HttpClientLib | Library | HTTP client for mount |
@@ -66,7 +66,7 @@ scripts/build.sh --arch AARCH64  # AARCH64 only
 ```
 
 Output in `build/binaries/`:
-- `UefiXfer_X64.efi` / `UefiXfer_AARCH64.efi`
+- `HttpFS_X64.efi` / `HttpFS_AARCH64.efi`
 - `WebDavFsDxe_X64.efi` / `WebDavFsDxe_AARCH64.efi`
 
 ## Testing
@@ -91,7 +91,7 @@ No external dependencies — Python 3 stdlib only.
 ## Serve Options
 
 ```
-UefiXfer.efi serve [-p port] [-n nic] [-t timeout] [--read-only] [--write-only] [-v]
+HttpFS.efi serve [-p port] [-n nic] [-t timeout] [--read-only] [--write-only] [-v]
 ```
 
 | Flag | Default | Description |
@@ -106,7 +106,7 @@ UefiXfer.efi serve [-p port] [-n nic] [-t timeout] [--read-only] [--write-only] 
 ## Platform Notes
 
 On some ARM64 server hardware, firmware may not auto-connect
-the network stack. UefiXfer handles this by calling `ConnectController`
+the network stack. HttpFS handles this by calling `ConnectController`
 on SNP handles before NIC discovery. Use `list-nics` to verify link
 status if networking isn't working. See [docs/Design.md](docs/Design.md)
 for details.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-xfer-server — Workstation file server for UefiXfer mount command.
+xfer-server — Workstation file server for HttpFS mount command.
 
 Serves a local directory over HTTP with JSON directory listings.
 No external dependencies — Python 3 stdlib only.
@@ -39,7 +39,7 @@ class XferServer(HTTPServer):
 
 
 class XferHandler(BaseHTTPRequestHandler):
-    """HTTP request handler for UefiXfer mount protocol."""
+    """HTTP request handler for HttpFS mount protocol."""
 
     server_version = f"xfer-server/{VERSION}"
 
@@ -336,7 +336,7 @@ class XferHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="xfer-server — Workstation file server for UefiXfer")
+        description="xfer-server — Workstation file server for HttpFS")
     parser.add_argument("--root", default=".",
                         help="Directory to serve (default: current)")
     parser.add_argument("--port", type=int, default=8080,
@@ -358,7 +358,7 @@ def main() -> None:
     print(f"xfer-server v{VERSION}")
     print(f"Serving {root} on {args.bind}:{args.port}")
     print(f"Mode: {mode}")
-    print("Ready for UefiXfer mount connections.")
+    print("Ready for HttpFS mount connections.")
     print("Press Ctrl-C to stop.\n")
 
     try:

@@ -42,7 +42,7 @@ EFI_STATUS EFIAPI FileTransferListVolumes(
     } else {
         Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
             "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
-            "<title>UefiXfer &mdash; Volumes</title>"
+            "<title>HttpFS &mdash; Volumes</title>"
             "<style>"
             "body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,"
             "BlinkMacSystemFont,\"Segoe UI\",Roboto,monospace;margin:0;padding:2em}"
@@ -57,7 +57,7 @@ EFI_STATUS EFIAPI FileTransferListVolumes(
             "td{padding:8px 12px;border-bottom:1px solid #0f3460}"
             "tr:hover{background:#1a4a80}"
             "</style></head><body>"
-            "<h2>UefiXfer</h2>"
+            "<h2>HttpFS</h2>"
             "<div class=\"crumb\">Volumes</div>"
             "<div class=\"card\"><table>"
             "<tr><th>Volume</th></tr>");
@@ -138,7 +138,7 @@ EFI_STATUS EFIAPI FileTransferListDir(
             ".sz{text-align:right;color:#8888aa;white-space:nowrap}"
             ".dt{color:#8888aa;white-space:nowrap}.ty{color:#8888aa}"
             "</style></head><body>"
-            "<h2>UefiXfer</h2>",
+            "<h2>HttpFS</h2>",
             Volume->Name, Path);
 
         // Breadcrumb: Volumes / fs0: / path / subdir

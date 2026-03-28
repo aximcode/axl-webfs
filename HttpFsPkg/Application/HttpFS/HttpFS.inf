@@ -1,5 +1,5 @@
 ## @file
-#  UefiXfer — UEFI File Transfer Toolkit application.
+#  HttpFS — UEFI File Transfer Toolkit application.
 #
 #  CLI application providing serve, mount, and umount commands for
 #  bidirectional file transfer between UEFI and workstation.
@@ -10,23 +10,23 @@
 
 [Defines]
   INF_VERSION    = 0x00010005
-  BASE_NAME      = UefiXfer
+  BASE_NAME      = HttpFS
   FILE_GUID      = 5E6F7081-9243-4A41-D4E5-F6071829304A
   MODULE_TYPE    = UEFI_APPLICATION
   VERSION_STRING = 0.1
-  ENTRY_POINT    = UefiXferMain
+  ENTRY_POINT    = HttpFsMain
 
 [Sources]
   Main.c
   CmdMount.c
   CmdServe.c
-  UefiXferInternal.h
+  HttpFsInternal.h
 
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   ShellPkg/ShellPkg.dec
-  UefiXferPkg/UefiXferPkg.dec
+  HttpFsPkg/HttpFsPkg.dec
   UdkLib/UdkLib.dec
 
 [LibraryClasses]
@@ -59,4 +59,4 @@
   gEfiShellParametersProtocolGuid
 
 [Guids]
-  gUefiXferVendorGuid
+  gHttpFsVendorGuid

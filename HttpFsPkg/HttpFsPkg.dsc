@@ -1,16 +1,16 @@
 ## @file
-#  UefiXfer — UEFI File Transfer Toolkit
+#  HttpFS — UEFI File Transfer Toolkit
 #
 #  Copyright (c) 2026, AximCode. All rights reserved.
 #  SPDX-License-Identifier: BSD-2-Clause-Patent
 ##
 
 [Defines]
-  PLATFORM_NAME           = UefiXferPkg
+  PLATFORM_NAME           = HttpFsPkg
   PLATFORM_GUID           = 5C6D7E8F-0A1B-4C3D-E4F5-061728394A5B
   PLATFORM_VERSION        = 0.1
   DSC_SPECIFICATION       = 0x00010005
-  OUTPUT_DIRECTORY        = Build/UefiXferPkg
+  OUTPUT_DIRECTORY        = Build/HttpFsPkg
   SUPPORTED_ARCHITECTURES = X64|AARCH64
   BUILD_TARGETS           = DEBUG|RELEASE
 
@@ -54,16 +54,16 @@
   UdkTaskLib|UdkLib/Task/UdkTask.inf
   UdkNetLib|UdkLib/Net/UdkNet.inf
 
-  # UefiXferPkg libraries
-  NetworkLib|UefiXferPkg/Library/NetworkLib/NetworkLib.inf
-  HttpClientLib|UefiXferPkg/Library/HttpClientLib/HttpClientLib.inf
-  HttpServerLib|UefiXferPkg/Library/HttpServerLib/HttpServerLib.inf
-  FileTransferLib|UefiXferPkg/Library/FileTransferLib/FileTransferLib.inf
-  JsonLib|UefiXferPkg/Library/JsonLib/JsonLib.inf
+  # HttpFsPkg libraries
+  NetworkLib|HttpFsPkg/Library/NetworkLib/NetworkLib.inf
+  HttpClientLib|HttpFsPkg/Library/HttpClientLib/HttpClientLib.inf
+  HttpServerLib|HttpFsPkg/Library/HttpServerLib/HttpServerLib.inf
+  FileTransferLib|HttpFsPkg/Library/FileTransferLib/FileTransferLib.inf
+  JsonLib|HttpFsPkg/Library/JsonLib/JsonLib.inf
 
 [Components]
-  UefiXferPkg/Application/UefiXfer/UefiXfer.inf
-  UefiXferPkg/Driver/WebDavFsDxe/WebDavFsDxe.inf
+  HttpFsPkg/Application/HttpFS/HttpFS.inf
+  HttpFsPkg/Driver/WebDavFsDxe/WebDavFsDxe.inf
 
 [BuildOptions]
   GCC:*_*_*_CC_FLAGS = -Wno-unused-variable -Wno-unused-function

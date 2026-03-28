@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# UefiXfer Build Script
-# Builds UefiXfer — UEFI File Transfer Toolkit
+# HttpFS Build Script
+# Builds HttpFS — UEFI File Transfer Toolkit
 
 set -e
 
@@ -67,10 +67,10 @@ fi
 # Verify source
 log_info "Verifying source code..."
 REQUIRED_FILES=(
-    "UefiXferPkg/UefiXferPkg.dec"
-    "UefiXferPkg/UefiXferPkg.dsc"
-    "UefiXferPkg/Application/UefiXfer/UefiXfer.inf"
-    "UefiXferPkg/Application/UefiXfer/Main.c"
+    "HttpFsPkg/HttpFsPkg.dec"
+    "HttpFsPkg/HttpFsPkg.dsc"
+    "HttpFsPkg/Application/HttpFS/HttpFS.inf"
+    "HttpFsPkg/Application/HttpFS/Main.c"
 )
 
 for file in "${REQUIRED_FILES[@]}"; do
@@ -84,7 +84,7 @@ log_success "Source verified"
 # Clean build
 if [ "$CLEAN_BUILD" = "TRUE" ]; then
     log_info "Cleaning build directory..."
-    rm -rf "$PROJECT_ROOT/Build/UefiXferPkg/"
+    rm -rf "$PROJECT_ROOT/Build/HttpFsPkg/"
     log_success "Build directory cleaned"
 fi
 
@@ -96,13 +96,13 @@ mkdir -p "$PROJECT_ROOT/build/binaries"
 TOTAL_BUILD_DURATION=0
 
 for BUILD_ARCH in "${BUILD_ARCHS[@]}"; do
-    log_info "Building UefiXfer for ${BUILD_ARCH} (${BUILD_TARGET}, ${PARALLEL_JOBS} jobs)..."
+    log_info "Building HttpFS for ${BUILD_ARCH} (${BUILD_TARGET}, ${PARALLEL_JOBS} jobs)..."
 
     BUILD_START=$(date +%s)
     timeout $BUILD_TIMEOUT build \
         -a ${BUILD_ARCH} \
         -t GCC5 \
-        -p UefiXferPkg/UefiXferPkg.dsc \
+        -p HttpFsPkg/HttpFsPkg.dsc \
         -b ${BUILD_TARGET} \
         -n ${PARALLEL_JOBS}
     EXIT_CODE=$?
@@ -118,19 +118,19 @@ for BUILD_ARCH in "${BUILD_ARCHS[@]}"; do
         exit 1
     fi
 
-    APP_PATH="Build/UefiXferPkg/${BUILD_TARGET}_GCC5/${BUILD_ARCH}/UefiXferPkg/Application/UefiXfer/UefiXfer/OUTPUT/UefiXfer.efi"
+    APP_PATH="Build/HttpFsPkg/${BUILD_TARGET}_GCC5/${BUILD_ARCH}/HttpFsPkg/Application/HttpFS/HttpFS/OUTPUT/HttpFS.efi"
     if [ ! -f "$APP_PATH" ]; then
-        log_error "${BUILD_ARCH}: UefiXfer.efi not found!"
+        log_error "${BUILD_ARCH}: HttpFS.efi not found!"
         exit 1
     fi
 
     BINARY_SIZE=$(stat -c%s "$APP_PATH")
-    log_success "${BUILD_ARCH}: UefiXfer.efi (${BINARY_SIZE} bytes, ${BUILD_DURATION}s)"
+    log_success "${BUILD_ARCH}: HttpFS.efi (${BINARY_SIZE} bytes, ${BUILD_DURATION}s)"
 
-    cp "$APP_PATH" "$PROJECT_ROOT/build/binaries/UefiXfer_${BUILD_ARCH}.efi"
+    cp "$APP_PATH" "$PROJECT_ROOT/build/binaries/HttpFS_${BUILD_ARCH}.efi"
 
     # Copy WebDavFsDxe driver
-    DRV_PATH="Build/UefiXferPkg/${BUILD_TARGET}_GCC5/${BUILD_ARCH}/UefiXferPkg/Driver/WebDavFsDxe/WebDavFsDxe/OUTPUT/WebDavFsDxe.efi"
+    DRV_PATH="Build/HttpFsPkg/${BUILD_TARGET}_GCC5/${BUILD_ARCH}/HttpFsPkg/Driver/WebDavFsDxe/WebDavFsDxe/OUTPUT/WebDavFsDxe.efi"
     if [ -f "$DRV_PATH" ]; then
         DRV_SIZE=$(stat -c%s "$DRV_PATH")
         log_success "${BUILD_ARCH}: WebDavFsDxe.efi (${DRV_SIZE} bytes)"
@@ -146,12 +146,12 @@ SECS=$((TOTAL % 60))
 
 echo ""
 echo "=========================================="
-echo "       UefiXfer Build Summary"
+echo "       HttpFS Build Summary"
 echo "=========================================="
 for BUILD_ARCH in "${BUILD_ARCHS[@]}"; do
-    APP_PATH="Build/UefiXferPkg/${BUILD_TARGET}_GCC5/${BUILD_ARCH}/UefiXferPkg/Application/UefiXfer/UefiXfer/OUTPUT/UefiXfer.efi"
+    APP_PATH="Build/HttpFsPkg/${BUILD_TARGET}_GCC5/${BUILD_ARCH}/HttpFsPkg/Application/HttpFS/HttpFS/OUTPUT/HttpFS.efi"
     BINARY_SIZE=$(stat -c%s "$APP_PATH")
-    echo -e "${BLUE}${BUILD_ARCH}:${NC}  UefiXfer.efi (${BINARY_SIZE} bytes) -> build/binaries/UefiXfer_${BUILD_ARCH}.efi"
+    echo -e "${BLUE}${BUILD_ARCH}:${NC}  HttpFS.efi (${BINARY_SIZE} bytes) -> build/binaries/HttpFS_${BUILD_ARCH}.efi"
 done
 if [ $MINS -gt 0 ]; then
     echo -e "${BLUE}Build Time:${NC} ${MINS}m ${SECS}s (EDK2: ${TOTAL_BUILD_DURATION}s)"

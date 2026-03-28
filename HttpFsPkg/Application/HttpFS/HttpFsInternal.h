@@ -1,12 +1,12 @@
 /** @file
-  UefiXfer — Internal declarations shared between Main.c and command files.
+  HttpFS — Internal declarations shared between Main.c and command files.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
-#ifndef UEFIXFER_INTERNAL_H_
-#define UEFIXFER_INTERNAL_H_
+#ifndef HTTPFS_INTERNAL_H_
+#define HTTPFS_INTERNAL_H_
 
 #include <Uefi.h>
 #include <Library/UefiLib.h>
@@ -16,4 +16,4 @@ EFI_STATUS CmdMount (IN EFI_HANDLE ImageHandle, IN UINTN Argc, IN CHAR16 **Argv)
 EFI_STATUS CmdUmount (IN EFI_HANDLE ImageHandle, IN UINTN Argc, IN CHAR16 **Argv);
 EFI_STATUS CmdServe (IN EFI_HANDLE ImageHandle, IN UINTN Argc, IN CHAR16 **Argv);
 
-#endif // UEFIXFER_INTERNAL_H_
+#endif // HTTPFS_INTERNAL_H_

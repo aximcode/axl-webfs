@@ -1,5 +1,5 @@
 /** @file
-  UefiXfer — UEFI File Transfer Toolkit entry point.
+  HttpFS — UEFI File Transfer Toolkit entry point.
 
   Parses Shell command line parameters and dispatches to the
   appropriate command handler: serve, mount, or umount.
@@ -8,30 +8,30 @@
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
-#include "UefiXferInternal.h"
+#include "HttpFsInternal.h"
 
 #include <Library/BaseLib.h>
 #include <Library/NetworkLib.h>
 #include <Protocol/ShellParameters.h>
 
-#define UEFIXFER_VERSION  L"0.1"
+#define HTTPFS_VERSION  L"0.1"
 
 static VOID PrintUsage(VOID) {
-    Print(L"UefiXfer v%s — UEFI File Transfer Toolkit\n\n", UEFIXFER_VERSION);
+    Print(L"HttpFS v%s — UEFI File Transfer Toolkit\n\n", HTTPFS_VERSION);
     Print(L"Usage:\n");
-    Print(L"  UefiXfer mount <url> [-r]   Mount remote directory as UEFI volume\n");
-    Print(L"  UefiXfer umount             Unmount remote volume\n");
-    Print(L"  UefiXfer serve [options]    Run HTTP file server (Phase 3)\n");
-    Print(L"  UefiXfer list-nics          List network interfaces\n");
-    Print(L"  UefiXfer -h                 Show this help\n");
+    Print(L"  HttpFS mount <url> [-r]   Mount remote directory as UEFI volume\n");
+    Print(L"  HttpFS umount             Unmount remote volume\n");
+    Print(L"  HttpFS serve [options]    Run HTTP file server (Phase 3)\n");
+    Print(L"  HttpFS list-nics          List network interfaces\n");
+    Print(L"  HttpFS -h                 Show this help\n");
     Print(L"\nExamples:\n");
-    Print(L"  UefiXfer mount http://10.0.0.5:8080/\n");
-    Print(L"  UefiXfer umount\n");
+    Print(L"  HttpFS mount http://10.0.0.5:8080/\n");
+    Print(L"  HttpFS umount\n");
 }
 
 EFI_STATUS
 EFIAPI
-UefiXferMain (
+HttpFsMain (
     IN EFI_HANDLE        ImageHandle,
     IN EFI_SYSTEM_TABLE  *SystemTable
     )
@@ -44,7 +44,7 @@ UefiXferMain (
         EFI_OPEN_PROTOCOL_GET_PROTOCOL);
 
     if (EFI_ERROR(Status) || ShellParams == NULL) {
-        Print(L"UefiXfer v%s — requires UEFI Shell\n", UEFIXFER_VERSION);
+        Print(L"HttpFS v%s — requires UEFI Shell\n", HTTPFS_VERSION);
         return EFI_UNSUPPORTED;
     }
 

@@ -3,7 +3,7 @@
 
   TCP connect/send/receive adapted from SoftBMC Core/TcpClient.c and
   Core/TcpUtil.c. HTTP framing is hand-rolled for the minimal subset
-  needed by UefiXfer (talking to xfer-server.py).
+  needed by HttpFS (talking to xfer-server.py).
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
