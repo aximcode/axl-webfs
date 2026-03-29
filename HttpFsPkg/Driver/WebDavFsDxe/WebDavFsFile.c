@@ -224,13 +224,13 @@ WebDavFsOpen (
             CHAR8 MkdirPath[MAX_PATH_LEN];
             AsciiSPrint(MkdirPath, sizeof(MkdirPath), "/files%a?mkdir", Resolved);
 
-            AXL_HTTP_CLIENT_RESPONSE *Resp = NULL;
+            AxlHttpClientResponse *Resp = NULL;
             Status = WebDavFsHttpRequest(
                 Private, "POST", MkdirPath, NULL, NULL, 0, &Resp);
             if (EFI_ERROR(Status) || Resp == NULL) return EFI_ERROR(Status) ? Status : EFI_DEVICE_ERROR;
 
-            UINTN MkdirStatus = Resp->StatusCode;
-            AxlHttpClientResponseFree(Resp);
+            UINTN MkdirStatus = Resp->status_code;
+            axl_http_client_response_free(Resp);
             if (MkdirStatus != 201 && MkdirStatus != 200) {
                 return EFI_DEVICE_ERROR;
             }
@@ -243,11 +243,11 @@ WebDavFsOpen (
             CHAR8 FilePath[MAX_PATH_LEN];
             AsciiSPrint(FilePath, sizeof(FilePath), "/files%a", Resolved);
 
-            AXL_HTTP_CLIENT_RESPONSE *Resp = NULL;
+            AxlHttpClientResponse *Resp = NULL;
             Status = WebDavFsHttpRequest(
                 Private, "PUT", FilePath, NULL, "", 0, &Resp);
             if (EFI_ERROR(Status) || Resp == NULL) return EFI_ERROR(Status) ? Status : EFI_DEVICE_ERROR;
-            AxlHttpClientResponseFree(Resp);
+            axl_http_client_response_free(Resp);
 
             DirCacheInvalidate(Private, ParentDir);
             Entry.IsDir = FALSE;
@@ -341,24 +341,24 @@ static EFI_STATUS ReadFile(
     CHAR8 FilePath[MAX_PATH_LEN];
     AsciiSPrint(FilePath, sizeof(FilePath), "/files%a", F->Path);
 
-    AXL_HTTP_CLIENT_RESPONSE *Resp = NULL;
+    AxlHttpClientResponse *Resp = NULL;
     EFI_STATUS Status = WebDavFsHttpRequest(
         Private, "GET", FilePath, RangeHdrs, NULL, 0, &Resp);
     AxlHashFree(RangeHdrs);
     if (EFI_ERROR(Status) || Resp == NULL) return EFI_ERROR(Status) ? Status : EFI_DEVICE_ERROR;
-    if (Resp->StatusCode != 200 && Resp->StatusCode != 206) {
-        AxlHttpClientResponseFree(Resp);
+    if (Resp->status_code != 200 && Resp->status_code != 206) {
+        axl_http_client_response_free(Resp);
         *BufferSize = 0;
         return EFI_DEVICE_ERROR;
     }
 
     // Copy response body into read-ahead buffer or directly into caller's buffer
-    UINTN TotalRead = Resp->BodySize;
+    UINTN TotalRead = Resp->body_size;
     if (TotalRead > FetchSize) TotalRead = FetchSize;
 
     if (F->ReadAheadBuf != NULL) {
         UINTN ToCopy = (TotalRead < READAHEAD_BUF_SIZE) ? TotalRead : READAHEAD_BUF_SIZE;
-        CopyMem(F->ReadAheadBuf, Resp->Body, ToCopy);
+        CopyMem(F->ReadAheadBuf, Resp->body, ToCopy);
         F->ReadAheadStart = F->Position;
         F->ReadAheadLen = ToCopy;
         UINTN UserCopy = (Wanted < ToCopy) ? Wanted : ToCopy;
@@ -367,11 +367,11 @@ static EFI_STATUS ReadFile(
         *BufferSize = UserCopy;
     } else {
         UINTN ToCopy = (Wanted < TotalRead) ? Wanted : TotalRead;
-        CopyMem(Buffer, Resp->Body, ToCopy);
+        CopyMem(Buffer, Resp->body, ToCopy);
         F->Position += ToCopy;
         *BufferSize = ToCopy;
     }
-    AxlHttpClientResponseFree(Resp);
+    axl_http_client_response_free(Resp);
 
     return EFI_SUCCESS;
 }
@@ -479,13 +479,13 @@ WebDavFsWrite (
     CHAR8 FilePath[MAX_PATH_LEN];
     AsciiSPrint(FilePath, sizeof(FilePath), "/files%a", F->Path);
 
-    AXL_HTTP_CLIENT_RESPONSE *Resp = NULL;
+    AxlHttpClientResponse *Resp = NULL;
     EFI_STATUS Status = WebDavFsHttpRequest(
         Private, "PUT", FilePath, NULL, Buffer, *BufferSize, &Resp);
     if (EFI_ERROR(Status) || Resp == NULL) return EFI_ERROR(Status) ? Status : EFI_DEVICE_ERROR;
 
-    UINTN WriteStatus = Resp->StatusCode;
-    AxlHttpClientResponseFree(Resp);
+    UINTN WriteStatus = Resp->status_code;
+    axl_http_client_response_free(Resp);
     if (WriteStatus != 201 && WriteStatus != 200) {
         return EFI_DEVICE_ERROR;
     }
@@ -525,12 +525,12 @@ WebDavFsDelete (
     CHAR8 FilePath[MAX_PATH_LEN];
     AsciiSPrint(FilePath, sizeof(FilePath), "/files%a", F->Path);
 
-    AXL_HTTP_CLIENT_RESPONSE *Resp = NULL;
+    AxlHttpClientResponse *Resp = NULL;
     EFI_STATUS Status = WebDavFsHttpRequest(
         Private, "DELETE", FilePath, NULL, NULL, 0, &Resp);
 
-    UINTN DelStatus = (Resp != NULL) ? Resp->StatusCode : 0;
-    if (Resp != NULL) AxlHttpClientResponseFree(Resp);
+    UINTN DelStatus = (Resp != NULL) ? Resp->status_code : 0;
+    if (Resp != NULL) axl_http_client_response_free(Resp);
 
     CHAR8 ParentDir[MAX_PATH_LEN];
     GetParentPath(F->Path, ParentDir, sizeof(ParentDir));
@@ -676,12 +676,12 @@ WebDavFsSetInfo (
     CHAR8 RenamePath[MAX_PATH_LEN];
     AsciiSPrint(RenamePath, sizeof(RenamePath), "/files%a?rename=%a", F->Path, NewName8);
 
-    AXL_HTTP_CLIENT_RESPONSE *Resp = NULL;
+    AxlHttpClientResponse *Resp = NULL;
     EFI_STATUS Status = WebDavFsHttpRequest(
         Private, "POST", RenamePath, NULL, NULL, 0, &Resp);
 
-    UINTN RenameStatus = (Resp != NULL) ? Resp->StatusCode : 0;
-    if (Resp != NULL) AxlHttpClientResponseFree(Resp);
+    UINTN RenameStatus = (Resp != NULL) ? Resp->status_code : 0;
+    if (Resp != NULL) axl_http_client_response_free(Resp);
 
     if (EFI_ERROR(Status) || (RenameStatus != 200 && RenameStatus != 201)) {
         return EFI_DEVICE_ERROR;

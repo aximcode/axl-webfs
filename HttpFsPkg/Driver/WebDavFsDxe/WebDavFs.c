@@ -183,7 +183,7 @@ WebDavFsDriverEntry (
     }
 
     // Create HTTP client
-    Private->HttpClient = AxlHttpClientNew();
+    Private->HttpClient = axl_http_client_new();
     if (Private->HttpClient == NULL) {
         Print(L"WebDavFsDxe: Failed to create HTTP client\n");
         NetworkCleanup();
@@ -195,17 +195,17 @@ WebDavFsDriverEntry (
     CHAR8 InfoUrl[320];
     AsciiSPrint(InfoUrl, sizeof(InfoUrl), "%a/info", Private->BaseUrl);
 
-    AXL_HTTP_CLIENT_RESPONSE *InfoResp = NULL;
-    Status = AxlHttpGet(Private->HttpClient, InfoUrl, &InfoResp);
-    if (EFI_ERROR(Status) || InfoResp == NULL || InfoResp->StatusCode != 200) {
+    AxlHttpClientResponse *InfoResp = NULL;
+    Status = axl_http_get(Private->HttpClient, InfoUrl, &InfoResp);
+    if (EFI_ERROR(Status) || InfoResp == NULL || InfoResp->status_code != 200) {
         Print(L"WebDavFsDxe: Server validation failed\n");
-        if (InfoResp != NULL) AxlHttpClientResponseFree(InfoResp);
-        AxlHttpClientFree(Private->HttpClient);
+        if (InfoResp != NULL) axl_http_client_response_free(InfoResp);
+        axl_http_client_free(Private->HttpClient);
         NetworkCleanup();
         FreePool(Private);
         return EFI_DEVICE_ERROR;
     }
-    AxlHttpClientResponseFree(InfoResp);
+    axl_http_client_response_free(InfoResp);
 
     // Set up SimpleFileSystem protocol
     Private->SimpleFs.Revision = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_REVISION;
@@ -215,7 +215,7 @@ WebDavFsDriverEntry (
     WEBDAVFS_DEVICE_PATH *DevPath = AllocateCopyPool(
         sizeof(WEBDAVFS_DEVICE_PATH), &mDevicePathTemplate);
     if (DevPath == NULL) {
-        AxlHttpClientFree(Private->HttpClient);
+        axl_http_client_free(Private->HttpClient);
         NetworkCleanup();
         FreePool(Private);
         return EFI_OUT_OF_RESOURCES;
@@ -233,7 +233,7 @@ WebDavFsDriverEntry (
     if (EFI_ERROR(Status)) {
         Print(L"WebDavFsDxe: Protocol install failed: %r\n", Status);
         FreePool(DevPath);
-        AxlHttpClientFree(Private->HttpClient);
+        axl_http_client_free(Private->HttpClient);
         NetworkCleanup();
         FreePool(Private);
         return Status;
@@ -263,7 +263,7 @@ WebDavFsDriverUnload (
         NULL);
 
     // Close HTTP client
-    AxlHttpClientFree(mPrivate->HttpClient);
+    axl_http_client_free(mPrivate->HttpClient);
 
     // Clean up networking
     NetworkCleanup();

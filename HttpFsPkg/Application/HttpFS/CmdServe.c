@@ -17,7 +17,7 @@
 #include <Library/NetworkLib.h>
 #include <Library/FileTransferLib.h>
 #include <Library/AxlLib.h>
-#include <Library/AxlNet.h>
+#include <axl/axl-net.h>
 
 AXL_LOG_DOMAIN ("serve");
 
@@ -85,10 +85,10 @@ ParseVolumePath (
 /// Check if Accept header requests JSON.
 STATIC BOOLEAN
 WantsJson (
-  IN AXL_HTTP_REQUEST  *Req
+  IN AxlHttpRequest  *Req
   )
 {
-  CONST CHAR8  *Accept = (CONST CHAR8 *)AxlHashGet (Req->Headers, "accept");
+  CONST CHAR8  *Accept = (CONST CHAR8 *)AxlHashGet (Req->headers, "accept");
 
   if (Accept == NULL) {
     return FALSE;
@@ -112,28 +112,27 @@ WantsJson (
 
 STATIC
 EFI_STATUS
-EFIAPI
 PermissionMiddleware (
-  AXL_HTTP_REQUEST   *Req,
-  AXL_HTTP_RESPONSE  *Resp,
+  AxlHttpRequest   *Req,
+  AxlHttpResponse  *Resp,
   VOID               *Data
   )
 {
   SERVE_OPTIONS  *Opts = (SERVE_OPTIONS *)Data;
 
   if (Opts->ReadOnly &&
-      (AsciiStrCmp (Req->Method, "PUT") == 0 ||
-       AsciiStrCmp (Req->Method, "DELETE") == 0 ||
-       AsciiStrCmp (Req->Method, "POST") == 0))
+      (AsciiStrCmp (Req->method, "PUT") == 0 ||
+       AsciiStrCmp (Req->method, "DELETE") == 0 ||
+       AsciiStrCmp (Req->method, "POST") == 0))
   {
-    AxlHttpResponseSetText (Resp, "Read-only mode\n");
-    AxlHttpResponseSetStatus (Resp, 403);
+    axl_http_response_set_text (Resp, "Read-only mode\n");
+    axl_http_response_set_status (Resp, 403);
     return EFI_ACCESS_DENIED;
   }
 
-  if (Opts->WriteOnly && AsciiStrCmp (Req->Method, "GET") == 0) {
-    AxlHttpResponseSetText (Resp, "Write-only mode\n");
-    AxlHttpResponseSetStatus (Resp, 403);
+  if (Opts->WriteOnly && AsciiStrCmp (Req->method, "GET") == 0) {
+    axl_http_response_set_text (Resp, "Write-only mode\n");
+    axl_http_response_set_status (Resp, 403);
     return EFI_ACCESS_DENIED;
   }
 
@@ -147,10 +146,9 @@ PermissionMiddleware (
 /// GET / — list all volumes.
 STATIC
 EFI_STATUS
-EFIAPI
 HandleGetRoot (
-  AXL_HTTP_REQUEST   *Req,
-  AXL_HTTP_RESPONSE  *Resp,
+  AxlHttpRequest   *Req,
+  AxlHttpResponse  *Resp,
   VOID               *Data
   )
 {
@@ -163,16 +161,16 @@ HandleGetRoot (
   FileTransferListVolumes (AsJson, Buf, sizeof (Buf), &Written);
 
   if (AsJson) {
-    AxlHttpResponseSetJson (Resp, Buf);
+    axl_http_response_set_json (Resp, Buf);
   } else {
-    Resp->Body = AllocatePool (Written);
-    if (Resp->Body != NULL) {
-      CopyMem (Resp->Body, Buf, Written);
-      Resp->BodySize = Written;
+    Resp->body = AllocatePool (Written);
+    if (Resp->body != NULL) {
+      CopyMem (Resp->body, Buf, Written);
+      Resp->body_size = Written;
     }
 
-    Resp->ContentType = "text/html";
-    Resp->StatusCode = 200;
+    Resp->content_type = "text/html";
+    Resp->status_code = 200;
   }
 
   return EFI_SUCCESS;
@@ -181,10 +179,9 @@ HandleGetRoot (
 /// GET /<vol>/<path> — download file or list directory.
 STATIC
 EFI_STATUS
-EFIAPI
 HandleGetPath (
-  AXL_HTTP_REQUEST   *Req,
-  AXL_HTTP_RESPONSE  *Resp,
+  AxlHttpRequest   *Req,
+  AxlHttpResponse  *Resp,
   VOID               *Data
   )
 {
@@ -195,18 +192,18 @@ HandleGetPath (
 
   (VOID)Data;
 
-  Status = ParseVolumePath (Req->Path, &Volume, SubPath, 512);
+  Status = ParseVolumePath (Req->path, &Volume, SubPath, 512);
   if (EFI_ERROR (Status)) {
-    AxlHttpResponseSetText (Resp, "Volume not found\n");
-    AxlHttpResponseSetStatus (Resp, 404);
+    axl_http_response_set_text (Resp, "Volume not found\n");
+    axl_http_response_set_status (Resp, 404);
     return EFI_SUCCESS;
   }
 
   IsDir = FALSE;
   Status = FileTransferIsDir (&Volume, SubPath, &IsDir);
   if (EFI_ERROR (Status)) {
-    AxlHttpResponseSetText (Resp, "Not found\n");
-    AxlHttpResponseSetStatus (Resp, 404);
+    axl_http_response_set_text (Resp, "Not found\n");
+    axl_http_response_set_status (Resp, 404);
     return EFI_SUCCESS;
   }
 
@@ -217,22 +214,22 @@ HandleGetPath (
 
     Status = FileTransferListDir (&Volume, SubPath, AsJson, Buf, sizeof (Buf), &Written);
     if (EFI_ERROR (Status)) {
-      AxlHttpResponseSetText (Resp, "Directory listing failed\n");
-      AxlHttpResponseSetStatus (Resp, 500);
+      axl_http_response_set_text (Resp, "Directory listing failed\n");
+      axl_http_response_set_status (Resp, 500);
       return EFI_SUCCESS;
     }
 
     if (AsJson) {
-      AxlHttpResponseSetJson (Resp, Buf);
+      axl_http_response_set_json (Resp, Buf);
     } else {
-      Resp->Body = AllocatePool (Written);
-      if (Resp->Body != NULL) {
-        CopyMem (Resp->Body, Buf, Written);
-        Resp->BodySize = Written;
+      Resp->body = AllocatePool (Written);
+      if (Resp->body != NULL) {
+        CopyMem (Resp->body, Buf, Written);
+        Resp->body_size = Written;
       }
 
-      Resp->ContentType = "text/html";
-      Resp->StatusCode = 200;
+      Resp->content_type = "text/html";
+      Resp->status_code = 200;
     }
 
     return EFI_SUCCESS;
@@ -244,8 +241,8 @@ HandleGetPath (
   UINT64  FileSize = 0;
   Status = FileTransferGetFileSize (&Volume, SubPath, &FileSize);
   if (EFI_ERROR (Status)) {
-    AxlHttpResponseSetText (Resp, "File not found\n");
-    AxlHttpResponseSetStatus (Resp, 404);
+    axl_http_response_set_text (Resp, "File not found\n");
+    axl_http_response_set_status (Resp, 404);
     return EFI_SUCCESS;
   }
 
@@ -255,7 +252,7 @@ HandleGetPath (
   //
   // Handle Range header
   //
-  CONST CHAR8  *RangeHdr = (CONST CHAR8 *)AxlHashGet (Req->Headers, "range");
+  CONST CHAR8  *RangeHdr = (CONST CHAR8 *)AxlHashGet (Req->headers, "range");
   if (RangeHdr != NULL && AsciiStrnCmp (RangeHdr, "bytes=", 6) == 0) {
     CONST CHAR8  *R = RangeHdr + 6;
     UINT64       Start = 0;
@@ -280,20 +277,20 @@ HandleGetPath (
     if (Start < FileSize) {
       Offset = Start;
       SendSize = (UINTN)(End - Start + 1);
-      Resp->StatusCode = 206;
+      Resp->status_code = 206;
 
       //
       // Set Content-Range header
       //
-      if (Resp->Headers == NULL) {
-        Resp->Headers = AxlHashNew ();
+      if (Resp->headers == NULL) {
+        Resp->headers = AxlHashNew ();
       }
 
-      if (Resp->Headers != NULL) {
+      if (Resp->headers != NULL) {
         CHAR8  RangeBuf[128];
         AsciiSPrint (RangeBuf, sizeof (RangeBuf),
           "bytes %Lu-%Lu/%Lu", (UINT64)Start, (UINT64)End, (UINT64)FileSize);
-        AxlHashSet (Resp->Headers, "content-range", AxlStrDup (RangeBuf));
+        AxlHashSet (Resp->headers, "content-range", AxlStrDup (RangeBuf));
       }
     }
   }
@@ -304,16 +301,16 @@ HandleGetPath (
   FT_READ_CTX  ReadCtx;
   Status = FileTransferOpenRead (&Volume, SubPath, Offset, NULL, NULL, &ReadCtx);
   if (EFI_ERROR (Status)) {
-    AxlHttpResponseSetText (Resp, "Cannot open file\n");
-    AxlHttpResponseSetStatus (Resp, 500);
+    axl_http_response_set_text (Resp, "Cannot open file\n");
+    axl_http_response_set_status (Resp, 500);
     return EFI_SUCCESS;
   }
 
   VOID  *FileBuf = AllocatePool (SendSize);
   if (FileBuf == NULL) {
     FileTransferCloseRead (&ReadCtx);
-    AxlHttpResponseSetText (Resp, "Out of memory\n");
-    AxlHttpResponseSetStatus (Resp, 500);
+    axl_http_response_set_text (Resp, "Out of memory\n");
+    axl_http_response_set_status (Resp, 500);
     return EFI_SUCCESS;
   }
 
@@ -335,11 +332,11 @@ HandleGetPath (
 
   FileTransferCloseRead (&ReadCtx);
 
-  Resp->Body = FileBuf;
-  Resp->BodySize = TotalRead;
-  Resp->ContentType = "application/octet-stream";
-  if (Resp->StatusCode == 0) {
-    Resp->StatusCode = 200;
+  Resp->body = FileBuf;
+  Resp->body_size = TotalRead;
+  Resp->content_type = "application/octet-stream";
+  if (Resp->status_code == 0) {
+    Resp->status_code = 200;
   }
 
   return EFI_SUCCESS;
@@ -348,10 +345,9 @@ HandleGetPath (
 /// PUT /<vol>/<path> — upload/overwrite file.
 STATIC
 EFI_STATUS
-EFIAPI
 HandlePutPath (
-  AXL_HTTP_REQUEST   *Req,
-  AXL_HTTP_RESPONSE  *Resp,
+  AxlHttpRequest   *Req,
+  AxlHttpResponse  *Resp,
   VOID               *Data
   )
 {
@@ -361,34 +357,34 @@ HandlePutPath (
 
   (VOID)Data;
 
-  Status = ParseVolumePath (Req->Path, &Volume, SubPath, 512);
+  Status = ParseVolumePath (Req->path, &Volume, SubPath, 512);
   if (EFI_ERROR (Status)) {
-    AxlHttpResponseSetText (Resp, "Volume not found\n");
-    AxlHttpResponseSetStatus (Resp, 404);
+    axl_http_response_set_text (Resp, "Volume not found\n");
+    axl_http_response_set_status (Resp, 404);
     return EFI_SUCCESS;
   }
 
   FT_WRITE_CTX  WriteCtx;
   Status = FileTransferOpenWrite (&Volume, SubPath, NULL, NULL, &WriteCtx);
   if (EFI_ERROR (Status)) {
-    AxlHttpResponseSetText (Resp, "Cannot create file\n");
-    AxlHttpResponseSetStatus (Resp, 500);
+    axl_http_response_set_text (Resp, "Cannot create file\n");
+    axl_http_response_set_status (Resp, 500);
     return EFI_SUCCESS;
   }
 
   //
   // Write request body (already fully read by AxlHttpServer)
   //
-  if (Req->Body != NULL && Req->BodySize > 0) {
+  if (Req->body != NULL && Req->body_size > 0) {
     UINTN  Written = 0;
-    while (Written < Req->BodySize) {
-      UINTN  ChunkSize = Req->BodySize - Written;
+    while (Written < Req->body_size) {
+      UINTN  ChunkSize = Req->body_size - Written;
       if (ChunkSize > FT_CHUNK_SIZE) {
         ChunkSize = FT_CHUNK_SIZE;
       }
 
       Status = FileTransferWriteChunk (&WriteCtx,
-                 (CONST UINT8 *)Req->Body + Written, ChunkSize);
+                 (CONST UINT8 *)Req->body + Written, ChunkSize);
       if (EFI_ERROR (Status)) {
         break;
       }
@@ -398,18 +394,17 @@ HandlePutPath (
   }
 
   FileTransferCloseWrite (&WriteCtx);
-  AxlHttpResponseSetText (Resp, "Created\n");
-  AxlHttpResponseSetStatus (Resp, 201);
+  axl_http_response_set_text (Resp, "Created\n");
+  axl_http_response_set_status (Resp, 201);
   return EFI_SUCCESS;
 }
 
 /// DELETE /<vol>/<path> — delete file or empty directory.
 STATIC
 EFI_STATUS
-EFIAPI
 HandleDeletePath (
-  AXL_HTTP_REQUEST   *Req,
-  AXL_HTTP_RESPONSE  *Resp,
+  AxlHttpRequest   *Req,
+  AxlHttpResponse  *Resp,
   VOID               *Data
   )
 {
@@ -419,31 +414,30 @@ HandleDeletePath (
 
   (VOID)Data;
 
-  Status = ParseVolumePath (Req->Path, &Volume, SubPath, 512);
+  Status = ParseVolumePath (Req->path, &Volume, SubPath, 512);
   if (EFI_ERROR (Status)) {
-    AxlHttpResponseSetText (Resp, "Volume not found\n");
-    AxlHttpResponseSetStatus (Resp, 404);
+    axl_http_response_set_text (Resp, "Volume not found\n");
+    axl_http_response_set_status (Resp, 404);
     return EFI_SUCCESS;
   }
 
   Status = FileTransferDelete (&Volume, SubPath);
   if (EFI_ERROR (Status)) {
-    AxlHttpResponseSetText (Resp, "Not found\n");
-    AxlHttpResponseSetStatus (Resp, 404);
+    axl_http_response_set_text (Resp, "Not found\n");
+    axl_http_response_set_status (Resp, 404);
     return EFI_SUCCESS;
   }
 
-  AxlHttpResponseSetText (Resp, "Deleted\n");
+  axl_http_response_set_text (Resp, "Deleted\n");
   return EFI_SUCCESS;
 }
 
 /// POST /<vol>/<path>?mkdir — create directory.
 STATIC
 EFI_STATUS
-EFIAPI
 HandlePostPath (
-  AXL_HTTP_REQUEST   *Req,
-  AXL_HTTP_RESPONSE  *Resp,
+  AxlHttpRequest   *Req,
+  AxlHttpResponse  *Resp,
   VOID               *Data
   )
 {
@@ -453,28 +447,28 @@ HandlePostPath (
 
   (VOID)Data;
 
-  if (Req->Query == NULL || AsciiStrCmp (Req->Query, "mkdir") != 0) {
-    AxlHttpResponseSetText (Resp, "Use ?mkdir\n");
-    AxlHttpResponseSetStatus (Resp, 400);
+  if (Req->query == NULL || AsciiStrCmp (Req->query, "mkdir") != 0) {
+    axl_http_response_set_text (Resp, "Use ?mkdir\n");
+    axl_http_response_set_status (Resp, 400);
     return EFI_SUCCESS;
   }
 
-  Status = ParseVolumePath (Req->Path, &Volume, SubPath, 512);
+  Status = ParseVolumePath (Req->path, &Volume, SubPath, 512);
   if (EFI_ERROR (Status)) {
-    AxlHttpResponseSetText (Resp, "Volume not found\n");
-    AxlHttpResponseSetStatus (Resp, 404);
+    axl_http_response_set_text (Resp, "Volume not found\n");
+    axl_http_response_set_status (Resp, 404);
     return EFI_SUCCESS;
   }
 
   Status = FileTransferMkdir (&Volume, SubPath);
   if (EFI_ERROR (Status)) {
-    AxlHttpResponseSetText (Resp, "mkdir failed\n");
-    AxlHttpResponseSetStatus (Resp, 500);
+    axl_http_response_set_text (Resp, "mkdir failed\n");
+    axl_http_response_set_status (Resp, 500);
     return EFI_SUCCESS;
   }
 
-  AxlHttpResponseSetText (Resp, "Created\n");
-  AxlHttpResponseSetStatus (Resp, 201);
+  axl_http_response_set_text (Resp, "Created\n");
+  axl_http_response_set_status (Resp, 201);
   return EFI_SUCCESS;
 }
 
@@ -519,7 +513,7 @@ CmdServe (
 {
   SERVE_OPTIONS    Opts;
   EFI_STATUS       Status;
-  AXL_HTTP_SERVER  *Server;
+  AxlHttpServer  *Server;
 
   Opts.Port = 8080;
   Opts.NicIndex = (UINTN)-1;
@@ -579,35 +573,35 @@ CmdServe (
   //
   // Create HTTP server
   //
-  Server = AxlHttpServerNew (Opts.Port);
+  Server = axl_http_server_new (Opts.Port);
   if (Server == NULL) {
     Print (L"ERROR: HTTP server creation failed\n");
     NetworkCleanup ();
     return EFI_OUT_OF_RESOURCES;
   }
 
-  AxlHttpServerSetBodyLimit (Server, 128 * 1024 * 1024);  // 128 MB
+  axl_http_server_set_body_limit (Server, 128 * 1024 * 1024);  // 128 MB
 
   //
   // Disable keep-alive (avoids blocking on single-threaded server)
   //
-  AxlHttpServerSetKeepAlive (Server, 0);
+  axl_http_server_set_keep_alive (Server, 0);
 
   //
   // Permission middleware
   //
   if (Opts.ReadOnly || Opts.WriteOnly) {
-    AxlHttpServerUse (Server, PermissionMiddleware, &Opts);
+    axl_http_server_use (Server, PermissionMiddleware, &Opts);
   }
 
   //
   // Register routes (exact root match first, then prefix matches)
   //
-  AxlHttpServerAddRoute (Server, "GET",    "/",  HandleGetRoot,   NULL);
-  AxlHttpServerAddRoute (Server, "GET",    "/*", HandleGetPath,   NULL);
-  AxlHttpServerAddRoute (Server, "PUT",    "/*", HandlePutPath,   NULL);
-  AxlHttpServerAddRoute (Server, "DELETE", "/*", HandleDeletePath, NULL);
-  AxlHttpServerAddRoute (Server, "POST",   "/*", HandlePostPath,  NULL);
+  axl_http_server_add_route (Server, "GET",    "/",  HandleGetRoot,   NULL);
+  axl_http_server_add_route (Server, "GET",    "/*", HandleGetPath,   NULL);
+  axl_http_server_add_route (Server, "PUT",    "/*", HandlePutPath,   NULL);
+  axl_http_server_add_route (Server, "DELETE", "/*", HandleDeletePath, NULL);
+  axl_http_server_add_route (Server, "POST",   "/*", HandlePostPath,  NULL);
 
   //
   // Print banner
@@ -642,7 +636,7 @@ CmdServe (
   //
   AXL_LOOP  *Loop = AxlLoopNew ();
   if (Loop == NULL) {
-    AxlHttpServerFree (Server);
+    axl_http_server_free (Server);
     NetworkCleanup ();
     return EFI_OUT_OF_RESOURCES;
   }
@@ -650,11 +644,11 @@ CmdServe (
   mServeLoop = Loop;
   AxlLoopAddKeyPress (Loop, EscKeyHandler, NULL);
 
-  Status = AxlHttpServerAttach (Server, Loop);
+  Status = axl_http_server_attach (Server, Loop);
   if (EFI_ERROR (Status)) {
     Print (L"ERROR: Server attach failed: %r\n", Status);
     AxlLoopFree (Loop);
-    AxlHttpServerFree (Server);
+    axl_http_server_free (Server);
     NetworkCleanup ();
     return Status;
   }
@@ -663,7 +657,7 @@ CmdServe (
 
   mServeLoop = NULL;
   AxlLoopFree (Loop);
-  AxlHttpServerFree (Server);
+  axl_http_server_free (Server);
   NetworkCleanup ();
   return Status;
 }

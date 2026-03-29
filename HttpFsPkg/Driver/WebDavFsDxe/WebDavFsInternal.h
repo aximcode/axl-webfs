@@ -33,7 +33,7 @@
 #include <Library/NetworkLib.h>
 #include <Library/JsonLib.h>
 #include <Library/AxlLib.h>
-#include <Library/AxlNet.h>
+#include <axl/axl-net.h>
 
 // ----------------------------------------------------------------------------
 // Constants
@@ -86,7 +86,7 @@ typedef struct {
     EFI_DEVICE_PATH_PROTOCOL            *DevicePath;
 
     /// Server connection.
-    AXL_HTTP_CLIENT                     *HttpClient;
+    AxlHttpClient                     *HttpClient;
     EFI_IPv4_ADDRESS                    ServerAddr;
     UINT16                              ServerPort;
     CHAR8                               BasePath[256];
@@ -165,7 +165,7 @@ EFI_STATUS DirCacheLookupEntry (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Di
 VOID DirCacheInvalidate (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Path);
 
 /// Issue an HTTP request with automatic reconnect on connection error.
-/// Caller must free *Response with AxlHttpClientResponseFree().
-EFI_STATUS WebDavFsHttpRequest (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Method, IN CONST CHAR8 *Path, IN AXL_HASH_TABLE *ExtraHeaders OPTIONAL, IN CONST VOID *Body OPTIONAL, IN UINTN BodyLen, OUT AXL_HTTP_CLIENT_RESPONSE **Response);
+/// Caller must free *Response with axl_http_client_response_free().
+EFI_STATUS WebDavFsHttpRequest (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Method, IN CONST CHAR8 *Path, IN AXL_HASH_TABLE *ExtraHeaders OPTIONAL, IN CONST VOID *Body OPTIONAL, IN UINTN BodyLen, OUT AxlHttpClientResponse **Response);
 
 #endif // WEBDAVFS_INTERNAL_H_

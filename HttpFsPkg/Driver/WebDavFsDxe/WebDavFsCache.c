@@ -115,24 +115,24 @@ EFI_STATUS WebDavFsHttpRequest(
     IN  AXL_HASH_TABLE            *ExtraHeaders  OPTIONAL,
     IN  CONST VOID                *Body          OPTIONAL,
     IN  UINTN                     BodyLen,
-    OUT AXL_HTTP_CLIENT_RESPONSE  **Response
+    OUT AxlHttpClientResponse  **Response
 ) {
     // Build full URL from base + path
     CHAR8 Url[MAX_PATH_LEN + 280];
     AsciiSPrint(Url, sizeof(Url), "%a%a", Private->BaseUrl, Path);
 
-    EFI_STATUS Status = AxlHttpRequest(
+    EFI_STATUS Status = axl_http_request(
         Private->HttpClient, Method, Url, Body, BodyLen,
         NULL, ExtraHeaders, Response);
 
     if (EFI_ERROR(Status)) {
         // Attempt reconnect: destroy client and recreate
-        AxlHttpClientFree(Private->HttpClient);
-        Private->HttpClient = AxlHttpClientNew();
+        axl_http_client_free(Private->HttpClient);
+        Private->HttpClient = axl_http_client_new();
         if (Private->HttpClient == NULL) return EFI_OUT_OF_RESOURCES;
 
         // Retry once
-        Status = AxlHttpRequest(
+        Status = axl_http_request(
             Private->HttpClient, Method, Url, Body, BodyLen,
             NULL, ExtraHeaders, Response);
     }
@@ -162,27 +162,27 @@ EFI_STATUS DirCacheFetch(
     CHAR8 ListPath[MAX_PATH_LEN];
     AsciiSPrint(ListPath, sizeof(ListPath), "/list%a", Path);
 
-    AXL_HTTP_CLIENT_RESPONSE *Response = NULL;
+    AxlHttpClientResponse *Response = NULL;
     EFI_STATUS Status = WebDavFsHttpRequest(
         Private, "GET", ListPath, NULL, NULL, 0, &Response);
     if (EFI_ERROR(Status) || Response == NULL) return EFI_ERROR(Status) ? Status : EFI_DEVICE_ERROR;
 
-    if (Response->StatusCode == 404) {
-        AxlHttpClientResponseFree(Response);
+    if (Response->status_code == 404) {
+        axl_http_client_response_free(Response);
         return EFI_NOT_FOUND;
     }
-    if (Response->StatusCode != 200) {
-        AxlHttpClientResponseFree(Response);
+    if (Response->status_code != 200) {
+        axl_http_client_response_free(Response);
         return EFI_DEVICE_ERROR;
     }
 
     // NUL-terminate body for JSON parsing
-    UINTN BodySize = Response->BodySize;
+    UINTN BodySize = Response->body_size;
     if (BodySize >= HTTP_BODY_BUF_SIZE) BodySize = HTTP_BODY_BUF_SIZE - 1;
     CHAR8 BodyBuf[HTTP_BODY_BUF_SIZE];
-    CopyMem(BodyBuf, Response->Body, BodySize);
+    CopyMem(BodyBuf, Response->body, BodySize);
     BodyBuf[BodySize] = '\0';
-    AxlHttpClientResponseFree(Response);
+    axl_http_client_response_free(Response);
 
     // Parse JSON array
     JSON_CTX Ctx;

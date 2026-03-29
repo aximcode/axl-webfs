@@ -46,7 +46,11 @@
   StackCheckLib|MdePkg/Library/StackCheckLibNull/StackCheckLibNull.inf
   StackCheckFailureHookLib|MdePkg/Library/StackCheckFailureHookLibNull/StackCheckFailureHookLibNull.inf
 
-  # AxlLib (from uefi-devkit via PACKAGES_PATH)
+  # AxlLib (from libaxl via PACKAGES_PATH)
+  AxlMemLib|AxlPkg/Lib/Mem/AxlMem.inf
+  AxlFormatLib|AxlPkg/Lib/Format/AxlFormat.inf
+  AxlIOLib|AxlPkg/Lib/IO/AxlIO.inf
+  AxlAppLib|AxlPkg/Lib/Posix/AxlApp.inf
   AxlLogLib|AxlPkg/Lib/Log/AxlLog.inf
   AxlDataLib|AxlPkg/Lib/Data/AxlData.inf
   AxlUtilLib|AxlPkg/Lib/Util/AxlUtil.inf
