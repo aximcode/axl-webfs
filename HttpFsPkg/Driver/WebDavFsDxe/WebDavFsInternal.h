@@ -32,7 +32,7 @@
 
 #include <Library/NetworkLib.h>
 #include <Library/JsonLib.h>
-#include <Library/AxlLib.h>
+#include <axl/axl-log.h>
 #include <axl/axl-net.h>
 
 // ----------------------------------------------------------------------------

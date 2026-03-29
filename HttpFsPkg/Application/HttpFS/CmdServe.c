@@ -16,7 +16,7 @@
 #include <Library/PrintLib.h>
 #include <Library/NetworkLib.h>
 #include <Library/FileTransferLib.h>
-#include <Library/AxlLib.h>
+#include <axl/axl-log.h>
 #include <axl/axl-net.h>
 
 AXL_LOG_DOMAIN ("serve");
