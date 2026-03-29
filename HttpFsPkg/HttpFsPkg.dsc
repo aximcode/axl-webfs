@@ -46,7 +46,7 @@
   StackCheckLib|MdePkg/Library/StackCheckLibNull/StackCheckLibNull.inf
   StackCheckFailureHookLib|MdePkg/Library/StackCheckFailureHookLibNull/StackCheckFailureHookLibNull.inf
 
-  # AxlLib (from libaxl via PACKAGES_PATH)
+  # AxlLib (from axl-sdk via PACKAGES_PATH)
   AxlMemLib|AxlPkg/Lib/mem/AxlMem.inf
   AxlFormatLib|AxlPkg/Lib/format/AxlFormat.inf
   AxlIOLib|AxlPkg/Lib/io/AxlIO.inf
