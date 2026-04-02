@@ -84,15 +84,15 @@ int main(int argc, char **argv)
     }
 
     if (axl_strcmp(cmd, "mount") == 0) {
-        return CmdMount(argc - 2, argv + 2);
+        return CmdMount(argc - 1, argv + 1);
     }
 
     if (axl_strcmp(cmd, "umount") == 0) {
-        return CmdUmount(argc - 2, argv + 2);
+        return CmdUmount(argc - 1, argv + 1);
     }
 
     if (axl_strcmp(cmd, "serve") == 0) {
-        return CmdServe(argc - 2, argv + 2);
+        return CmdServe(argc - 1, argv + 1);
     }
 
     if (axl_strcmp(cmd, "list-nics") == 0) {

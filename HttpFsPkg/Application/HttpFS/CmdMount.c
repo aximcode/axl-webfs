@@ -98,11 +98,12 @@ CmdMount(int argc, char **argv)
         axl_driver_unload(handle);
         return 1;
     }
-    axl_free(url_w);
 
-    // Start the driver
+    // Start the driver (LoadOptions must remain valid until StartImage returns)
     axl_printf("Connecting to %s...\n", url);
-    if (axl_driver_start(handle) != 0) {
+    int start_rc = axl_driver_start(handle);
+    axl_free(url_w);
+    if (start_rc != 0) {
         axl_printf("ERROR: Driver start failed\n");
         axl_driver_unload(handle);
         return 1;
