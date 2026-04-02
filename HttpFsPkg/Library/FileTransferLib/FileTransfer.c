@@ -52,7 +52,7 @@ int ft_get_volume(size_t index, FtVolume *vol)
 int ft_find_volume(const char *name, FtVolume *vol)
 {
     for (size_t i = 0; i < mVolumeCount; i++) {
-        if (axl_strcmp(mVolumes[i].name, name) == 0) {
+        if (axl_streql(mVolumes[i].name, name)) {
             *vol = mVolumes[i];
             return 0;
         }

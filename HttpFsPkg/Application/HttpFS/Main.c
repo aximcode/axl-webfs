@@ -77,25 +77,25 @@ int main(int argc, char **argv)
 
     const char *cmd = argv[1];
 
-    if (axl_strcmp(cmd, "-h") == 0 || axl_strcmp(cmd, "--help") == 0 ||
-        axl_strcmp(cmd, "help") == 0) {
+    if (axl_streql(cmd, "-h") || axl_streql(cmd, "--help") ||
+        axl_streql(cmd, "help")) {
         PrintUsage();
         return 0;
     }
 
-    if (axl_strcmp(cmd, "mount") == 0) {
+    if (axl_streql(cmd, "mount")) {
         return CmdMount(argc - 1, argv + 1);
     }
 
-    if (axl_strcmp(cmd, "umount") == 0) {
+    if (axl_streql(cmd, "umount")) {
         return CmdUmount(argc - 1, argv + 1);
     }
 
-    if (axl_strcmp(cmd, "serve") == 0) {
+    if (axl_streql(cmd, "serve")) {
         return CmdServe(argc - 1, argv + 1);
     }
 
-    if (axl_strcmp(cmd, "list-nics") == 0) {
+    if (axl_streql(cmd, "list-nics")) {
         return CmdListNics();
     }
 

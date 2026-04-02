@@ -711,7 +711,7 @@ WebDavFsSetInfo(
     }
     NewName8[i] = '\0';
 
-    if (axl_strcmp(OldName, NewName8) == 0) {
+    if (axl_streql(OldName, NewName8)) {
         return EFI_SUCCESS;  // No name change
     }
 

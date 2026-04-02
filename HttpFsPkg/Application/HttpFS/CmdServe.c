@@ -105,16 +105,16 @@ permission_middleware(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     ServeOptions *opts = (ServeOptions *)data;
 
     if (opts->read_only &&
-        (axl_strcmp(req->method, "PUT") == 0 ||
-         axl_strcmp(req->method, "DELETE") == 0 ||
-         axl_strcmp(req->method, "POST") == 0))
+        (axl_streql(req->method, "PUT") ||
+         axl_streql(req->method, "DELETE") ||
+         axl_streql(req->method, "POST")))
     {
         axl_http_response_set_text(resp, "Read-only mode\n");
         axl_http_response_set_status(resp, 403);
         return -1;
     }
 
-    if (opts->write_only && axl_strcmp(req->method, "GET") == 0) {
+    if (opts->write_only && axl_streql(req->method, "GET")) {
         axl_http_response_set_text(resp, "Write-only mode\n");
         axl_http_response_set_status(resp, 403);
         return -1;
@@ -411,7 +411,7 @@ handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 
     (void)data;
 
-    if (req->query == NULL || axl_strcmp(req->query, "mkdir") != 0) {
+    if (req->query == NULL || !axl_streql(req->query, "mkdir")) {
         axl_http_response_set_text(resp, "Use ?mkdir\n");
         axl_http_response_set_status(resp, 400);
         return 0;

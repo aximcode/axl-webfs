@@ -32,7 +32,7 @@ DirCacheFind(
     for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
         DirCacheSlot *Slot = &Private->DirCache[i];
         if (!Slot->Valid) continue;
-        if (axl_strcmp(Slot->Path, Path) != 0) continue;
+        if (!axl_streql(Slot->Path, Path)) continue;
 
         // Check TTL
         uint64_t Age = Now - Slot->TimestampMs;
@@ -61,7 +61,7 @@ DirCachePut(
     for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
         DirCacheSlot *Slot = &Private->DirCache[i];
 
-        if (Slot->Valid && axl_strcmp(Slot->Path, Path) == 0) {
+        if (Slot->Valid && axl_streql(Slot->Path, Path)) {
             Target = Slot;
             break;
         }
@@ -95,7 +95,7 @@ DirCacheInvalidate(
 {
     for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
         if (Private->DirCache[i].Valid &&
-            axl_strcmp(Private->DirCache[i].Path, Path) == 0) {
+            axl_streql(Private->DirCache[i].Path, Path)) {
             Private->DirCache[i].Valid = false;
         }
     }

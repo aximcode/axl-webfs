@@ -213,7 +213,7 @@ int ft_list_dir(FtVolume *vol, const char *path, bool as_json,
     /* Read directory entries */
     AxlDirEntry entry;
     while (axl_dir_read(dir, &entry)) {
-        if (axl_strcmp(entry.name, ".") == 0 || axl_strcmp(entry.name, "..") == 0)
+        if (axl_streql(entry.name, ".") || axl_streql(entry.name, ".."))
             continue;
 
         if (as_json) {

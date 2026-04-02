@@ -271,8 +271,8 @@ load_nic_drivers(void)
         if (entry.is_dir) continue;
         size_t name_len = axl_strlen(entry.name);
         if (name_len <= 4) continue;
-        if (axl_strcmp(&entry.name[name_len - 4], ".efi") != 0 &&
-            axl_strcmp(&entry.name[name_len - 4], ".EFI") != 0)
+        if (!axl_streql(&entry.name[name_len - 4], ".efi") &&
+            !axl_streql(&entry.name[name_len - 4], ".EFI"))
             continue;
 
         char full_path[512];
@@ -306,34 +306,30 @@ configure_dhcp4_direct(size_t timeout_sec)
 {
     (void)timeout_sec;
 
-    EFI_HANDLE *handles = NULL;
-    UINTN handle_count = 0;
+    void **handles = NULL;
+    size_t handle_count = 0;
 
-    EFI_STATUS st = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiDhcp4ServiceBindingProtocolGuid, NULL,
-        &handle_count, &handles);
-    if (EFI_ERROR(st) || handle_count == 0) {
-        if (handles) gBS->FreePool(handles);
+    if (axl_service_enumerate("dhcp4-sb", &handles, &handle_count) != 0 ||
+        handle_count == 0) {
+        axl_free(handles);
         return -1;
     }
 
     axl_printf("  No IP4Config2 -- trying DHCP4 direct...\n");
 
-    for (UINTN i = 0; i < handle_count; i++) {
+    for (size_t i = 0; i < handle_count; i++) {
         EFI_SERVICE_BINDING_PROTOCOL *dhcp4_sb = NULL;
-        st = gBS->HandleProtocol(
-            handles[i], &gEfiDhcp4ServiceBindingProtocolGuid,
-            (VOID **)&dhcp4_sb);
-        if (EFI_ERROR(st) || dhcp4_sb == NULL) continue;
+        if (axl_handle_get_service(handles[i], "dhcp4-sb",
+                                   (void **)&dhcp4_sb) != 0 || dhcp4_sb == NULL)
+            continue;
 
         EFI_HANDLE child_handle = NULL;
-        st = dhcp4_sb->CreateChild(dhcp4_sb, &child_handle);
+        EFI_STATUS st = dhcp4_sb->CreateChild(dhcp4_sb, &child_handle);
         if (EFI_ERROR(st)) continue;
 
         EFI_DHCP4_PROTOCOL *dhcp4 = NULL;
-        st = gBS->HandleProtocol(
-            child_handle, &gEfiDhcp4ProtocolGuid, (VOID **)&dhcp4);
-        if (EFI_ERROR(st)) {
+        if (axl_handle_get_service(child_handle, "dhcp4",
+                                   (void **)&dhcp4) != 0) {
             dhcp4_sb->DestroyChild(dhcp4_sb, child_handle);
             continue;
         }
@@ -356,12 +352,10 @@ configure_dhcp4_direct(size_t timeout_sec)
         /* Check link before DHCP4 discover (warn only) */
         {
             EFI_SIMPLE_NETWORK_PROTOCOL *snp = NULL;
-            gBS->HandleProtocol(
-                handles[i], &gEfiSimpleNetworkProtocolGuid, (VOID **)&snp);
-            if (snp != NULL &&
+            if (axl_handle_get_service(handles[i], "simple-network",
+                                       (void **)&snp) == 0 && snp != NULL &&
                 snp->Mode->MediaPresentSupported && !snp->Mode->MediaPresent) {
-                axl_printf("  NIC %llu: reports no link (may be incorrect)\n",
-                           (unsigned long long)i);
+                axl_printf("  NIC %zu: reports no link (may be incorrect)\n", i);
             }
         }
 
@@ -396,11 +390,11 @@ configure_dhcp4_direct(size_t timeout_sec)
         mIfaceInfo.mac_len = 6;
         mNicHandle = handles[i];
 
-        gBS->FreePool(handles);
+        axl_free(handles);
         return 0;
     }
 
-    gBS->FreePool(handles);
+    axl_free(handles);
     return -1;
 }
 
@@ -659,17 +653,15 @@ network_cleanup(void)
 {
     if (mDhcp4Fallback && mDhcp4ChildHandle != NULL) {
         EFI_DHCP4_PROTOCOL *dhcp4 = NULL;
-        gBS->HandleProtocol(
-            mDhcp4ChildHandle, &gEfiDhcp4ProtocolGuid, (VOID **)&dhcp4);
+        axl_handle_get_service(mDhcp4ChildHandle, "dhcp4", (void **)&dhcp4);
         if (dhcp4 != NULL) {
             dhcp4->Stop(dhcp4);
             dhcp4->Configure(dhcp4, NULL);
         }
 
         EFI_SERVICE_BINDING_PROTOCOL *dhcp4_sb = NULL;
-        gBS->HandleProtocol(
-            mDhcp4SbHandle, &gEfiDhcp4ServiceBindingProtocolGuid,
-            (VOID **)&dhcp4_sb);
+        axl_handle_get_service(mDhcp4SbHandle, "dhcp4-sb",
+                               (void **)&dhcp4_sb);
         if (dhcp4_sb != NULL) {
             dhcp4_sb->DestroyChild(dhcp4_sb, mDhcp4ChildHandle);
         }
