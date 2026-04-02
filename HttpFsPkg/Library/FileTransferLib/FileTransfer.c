@@ -1,177 +1,129 @@
 /** @file
-  FileTransferLib — Volume enumeration, streaming file I/O, file operations.
+  FileTransferLib -- Volume enumeration, streaming file I/O, file operations.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
 #include <Library/FileTransferLib.h>
+#include <axl.h>
 
-#include <Library/UefiBootServicesTableLib.h>
-#include <Library/BaseLib.h>
-#include <Library/BaseMemoryLib.h>
-#include <Library/MemoryAllocationLib.h>
-#include <Library/UefiLib.h>
-#include <Library/PrintLib.h>
-#include <Library/DevicePathLib.h>
-
-#include <Protocol/SimpleFileSystem.h>
-#include <Guid/FileInfo.h>
 
 // ----------------------------------------------------------------------------
 // Volume table
 // ----------------------------------------------------------------------------
 
-static FT_VOLUME  mVolumes[FT_MAX_VOLUMES];
-static UINTN      mVolumeCount = 0;
+static FtVolume mVolumes[FT_MAX_VOLUMES];
+static size_t   mVolumeCount = 0;
 
-EFI_STATUS EFIAPI FileTransferInit(VOID) {
-    EFI_HANDLE *Handles = NULL;
-    UINTN HandleCount = 0;
+int ft_init(void)
+{
+    void **handles = NULL;
+    size_t count = 0;
 
-    EFI_STATUS Status = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiSimpleFileSystemProtocolGuid, NULL,
-        &HandleCount, &Handles);
-    if (EFI_ERROR(Status)) return Status;
+    if (axl_service_enumerate("simple-fs", &handles, &count) != 0)
+        return -1;
 
     mVolumeCount = 0;
-    for (UINTN i = 0; i < HandleCount && mVolumeCount < FT_MAX_VOLUMES; i++) {
-        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs = NULL;
-        Status = gBS->OpenProtocol(
-            Handles[i], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs,
-            gImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-        if (EFI_ERROR(Status)) continue;
-
-        FT_VOLUME *V = &mVolumes[mVolumeCount];
-        V->Handle = Handles[i];
-        V->Fs = Fs;
-        UnicodeSPrint(V->Name, sizeof(V->Name), L"fs%d", mVolumeCount);
+    for (size_t i = 0; i < count && mVolumeCount < FT_MAX_VOLUMES; i++) {
+        FtVolume *v = &mVolumes[mVolumeCount];
+        v->handle = handles[i];
+        axl_snprintf(v->name, sizeof(v->name), "fs%zu", mVolumeCount);
         mVolumeCount++;
     }
 
-    FreePool(Handles);
-    return EFI_SUCCESS;
+    axl_free(handles);
+    return 0;
 }
 
-UINTN EFIAPI FileTransferGetVolumeCount(VOID) {
+size_t ft_get_volume_count(void)
+{
     return mVolumeCount;
 }
 
-EFI_STATUS EFIAPI FileTransferGetVolume(IN UINTN Index, OUT FT_VOLUME *Volume) {
-    if (Index >= mVolumeCount || Volume == NULL) return EFI_NOT_FOUND;
-    CopyMem(Volume, &mVolumes[Index], sizeof(FT_VOLUME));
-    return EFI_SUCCESS;
+int ft_get_volume(size_t index, FtVolume *vol)
+{
+    if (index >= mVolumeCount || vol == NULL)
+        return -1;
+    *vol = mVolumes[index];
+    return 0;
 }
 
-EFI_STATUS EFIAPI FileTransferFindVolume(IN CONST CHAR16 *Name, OUT FT_VOLUME *Volume) {
-    for (UINTN i = 0; i < mVolumeCount; i++) {
-        if (StrCmp(mVolumes[i].Name, Name) == 0) {
-            CopyMem(Volume, &mVolumes[i], sizeof(FT_VOLUME));
-            return EFI_SUCCESS;
+int ft_find_volume(const char *name, FtVolume *vol)
+{
+    for (size_t i = 0; i < mVolumeCount; i++) {
+        if (axl_strcmp(mVolumes[i].name, name) == 0) {
+            *vol = mVolumes[i];
+            return 0;
         }
     }
-    return EFI_NOT_FOUND;
+    return -1;
 }
 
 // ----------------------------------------------------------------------------
 // Path helpers
 // ----------------------------------------------------------------------------
 
-/// Open a file on a volume by CHAR16 path. Caller must Close().
-static EFI_STATUS OpenFileOnVolume(
-    IN  FT_VOLUME          *Volume,
-    IN  CONST CHAR16       *Path,
-    IN  UINT64             Mode,
-    IN  UINT64             Attributes,
-    OUT EFI_FILE_PROTOCOL  **File
-) {
-    EFI_FILE_PROTOCOL *Root = NULL;
-    EFI_STATUS Status = Volume->Fs->OpenVolume(Volume->Fs, &Root);
-    if (EFI_ERROR(Status)) return Status;
-
-    // Convert forward slashes to backslashes for UEFI
-    CHAR16 UefiPath[512];
-    UINTN i = 0;
-    while (Path[i] != L'\0' && i < 511) {
-        UefiPath[i] = (Path[i] == L'/') ? L'\\' : Path[i];
-        i++;
+/// Build a full "vol:path" string with forward slashes converted to backslashes.
+static void build_path(const FtVolume *vol, const char *sub_path,
+                       char *out, size_t out_size)
+{
+    axl_snprintf(out, out_size, "%s:%s", vol->name, sub_path);
+    for (char *p = out; *p; p++) {
+        if (*p == '/')
+            *p = '\\';
     }
-    UefiPath[i] = L'\0';
-
-    // Skip leading backslash for Open (root is already open)
-    CHAR16 *OpenPath = UefiPath;
-    if (OpenPath[0] == L'\\') OpenPath++;
-    if (OpenPath[0] == L'\0') {
-        *File = Root;
-        return EFI_SUCCESS;
-    }
-
-    Status = Root->Open(Root, File, OpenPath, Mode, Attributes);
-    Root->Close(Root);
-    return Status;
 }
 
 // ----------------------------------------------------------------------------
 // Streaming read
 // ----------------------------------------------------------------------------
 
-EFI_STATUS EFIAPI FileTransferOpenRead(
-    IN  FT_VOLUME       *Volume,
-    IN  CONST CHAR16    *Path,
-    IN  UINT64          Offset,
-    IN  FT_PROGRESS_CB  Cb       OPTIONAL,
-    IN  VOID            *Ctx     OPTIONAL,
-    OUT FT_READ_CTX     *ReadCtx
-) {
-    EFI_FILE_PROTOCOL *File = NULL;
-    EFI_STATUS Status = OpenFileOnVolume(Volume, Path, EFI_FILE_MODE_READ, 0, &File);
-    if (EFI_ERROR(Status)) return Status;
+int ft_open_read(FtVolume *vol, const char *path, uint64_t offset,
+                 FtProgressCb cb, void *ctx, FtReadCtx *rctx)
+{
+    char full[512];
+    build_path(vol, path, full, sizeof(full));
 
-    // Get file size
-    UINTN InfoSize = 0;
-    File->GetInfo(File, &gEfiFileInfoGuid, &InfoSize, NULL);
-    EFI_FILE_INFO *Info = AllocatePool(InfoSize);
-    if (Info == NULL) { File->Close(File); return EFI_OUT_OF_RESOURCES; }
-    Status = File->GetInfo(File, &gEfiFileInfoGuid, &InfoSize, Info);
-    UINT64 FileSize = Info->FileSize;
-    FreePool(Info);
-    if (EFI_ERROR(Status)) { File->Close(File); return Status; }
+    AxlStream *s = axl_fopen(full, "r");
+    if (s == NULL)
+        return -1;
 
-    if (Offset > 0) {
-        File->SetPosition(File, Offset);
+    /* Get file size via axl_file_info */
+    AxlFileInfo fi;
+    if (axl_file_info(full, &fi) != 0) {
+        axl_fclose(s);
+        return -1;
     }
 
-    ReadCtx->File = File;
-    ReadCtx->FileSize = FileSize;
-    ReadCtx->Position = Offset;
-    ReadCtx->ProgressCb = Cb;
-    ReadCtx->ProgressCtx = Ctx;
-    return EFI_SUCCESS;
+    if (offset > 0)
+        axl_fseek(s, (long)offset, 0);
+
+    rctx->stream = s;
+    rctx->file_size = fi.size;
+    rctx->position = offset;
+    rctx->progress_cb = cb;
+    rctx->progress_ctx = ctx;
+    return 0;
 }
 
-EFI_STATUS EFIAPI FileTransferReadChunk(
-    IN OUT FT_READ_CTX  *Ctx,
-    OUT    VOID         *Buffer,
-    IN     UINTN        BufferSize,
-    OUT    UINTN        *BytesRead
-) {
-    UINTN ReadSize = BufferSize;
-    EFI_STATUS Status = Ctx->File->Read(Ctx->File, &ReadSize, Buffer);
-    if (EFI_ERROR(Status)) { *BytesRead = 0; return Status; }
-
-    *BytesRead = ReadSize;
-    Ctx->Position += ReadSize;
-
-    if (Ctx->ProgressCb != NULL) {
-        Ctx->ProgressCb((UINTN)Ctx->Position, (UINTN)Ctx->FileSize, Ctx->ProgressCtx);
-    }
-    return EFI_SUCCESS;
+int ft_read_chunk(FtReadCtx *rctx, void *buf, size_t buf_size,
+                  size_t *bytes_read)
+{
+    size_t got = axl_fread(buf, 1, buf_size, rctx->stream);
+    *bytes_read = got;
+    rctx->position += got;
+    if (rctx->progress_cb != NULL)
+        rctx->progress_cb((size_t)rctx->position, (size_t)rctx->file_size,
+                          rctx->progress_ctx);
+    return (got > 0 || axl_feof(rctx->stream)) ? 0 : -1;
 }
 
-VOID EFIAPI FileTransferCloseRead(IN FT_READ_CTX *Ctx) {
-    if (Ctx->File != NULL) {
-        Ctx->File->Close(Ctx->File);
-        Ctx->File = NULL;
+void ft_close_read(FtReadCtx *rctx)
+{
+    if (rctx->stream != NULL) {
+        axl_fclose(rctx->stream);
+        rctx->stream = NULL;
     }
 }
 
@@ -179,68 +131,55 @@ VOID EFIAPI FileTransferCloseRead(IN FT_READ_CTX *Ctx) {
 // Streaming write
 // ----------------------------------------------------------------------------
 
-EFI_STATUS EFIAPI FileTransferOpenWrite(
-    IN  FT_VOLUME       *Volume,
-    IN  CONST CHAR16    *Path,
-    IN  FT_PROGRESS_CB  Cb       OPTIONAL,
-    IN  VOID            *Ctx     OPTIONAL,
-    OUT FT_WRITE_CTX    *WriteCtx
-) {
-    // Create parent directories if needed
-    CHAR16 ParentPath[512];
-    UINTN Len = StrLen(Path);
-    if (Len >= 512) return EFI_INVALID_PARAMETER;
-    StrCpyS(ParentPath, 512, Path);
-
-    // Find last separator
-    UINTN LastSep = 0;
-    for (UINTN i = 0; i < Len; i++) {
-        if (ParentPath[i] == L'/' || ParentPath[i] == L'\\') LastSep = i;
+int ft_open_write(FtVolume *vol, const char *path, FtProgressCb cb,
+                  void *ctx, FtWriteCtx *wctx)
+{
+    /* Create parent directories if needed */
+    char parent[512];
+    axl_strlcpy(parent, path, sizeof(parent));
+    size_t len = axl_strlen(parent);
+    size_t last_sep = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (parent[i] == '/' || parent[i] == '\\')
+            last_sep = i;
     }
-    if (LastSep > 0) {
-        ParentPath[LastSep] = L'\0';
-        FileTransferMkdir(Volume, ParentPath);
+    if (last_sep > 0) {
+        parent[last_sep] = '\0';
+        ft_mkdir(vol, parent);
     }
 
-    EFI_FILE_PROTOCOL *File = NULL;
-    EFI_STATUS Status = OpenFileOnVolume(
-        Volume, Path,
-        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
-        0, &File);
-    if (EFI_ERROR(Status)) return Status;
+    char full[512];
+    build_path(vol, path, full, sizeof(full));
 
-    // Truncate existing file by deleting and recreating
-    // (simpler than seeking to 0 and setting size)
+    AxlStream *s = axl_fopen(full, "w");
+    if (s == NULL)
+        return -1;
 
-    WriteCtx->File = File;
-    WriteCtx->BytesWritten = 0;
-    WriteCtx->ProgressCb = Cb;
-    WriteCtx->ProgressCtx = Ctx;
-    return EFI_SUCCESS;
+    wctx->stream = s;
+    wctx->bytes_written = 0;
+    wctx->progress_cb = cb;
+    wctx->progress_ctx = ctx;
+    return 0;
 }
 
-EFI_STATUS EFIAPI FileTransferWriteChunk(
-    IN OUT FT_WRITE_CTX  *Ctx,
-    IN     CONST VOID    *Data,
-    IN     UINTN         Len
-) {
-    UINTN WriteSize = Len;
-    EFI_STATUS Status = Ctx->File->Write(Ctx->File, &WriteSize, (VOID *)Data);
-    if (EFI_ERROR(Status)) return Status;
-
-    Ctx->BytesWritten += WriteSize;
-
-    if (Ctx->ProgressCb != NULL) {
-        Ctx->ProgressCb((UINTN)Ctx->BytesWritten, (UINTN)MAX_UINTN, Ctx->ProgressCtx);
-    }
-    return EFI_SUCCESS;
+int ft_write_chunk(FtWriteCtx *wctx, const void *data, size_t len)
+{
+    size_t wrote = axl_fwrite(data, 1, len, wctx->stream);
+    if (wrote != len)
+        return -1;
+    wctx->bytes_written += wrote;
+    if (wctx->progress_cb != NULL)
+        wctx->progress_cb((size_t)wctx->bytes_written, SIZE_MAX,
+                          wctx->progress_ctx);
+    return 0;
 }
 
-VOID EFIAPI FileTransferCloseWrite(IN FT_WRITE_CTX *Ctx) {
-    if (Ctx->File != NULL) {
-        Ctx->File->Flush(Ctx->File);
-        Ctx->File->Close(Ctx->File);
-        Ctx->File = NULL;
+void ft_close_write(FtWriteCtx *wctx)
+{
+    if (wctx->stream != NULL) {
+        axl_fflush(wctx->stream);
+        axl_fclose(wctx->stream);
+        wctx->stream = NULL;
     }
 }
 
@@ -248,61 +187,38 @@ VOID EFIAPI FileTransferCloseWrite(IN FT_WRITE_CTX *Ctx) {
 // File operations
 // ----------------------------------------------------------------------------
 
-EFI_STATUS EFIAPI FileTransferDelete(IN FT_VOLUME *Volume, IN CONST CHAR16 *Path) {
-    EFI_FILE_PROTOCOL *File = NULL;
-    EFI_STATUS Status = OpenFileOnVolume(
-        Volume, Path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0, &File);
-    if (EFI_ERROR(Status)) return Status;
-    return File->Delete(File);
+int ft_delete(FtVolume *vol, const char *path)
+{
+    char full[512];
+    build_path(vol, path, full, sizeof(full));
+    return axl_file_delete(full);
 }
 
-EFI_STATUS EFIAPI FileTransferMkdir(IN FT_VOLUME *Volume, IN CONST CHAR16 *Path) {
-    EFI_FILE_PROTOCOL *Dir = NULL;
-    EFI_STATUS Status = OpenFileOnVolume(
-        Volume, Path,
-        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
-        EFI_FILE_DIRECTORY, &Dir);
-    if (EFI_ERROR(Status)) return Status;
-    Dir->Close(Dir);
-    return EFI_SUCCESS;
+int ft_mkdir(FtVolume *vol, const char *path)
+{
+    char full[512];
+    build_path(vol, path, full, sizeof(full));
+    return axl_dir_mkdir(full);
 }
 
-EFI_STATUS EFIAPI FileTransferGetFileSize(
-    IN  FT_VOLUME  *Volume,
-    IN  CONST CHAR16  *Path,
-    OUT UINT64     *Size
-) {
-    EFI_FILE_PROTOCOL *File = NULL;
-    EFI_STATUS Status = OpenFileOnVolume(Volume, Path, EFI_FILE_MODE_READ, 0, &File);
-    if (EFI_ERROR(Status)) return Status;
-
-    UINTN InfoSize = 0;
-    File->GetInfo(File, &gEfiFileInfoGuid, &InfoSize, NULL);
-    EFI_FILE_INFO *Info = AllocatePool(InfoSize);
-    if (Info == NULL) { File->Close(File); return EFI_OUT_OF_RESOURCES; }
-    Status = File->GetInfo(File, &gEfiFileInfoGuid, &InfoSize, Info);
-    *Size = Info->FileSize;
-    FreePool(Info);
-    File->Close(File);
-    return Status;
+int ft_get_file_size(FtVolume *vol, const char *path, uint64_t *size)
+{
+    char full[512];
+    build_path(vol, path, full, sizeof(full));
+    AxlFileInfo fi;
+    if (axl_file_info(full, &fi) != 0)
+        return -1;
+    *size = fi.size;
+    return 0;
 }
 
-EFI_STATUS EFIAPI FileTransferIsDir(
-    IN  FT_VOLUME    *Volume,
-    IN  CONST CHAR16 *Path,
-    OUT BOOLEAN      *IsDir
-) {
-    EFI_FILE_PROTOCOL *File = NULL;
-    EFI_STATUS Status = OpenFileOnVolume(Volume, Path, EFI_FILE_MODE_READ, 0, &File);
-    if (EFI_ERROR(Status)) return Status;
-
-    UINTN InfoSize = 0;
-    File->GetInfo(File, &gEfiFileInfoGuid, &InfoSize, NULL);
-    EFI_FILE_INFO *Info = AllocatePool(InfoSize);
-    if (Info == NULL) { File->Close(File); return EFI_OUT_OF_RESOURCES; }
-    Status = File->GetInfo(File, &gEfiFileInfoGuid, &InfoSize, Info);
-    *IsDir = (Info->Attribute & EFI_FILE_DIRECTORY) != 0;
-    FreePool(Info);
-    File->Close(File);
-    return Status;
+int ft_is_dir(FtVolume *vol, const char *path, bool *is_dir)
+{
+    char full[512];
+    build_path(vol, path, full, sizeof(full));
+    AxlFileInfo fi;
+    if (axl_file_info(full, &fi) != 0)
+        return -1;
+    *is_dir = fi.is_dir;
+    return 0;
 }

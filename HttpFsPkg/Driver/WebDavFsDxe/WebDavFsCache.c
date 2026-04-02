@@ -1,5 +1,5 @@
 /** @file
-  WebDavFsDxe — Directory cache and HTTP request helper.
+  WebDavFsDxe -- Directory cache and HTTP request helper (axl-cc port).
 
   Caches GET /list/ responses for 2 seconds to avoid hammering the
   network on repeated ls/access patterns. Provides auto-reconnect
@@ -11,40 +11,33 @@
 
 #include "WebDavFsInternal.h"
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Timestamp helper
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
-/// Get current time as milliseconds since midnight (rough, for TTL comparison).
-static UINT64 GetCurrentTimestampMs(VOID) {
-    EFI_TIME Time;
-    EFI_STATUS Status = gRT->GetTime(&Time, NULL);
-    if (EFI_ERROR(Status)) return 0;
 
-    return ((UINT64)Time.Hour * 3600 + (UINT64)Time.Minute * 60 +
-            (UINT64)Time.Second) * 1000 + (UINT64)(Time.Nanosecond / 1000000);
-}
-
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Cache operations
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 /// Find a cache slot by path. Returns NULL if not found or expired.
-static DIR_CACHE_SLOT * DirCacheFind(
-    IN WEBDAVFS_PRIVATE  *Private,
-    IN CONST CHAR8       *Path
-) {
-    UINT64 Now = GetCurrentTimestampMs();
+static DirCacheSlot *
+DirCacheFind(
+    WEBDAVFS_PRIVATE *Private,
+    const char       *Path
+)
+{
+    uint64_t Now = axl_time_get_ms();
 
-    for (UINTN i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
-        DIR_CACHE_SLOT *Slot = &Private->DirCache[i];
+    for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
+        DirCacheSlot *Slot = &Private->DirCache[i];
         if (!Slot->Valid) continue;
-        if (AsciiStrCmp(Slot->Path, Path) != 0) continue;
+        if (axl_strcmp(Slot->Path, Path) != 0) continue;
 
         // Check TTL
-        UINT64 Age = Now - Slot->TimestampMs;
+        uint64_t Age = Now - Slot->TimestampMs;
         if (Age > DIR_CACHE_TTL_MS) {
-            Slot->Valid = FALSE;
+            Slot->Valid = false;
             return NULL;
         }
         return Slot;
@@ -53,20 +46,22 @@ static DIR_CACHE_SLOT * DirCacheFind(
 }
 
 /// Store a directory listing in the cache (LRU eviction of oldest slot).
-static VOID DirCachePut(
-    IN WEBDAVFS_PRIVATE  *Private,
-    IN CONST CHAR8       *Path,
-    IN DIR_ENTRY         *Entries,
-    IN UINTN             EntryCount
-) {
+static void
+DirCachePut(
+    WEBDAVFS_PRIVATE *Private,
+    const char       *Path,
+    DirEntry         *Entries,
+    size_t            EntryCount
+)
+{
     // Find existing slot or oldest/empty slot
-    DIR_CACHE_SLOT *Target = NULL;
-    UINT64 OldestTs = MAX_UINT64;
+    DirCacheSlot *Target = NULL;
+    uint64_t OldestTs = UINT64_MAX;
 
-    for (UINTN i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
-        DIR_CACHE_SLOT *Slot = &Private->DirCache[i];
+    for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
+        DirCacheSlot *Slot = &Private->DirCache[i];
 
-        if (Slot->Valid && AsciiStrCmp(Slot->Path, Path) == 0) {
+        if (Slot->Valid && axl_strcmp(Slot->Path, Path) == 0) {
             Target = Slot;
             break;
         }
@@ -82,135 +77,135 @@ static VOID DirCachePut(
 
     if (Target == NULL) Target = &Private->DirCache[0];
 
-    AsciiStrCpyS(Target->Path, MAX_PATH_LEN, Path);
+    axl_strlcpy(Target->Path, Path, MAX_PATH_LEN);
     if (EntryCount > DIR_CACHE_MAX_ENTRIES) {
         EntryCount = DIR_CACHE_MAX_ENTRIES;
     }
-    CopyMem(Target->Entries, Entries, EntryCount * sizeof(DIR_ENTRY));
+    axl_memcpy(Target->Entries, Entries, EntryCount * sizeof(DirEntry));
     Target->EntryCount = EntryCount;
-    Target->TimestampMs = GetCurrentTimestampMs();
-    Target->Valid = TRUE;
+    Target->TimestampMs = axl_time_get_ms();
+    Target->Valid = true;
 }
 
-VOID DirCacheInvalidate(
-    IN WEBDAVFS_PRIVATE  *Private,
-    IN CONST CHAR8       *Path
-) {
-    for (UINTN i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
+void
+DirCacheInvalidate(
+    WEBDAVFS_PRIVATE *Private,
+    const char       *Path
+)
+{
+    for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
         if (Private->DirCache[i].Valid &&
-            AsciiStrCmp(Private->DirCache[i].Path, Path) == 0) {
-            Private->DirCache[i].Valid = FALSE;
+            axl_strcmp(Private->DirCache[i].Path, Path) == 0) {
+            Private->DirCache[i].Valid = false;
         }
     }
 }
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // HTTP request with auto-reconnect
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
-EFI_STATUS WebDavFsHttpRequest(
-    IN  WEBDAVFS_PRIVATE          *Private,
-    IN  CONST CHAR8               *Method,
-    IN  CONST CHAR8               *Path,
-    IN  AXL_HASH_TABLE            *ExtraHeaders  OPTIONAL,
-    IN  CONST VOID                *Body          OPTIONAL,
-    IN  UINTN                     BodyLen,
-    OUT AxlHttpClientResponse  **Response
-) {
+int
+WebDavFsHttpRequest(
+    WEBDAVFS_PRIVATE       *Private,
+    const char             *Method,
+    const char             *Path,
+    AxlHashTable           *ExtraHeaders,
+    const void             *Body,
+    size_t                  BodyLen,
+    AxlHttpClientResponse **Response
+)
+{
     // Build full URL from base + path
-    CHAR8 Url[MAX_PATH_LEN + 280];
-    AsciiSPrint(Url, sizeof(Url), "%a%a", Private->BaseUrl, Path);
+    char Url[MAX_PATH_LEN + 280];
+    axl_snprintf(Url, sizeof(Url), "%s%s", Private->BaseUrl, Path);
 
-    EFI_STATUS Status = axl_http_request(
+    int Ret = axl_http_request(
         Private->HttpClient, Method, Url, Body, BodyLen,
         NULL, ExtraHeaders, Response);
 
-    if (EFI_ERROR(Status)) {
+    if (Ret != 0) {
         // Attempt reconnect: destroy client and recreate
         axl_http_client_free(Private->HttpClient);
         Private->HttpClient = axl_http_client_new();
-        if (Private->HttpClient == NULL) return EFI_OUT_OF_RESOURCES;
+        if (Private->HttpClient == NULL) return -1;
 
         // Retry once
-        Status = axl_http_request(
+        Ret = axl_http_request(
             Private->HttpClient, Method, Url, Body, BodyLen,
             NULL, ExtraHeaders, Response);
     }
 
-    return Status;
+    return Ret;
 }
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Fetch directory listing (cache or HTTP)
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
-EFI_STATUS DirCacheFetch(
-    IN  WEBDAVFS_PRIVATE  *Private,
-    IN  CONST CHAR8       *Path,
-    OUT DIR_ENTRY         **Entries,
-    OUT UINTN             *EntryCount
-) {
+int
+DirCacheFetch(
+    WEBDAVFS_PRIVATE *Private,
+    const char       *Path,
+    DirEntry        **Entries,
+    size_t           *EntryCount
+)
+{
     // Check cache first
-    DIR_CACHE_SLOT *Slot = DirCacheFind(Private, Path);
+    DirCacheSlot *Slot = DirCacheFind(Private, Path);
     if (Slot != NULL) {
         *Entries = Slot->Entries;
         *EntryCount = Slot->EntryCount;
-        return EFI_SUCCESS;
+        return 0;
     }
 
-    // Cache miss — fetch from server
-    CHAR8 ListPath[MAX_PATH_LEN];
-    AsciiSPrint(ListPath, sizeof(ListPath), "/list%a", Path);
+    // Cache miss -- fetch from server
+    char ListPath[MAX_PATH_LEN];
+    axl_snprintf(ListPath, sizeof(ListPath), "/list%s", Path);
 
     AxlHttpClientResponse *Response = NULL;
-    EFI_STATUS Status = WebDavFsHttpRequest(
+    int Ret = WebDavFsHttpRequest(
         Private, "GET", ListPath, NULL, NULL, 0, &Response);
-    if (EFI_ERROR(Status) || Response == NULL) return EFI_ERROR(Status) ? Status : EFI_DEVICE_ERROR;
+    if (Ret != 0 || Response == NULL) return -1;
 
     if (Response->status_code == 404) {
         axl_http_client_response_free(Response);
-        return EFI_NOT_FOUND;
+        return -1;
     }
     if (Response->status_code != 200) {
         axl_http_client_response_free(Response);
-        return EFI_DEVICE_ERROR;
+        return -1;
     }
 
     // NUL-terminate body for JSON parsing
-    UINTN BodySize = Response->body_size;
+    size_t BodySize = Response->body_size;
     if (BodySize >= HTTP_BODY_BUF_SIZE) BodySize = HTTP_BODY_BUF_SIZE - 1;
-    CHAR8 BodyBuf[HTTP_BODY_BUF_SIZE];
-    CopyMem(BodyBuf, Response->body, BodySize);
+    char BodyBuf[HTTP_BODY_BUF_SIZE];
+    axl_memcpy(BodyBuf, Response->body, BodySize);
     BodyBuf[BodySize] = '\0';
     axl_http_client_response_free(Response);
 
     // Parse JSON array
-    JSON_CTX Ctx;
-    Status = JsonParse(BodyBuf, BodySize, &Ctx);
-    if (EFI_ERROR(Status)) return EFI_DEVICE_ERROR;
+    AxlJsonCtx Ctx;
+    if (!axl_json_parse(BodyBuf, BodySize, &Ctx)) return -1;
 
-    // Find the root array (should be token 0)
-    if (Ctx.TokenCount == 0 || Ctx.Tokens[0].Type != JSON_TOKEN_ARRAY_START) {
-        return EFI_DEVICE_ERROR;
-    }
+    // Must be a root-level array
+    AxlJsonArrayIter Iter;
+    if (!axl_json_root_array_begin(&Ctx, &Iter)) return -1;
 
-    DIR_ENTRY TempEntries[DIR_CACHE_MAX_ENTRIES];
-    UINTN Count = 0;
+    DirEntry TempEntries[DIR_CACHE_MAX_ENTRIES];
+    size_t Count = 0;
 
-    JSON_ARRAY_ITER Iter;
-    Status = JsonArrayFirst(&Ctx, 0, &Iter);
-    if (EFI_ERROR(Status)) return EFI_DEVICE_ERROR;
-
-    UINTN ElemIdx;
-    while (!EFI_ERROR(JsonArrayNext(&Iter, &ElemIdx)) &&
+    AxlJsonCtx Elem;
+    while (axl_json_array_next(&Iter, &Elem) &&
            Count < DIR_CACHE_MAX_ENTRIES) {
-        DIR_ENTRY *E = &TempEntries[Count];
-        SetMem(E, sizeof(*E), 0);
+        DirEntry *E = &TempEntries[Count];
+        axl_memset(E, 0, sizeof(*E));
 
-        JsonGetString(&Ctx, ElemIdx, "name", E->Name, sizeof(E->Name));
-        JsonGetNumber(&Ctx, ElemIdx, "size", (UINTN *)&E->Size);
-        JsonGetBool(&Ctx, ElemIdx, "dir", &E->IsDir);
-        JsonGetString(&Ctx, ElemIdx, "modified", E->Modified, sizeof(E->Modified));
+        axl_json_get_string(&Elem, "name", E->Name, sizeof(E->Name));
+        axl_json_get_uint(&Elem, "size", &E->Size);
+        axl_json_get_bool(&Elem, "dir", &E->IsDir);
+        axl_json_get_string(&Elem, "modified", E->Modified, sizeof(E->Modified));
 
         if (E->Name[0] != '\0') Count++;
     }
@@ -223,30 +218,32 @@ EFI_STATUS DirCacheFetch(
     if (Slot != NULL) {
         *Entries = Slot->Entries;
         *EntryCount = Slot->EntryCount;
-        return EFI_SUCCESS;
+        return 0;
     }
 
-    return EFI_DEVICE_ERROR;
+    return -1;
 }
 
-EFI_STATUS DirCacheLookupEntry(
-    IN  WEBDAVFS_PRIVATE  *Private,
-    IN  CONST CHAR8       *DirPath,
-    IN  CONST CHAR8       *Name,
-    OUT DIR_ENTRY         *Entry
-) {
-    DIR_ENTRY *Entries = NULL;
-    UINTN Count = 0;
+int
+DirCacheLookupEntry(
+    WEBDAVFS_PRIVATE *Private,
+    const char       *DirPath,
+    const char       *Name,
+    DirEntry         *Entry
+)
+{
+    DirEntry *Entries = NULL;
+    size_t Count = 0;
 
-    EFI_STATUS Status = DirCacheFetch(Private, DirPath, &Entries, &Count);
-    if (EFI_ERROR(Status)) return Status;
+    int Ret = DirCacheFetch(Private, DirPath, &Entries, &Count);
+    if (Ret != 0) return -1;
 
-    for (UINTN i = 0; i < Count; i++) {
-        if (AsciiStriCmp(Entries[i].Name, Name) == 0) {
-            CopyMem(Entry, &Entries[i], sizeof(DIR_ENTRY));
-            return EFI_SUCCESS;
+    for (size_t i = 0; i < Count; i++) {
+        if (axl_strcasecmp(Entries[i].Name, Name) == 0) {
+            axl_memcpy(Entry, &Entries[i], sizeof(DirEntry));
+            return 0;
         }
     }
 
-    return EFI_NOT_FOUND;
+    return -1;
 }

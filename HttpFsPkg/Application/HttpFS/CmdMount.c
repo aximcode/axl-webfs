@@ -1,9 +1,9 @@
 /** @file
-  HttpFS — mount and umount command handlers.
+  HttpFS -- mount and umount command handlers (axl-cc port).
 
-  mount: Locates WebDavFsDxe.efi in the same directory as HttpFS.efi,
-  loads it via LoadImage/StartImage with the server URL in load options.
-  umount: Finds the driver by vendor GUID device path and unloads it.
+  mount: Loads WebDavFsDxe.efi via axl_driver_load, passes the server
+  URL as UCS-2 load options, and starts the driver.
+  umount: Unloads the previously loaded driver handle.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -11,226 +11,194 @@
 
 #include "HttpFsInternal.h"
 
-#include <Library/BaseLib.h>
-#include <Library/BaseMemoryLib.h>
-#include <Library/MemoryAllocationLib.h>
-#include <Library/PrintLib.h>
-#include <Library/DevicePathLib.h>
+#include <axl.h>
+#include <axl/axl-driver.h>
+#include <axl/axl-sys.h>
+#include <uefi/axl-uefi.h>
 
-#include <Protocol/LoadedImage.h>
-#include <Protocol/SimpleFileSystem.h>
-#include <Protocol/DevicePath.h>
+#define DRIVER_FILENAME  "WebDavFsDxe.efi"
 
-extern EFI_GUID gHttpFsVendorGuid;
+// TODO: Verify this GUID matches the value from the .dec / build system.
+// It was previously supplied via extern EFI_GUID gHttpFsVendorGuid.
+static const EFI_GUID HttpFsVendorGuid = {
+    0xf47c0fa2, 0xbf67, 0x4c0d,
+    {0xb0, 0x5e, 0x44, 0x9a, 0x1b, 0xf3, 0x44, 0xc7}
+};
 
-#define DRIVER_FILENAME  L"WebDavFsDxe.efi"
+static AxlDriverHandle mDriverHandle;
 
 // ----------------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------------
 
-/// Build a device path to WebDavFsDxe.efi in the same directory as HttpFS.efi.
-static EFI_DEVICE_PATH_PROTOCOL * BuildDriverDevicePath(
-    IN EFI_HANDLE  ImageHandle
-) {
-    EFI_LOADED_IMAGE_PROTOCOL *LoadedImage = NULL;
-    EFI_STATUS Status = gBS->OpenProtocol(
-        ImageHandle, &gEfiLoadedImageProtocolGuid,
-        (VOID **)&LoadedImage, ImageHandle, NULL,
-        EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-    if (EFI_ERROR(Status) || LoadedImage == NULL) return NULL;
+/// Check if a device path contains a vendor node with the HttpFS GUID.
+static bool
+HasVendorNode(EFI_DEVICE_PATH_PROTOCOL *dp, const EFI_GUID *guid)
+{
+    if (dp == NULL) return false;
 
-    // Get the file path portion of our device path
-    EFI_DEVICE_PATH_PROTOCOL *FilePath = LoadedImage->FilePath;
-    if (FilePath == NULL) return NULL;
-
-    // Walk the device path to find the file path node and extract directory
-    // The file path node contains something like "\HttpFS.efi"
-    // We need to replace the filename with DRIVER_FILENAME
-
-    // Build a new file path for the driver in the same directory
-    // Use FileDevicePath helper with the device handle
-    return FileDevicePath(LoadedImage->DeviceHandle, DRIVER_FILENAME);
-}
-
-/// Check if a device path contains a vendor node with our GUID.
-static BOOLEAN HasXferVendorNode(IN EFI_DEVICE_PATH_PROTOCOL *DevPath) {
-    if (DevPath == NULL) return FALSE;
-
-    while (!IsDevicePathEnd(DevPath)) {
-        if (DevicePathType(DevPath) == HARDWARE_DEVICE_PATH &&
-            DevicePathSubType(DevPath) == HW_VENDOR_DP) {
-            VENDOR_DEVICE_PATH *Vendor = (VENDOR_DEVICE_PATH *)DevPath;
-            if (CompareGuid(&Vendor->Guid, &gHttpFsVendorGuid)) {
-                return TRUE;
-            }
+    while (!EFI_DP_IS_END(dp)) {
+        if (EFI_DP_TYPE(dp) == HARDWARE_DEVICE_PATH &&
+            EFI_DP_SUBTYPE(dp) == HW_VENDOR_DP) {
+            VENDOR_DEVICE_PATH *v = (VENDOR_DEVICE_PATH *)dp;
+            if (axl_guid_equal(&v->Guid, guid)) return true;
         }
-        DevPath = NextDevicePathNode(DevPath);
+        dp = EFI_DP_NEXT(dp);
     }
-    return FALSE;
+    return false;
 }
 
 // ----------------------------------------------------------------------------
 // mount command
 // ----------------------------------------------------------------------------
 
-EFI_STATUS CmdMount(
-    IN EFI_HANDLE  ImageHandle,
-    IN UINTN       Argc,
-    IN CHAR16      **Argv
-) {
-    if (Argc < 1) {
-        Print(L"Usage: HttpFS mount <url> [-r]\n");
-        Print(L"  url: http://<ip>:<port>/[path]\n");
-        Print(L"  -r:  mount read-only\n");
-        return EFI_INVALID_PARAMETER;
+int
+CmdMount(int argc, char **argv)
+{
+    static const AxlOpt mount_opts[] = {
+        { 'r', NULL, AXL_OPT_FLAG, NULL, "Mount read-only" },
+        { 'h', NULL, AXL_OPT_FLAG, NULL, "Show help" },
+        { 0, NULL, 0, NULL, NULL }
+    };
+
+    AxlArgs *args = axl_args_parse(argc, argv, mount_opts);
+    if (args == NULL || axl_args_pos_count(args) < 1 || axl_args_flag(args, 'h')) {
+        axl_args_usage("HttpFS mount", "<URL> [OPTIONS]", mount_opts);
+        axl_args_free(args);
+        return (args == NULL || axl_args_pos_count(args) < 1) ? 1 : 0;
     }
 
-    CHAR16 *Url = Argv[0];
+    const char *url = axl_args_pos(args, 0);
+    axl_args_free(args);
 
-    // Build device path to the driver
-    EFI_DEVICE_PATH_PROTOCOL *DriverPath = BuildDriverDevicePath(ImageHandle);
-    if (DriverPath == NULL) {
-        Print(L"ERROR: Cannot locate %s\n", DRIVER_FILENAME);
-        return EFI_NOT_FOUND;
-    }
-
-    Print(L"Loading %s...\n", DRIVER_FILENAME);
+    axl_printf("Loading %s...\n", DRIVER_FILENAME);
 
     // Load the driver image
-    EFI_HANDLE DriverHandle = NULL;
-    EFI_STATUS Status = gBS->LoadImage(
-        FALSE, ImageHandle, DriverPath, NULL, 0, &DriverHandle);
-    FreePool(DriverPath);
-
-    if (EFI_ERROR(Status)) {
-        Print(L"ERROR: LoadImage failed: %r\n", Status);
-        return Status;
+    AxlDriverHandle handle = NULL;
+    if (axl_driver_load(DRIVER_FILENAME, &handle) != 0) {
+        axl_printf("ERROR: Cannot load %s\n", DRIVER_FILENAME);
+        return 1;
     }
 
-    // Set load options to the URL string
-    EFI_LOADED_IMAGE_PROTOCOL *DriverImage = NULL;
-    Status = gBS->OpenProtocol(
-        DriverHandle, &gEfiLoadedImageProtocolGuid,
-        (VOID **)&DriverImage, ImageHandle, NULL,
-        EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-    if (EFI_ERROR(Status)) {
-        gBS->UnloadImage(DriverHandle);
-        Print(L"ERROR: Cannot access driver image: %r\n", Status);
-        return Status;
+    // Convert URL from UTF-8 to UCS-2 for load options
+    unsigned short *url_w = axl_utf8_to_ucs2(url);
+    if (url_w == NULL) {
+        axl_printf("ERROR: UTF-8 to UCS-2 conversion failed\n");
+        axl_driver_unload(handle);
+        return 1;
     }
 
-    // URL as load options (CHAR16 string including null terminator)
-    DriverImage->LoadOptions = Url;
-    DriverImage->LoadOptionsSize = (UINT32)((StrLen(Url) + 1) * sizeof(CHAR16));
+    size_t wlen = 0;
+    while (url_w[wlen]) wlen++;
+    size_t url_w_size = (wlen + 1) * sizeof(unsigned short);
+
+    if (axl_driver_set_load_options(handle, url_w, url_w_size) != 0) {
+        axl_printf("ERROR: Cannot set load options\n");
+        axl_free(url_w);
+        axl_driver_unload(handle);
+        return 1;
+    }
+    axl_free(url_w);
 
     // Start the driver
-    Print(L"Connecting to %s...\n", Url);
-    Status = gBS->StartImage(DriverHandle, NULL, NULL);
-    if (EFI_ERROR(Status)) {
-        gBS->UnloadImage(DriverHandle);
-        Print(L"ERROR: Driver start failed: %r\n", Status);
-        return Status;
+    axl_printf("Connecting to %s...\n", url);
+    if (axl_driver_start(handle) != 0) {
+        axl_printf("ERROR: Driver start failed\n");
+        axl_driver_unload(handle);
+        return 1;
     }
+
+    // Store handle for umount
+    mDriverHandle = handle;
 
     // Find the new FS handle by looking for our vendor GUID in device paths
-    EFI_HANDLE *FsHandles = NULL;
-    UINTN FsCount = 0;
-    Status = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiSimpleFileSystemProtocolGuid,
-        NULL, &FsCount, &FsHandles);
-
-    if (!EFI_ERROR(Status)) {
-        for (UINTN i = 0; i < FsCount; i++) {
-            EFI_DEVICE_PATH_PROTOCOL *DevPath = NULL;
-            Status = gBS->OpenProtocol(
-                FsHandles[i], &gEfiDevicePathProtocolGuid,
-                (VOID **)&DevPath, ImageHandle, NULL,
-                EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-            if (!EFI_ERROR(Status) && HasXferVendorNode(DevPath)) {
-                Print(L"Mounted as FS handle %p\n", FsHandles[i]);
-                Print(L"Use 'map -r' to refresh Shell mappings.\n");
-                break;
+    void **fs_handles = NULL;
+    size_t fs_count = 0;
+    if (axl_service_enumerate("simple-fs", &fs_handles, &fs_count) == 0) {
+        for (size_t i = 0; i < fs_count; i++) {
+            EFI_DEVICE_PATH_PROTOCOL *devpath = NULL;
+            if (axl_handle_get_service(fs_handles[i], "device-path",
+                                       (void **)&devpath) == 0) {
+                if (HasVendorNode(devpath, &HttpFsVendorGuid)) {
+                    axl_printf("Mounted as FS handle %p\n", fs_handles[i]);
+                    axl_printf("Use 'map -r' to refresh Shell mappings.\n");
+                    break;
+                }
             }
         }
-        FreePool(FsHandles);
+        axl_free(fs_handles);
     }
 
-    return EFI_SUCCESS;
+    return 0;
 }
 
 // ----------------------------------------------------------------------------
 // umount command
 // ----------------------------------------------------------------------------
 
-EFI_STATUS CmdUmount(
-    IN EFI_HANDLE  ImageHandle,
-    IN UINTN       Argc,
-    IN CHAR16      **Argv
-) {
-    // Find the WebDavFsDxe driver handle by looking for loaded images
-    // with our vendor GUID device path on their installed FS handle.
+int
+CmdUmount(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
 
-    EFI_HANDLE *FsHandles = NULL;
-    UINTN FsCount = 0;
-    EFI_STATUS Status = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiSimpleFileSystemProtocolGuid,
-        NULL, &FsCount, &FsHandles);
-
-    if (EFI_ERROR(Status) || FsCount == 0) {
-        Print(L"ERROR: No mounted XferMount volumes found\n");
-        return EFI_NOT_FOUND;
+    /* Try stored handle from this process first */
+    if (mDriverHandle != NULL) {
+        axl_printf("Unmounting...\n");
+        if (axl_driver_unload(mDriverHandle) == 0) {
+            mDriverHandle = NULL;
+            axl_printf("Unmounted successfully.\n");
+            return 0;
+        }
+        mDriverHandle = NULL;
     }
 
-    BOOLEAN Found = FALSE;
-    for (UINTN i = 0; i < FsCount; i++) {
-        EFI_DEVICE_PATH_PROTOCOL *DevPath = NULL;
-        Status = gBS->OpenProtocol(
-            FsHandles[i], &gEfiDevicePathProtocolGuid,
-            (VOID **)&DevPath, ImageHandle, NULL,
-            EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-        if (EFI_ERROR(Status) || !HasXferVendorNode(DevPath)) continue;
+    /* Scan FS handles for our vendor GUID device path */
+    void **fs_handles = NULL;
+    size_t fs_count = 0;
+    if (axl_service_enumerate("simple-fs", &fs_handles, &fs_count) != 0 ||
+        fs_count == 0) {
+        axl_free(fs_handles);
+        axl_printf("ERROR: No mounted HttpFS volumes found\n");
+        return 1;
+    }
 
-        // Find the loaded image that owns this — iterate all images
-        EFI_HANDLE *ImageHandles = NULL;
-        UINTN ImageCount = 0;
-        Status = gBS->LocateHandleBuffer(
-            ByProtocol, &gEfiLoadedImageProtocolGuid,
-            NULL, &ImageCount, &ImageHandles);
+    bool found = false;
+    for (size_t i = 0; i < fs_count; i++) {
+        EFI_DEVICE_PATH_PROTOCOL *devpath = NULL;
+        if (axl_handle_get_service(fs_handles[i], "device-path",
+                                   (void **)&devpath) != 0)
+            continue;
+        if (!HasVendorNode(devpath, &HttpFsVendorGuid))
+            continue;
 
-        if (!EFI_ERROR(Status)) {
-            for (UINTN j = 0; j < ImageCount; j++) {
-                EFI_LOADED_IMAGE_PROTOCOL *LI = NULL;
-                gBS->OpenProtocol(
-                    ImageHandles[j], &gEfiLoadedImageProtocolGuid,
-                    (VOID **)&LI, ImageHandle, NULL,
-                    EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-                if (LI == NULL) continue;
-
-                // Check if this image has an Unload function (our driver does)
-                if (LI->Unload != NULL) {
-                    // Try to unload — if it's our driver, it will work
-                    Print(L"Unmounting...\n");
-                    Status = gBS->UnloadImage(ImageHandles[j]);
-                    if (!EFI_ERROR(Status)) {
-                        Print(L"Unmounted successfully.\n");
-                        Found = TRUE;
-                        break;
-                    }
-                }
-            }
-            FreePool(ImageHandles);
+        /* Found the HttpFS volume — scan loaded images for the driver */
+        void **img_handles = NULL;
+        size_t img_count = 0;
+        if (axl_service_enumerate("loaded-image", &img_handles, &img_count) != 0) {
+            axl_free(img_handles);
+            continue;
         }
 
-        if (Found) break;
+        for (size_t j = 0; j < img_count; j++) {
+            AxlDriverHandle drv = img_handles[j];
+            axl_printf("Unmounting...\n");
+            if (axl_driver_unload(drv) == 0) {
+                found = true;
+                axl_printf("Unmounted successfully.\n");
+                break;
+            }
+        }
+        axl_free(img_handles);
+        if (found) break;
     }
 
-    FreePool(FsHandles);
+    axl_free(fs_handles);
 
-    if (!Found) {
-        Print(L"ERROR: No mounted XferMount volumes found\n");
-        return EFI_NOT_FOUND;
+    if (!found) {
+        axl_printf("ERROR: No mounted HttpFS volumes found\n");
+        return 1;
     }
 
-    return EFI_SUCCESS;
+    return 0;
 }

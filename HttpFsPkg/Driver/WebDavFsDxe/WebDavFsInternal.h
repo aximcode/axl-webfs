@@ -1,8 +1,8 @@
 /** @file
-  WebDavFsDxe — Internal types and declarations.
+  WebDavFsDxe -- Internal types and declarations (axl-cc port).
 
   Private data structures for the remote filesystem driver.
-  Uses standard EDK2 CR() macro + SIGNATURE_32 for container derivation.
+  Uses SIGNATURE_32 + CR macros for container derivation.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -11,33 +11,37 @@
 #ifndef WEBDAVFS_INTERNAL_H_
 #define WEBDAVFS_INTERNAL_H_
 
-#include <Uefi.h>
-#include <Library/BaseLib.h>
-#include <Library/DebugLib.h>
-#include <Library/BaseMemoryLib.h>
-#include <Library/MemoryAllocationLib.h>
-#include <Library/UefiBootServicesTableLib.h>
-#include <Library/UefiRuntimeServicesTableLib.h>
-#include <Library/UefiLib.h>
-#include <Library/PrintLib.h>
-#include <Library/DevicePathLib.h>
+#include <axl.h>
+#include <axl/axl-json.h>
+#include <axl/axl-net.h>
+#include <axl/axl-log.h>
+#include <uefi/axl-uefi.h>
 
-#include <Protocol/SimpleFileSystem.h>
-#include <Protocol/DevicePath.h>
-#include <Protocol/LoadedImage.h>
-
-#include <Guid/FileInfo.h>
-#include <Guid/FileSystemInfo.h>
-#include <Guid/FileSystemVolumeLabelInfo.h>
 
 #include <Library/NetworkLib.h>
-#include <Library/JsonLib.h>
-#include <axl/axl-log.h>
-#include <axl/axl-net.h>
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Macros (not provided by axl-sdk)
+// ---------------------------------------------------------------------------
+
+#define SIGNATURE_32(a,b,c,d) \
+    ((uint32_t)(a) | ((uint32_t)(b)<<8) | ((uint32_t)(c)<<16) | ((uint32_t)(d)<<24))
+
+#define CR(Record, TYPE, Field, Sig) \
+    ((TYPE *)((char *)(Record) - __builtin_offsetof(TYPE, Field)))
+
+
+// ---------------------------------------------------------------------------
+// Firmware table pointers (set by axl_driver_init)
+// ---------------------------------------------------------------------------
+
+extern EFI_SYSTEM_TABLE     *gST;
+extern EFI_BOOT_SERVICES    *gBS;
+extern EFI_RUNTIME_SERVICES *gRT;
+
+// ---------------------------------------------------------------------------
 // Constants
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 #define WEBDAVFS_PRIVATE_SIGNATURE   SIGNATURE_32('W','D','F','S')
 #define WEBDAVFS_FILE_SIGNATURE      SIGNATURE_32('W','D','F','L')
@@ -52,30 +56,30 @@
 
 #define VOLUME_LABEL                 L"XferMount"
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Directory cache types
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 /// A single file or directory entry from a JSON listing.
 typedef struct {
-    CHAR8      Name[256];
-    UINT64     Size;
-    BOOLEAN    IsDir;
-    CHAR8      Modified[32];   ///< ISO 8601 timestamp from server.
-} DIR_ENTRY;
+    char       Name[256];
+    uint64_t   Size;
+    bool       IsDir;
+    char       Modified[32];   ///< ISO 8601 timestamp from server.
+} DirEntry;
 
 /// A cached directory listing.
 typedef struct {
-    CHAR8      Path[MAX_PATH_LEN];
-    UINT64     TimestampMs;
-    DIR_ENTRY  Entries[DIR_CACHE_MAX_ENTRIES];
-    UINTN      EntryCount;
-    BOOLEAN    Valid;
-} DIR_CACHE_SLOT;
+    char       Path[MAX_PATH_LEN];
+    uint64_t   TimestampMs;
+    DirEntry   Entries[DIR_CACHE_MAX_ENTRIES];
+    size_t     EntryCount;
+    bool       Valid;
+} DirCacheSlot;
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Driver private context (one per mount)
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 typedef struct {
     UINT32                              Signature;
@@ -86,86 +90,86 @@ typedef struct {
     EFI_DEVICE_PATH_PROTOCOL            *DevicePath;
 
     /// Server connection.
-    AxlHttpClient                     *HttpClient;
+    AxlHttpClient                       *HttpClient;
     EFI_IPv4_ADDRESS                    ServerAddr;
     UINT16                              ServerPort;
-    CHAR8                               BasePath[256];
-    CHAR8                               BaseUrl[280];
-    BOOLEAN                             ReadOnly;
+    char                                BasePath[256];
+    char                                BaseUrl[280];
+    bool                                ReadOnly;
 
     /// Directory cache.
-    DIR_CACHE_SLOT                      DirCache[DIR_CACHE_MAX_SLOTS];
+    DirCacheSlot                        DirCache[DIR_CACHE_MAX_SLOTS];
 } WEBDAVFS_PRIVATE;
 
 #define WEBDAVFS_PRIVATE_FROM_SIMPLE_FS(a) \
     CR(a, WEBDAVFS_PRIVATE, SimpleFs, WEBDAVFS_PRIVATE_SIGNATURE)
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Per-file-handle context (one per Open)
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 typedef struct {
     UINT32               Signature;
     EFI_FILE_PROTOCOL    File;
     WEBDAVFS_PRIVATE     *Private;
 
-    CHAR8                Path[MAX_PATH_LEN];
-    BOOLEAN              IsDir;
-    BOOLEAN              IsRoot;
-    UINT64               FileSize;
-    UINT64               Position;
+    char                 Path[MAX_PATH_LEN];
+    bool                 IsDir;
+    bool                 IsRoot;
+    uint64_t             FileSize;
+    uint64_t             Position;
 
     /// Directory iteration state.
-    DIR_ENTRY            *DirEntries;
-    UINTN                DirEntryCount;
-    UINTN                DirReadIndex;
-    BOOLEAN              DirLoaded;
+    DirEntry             *DirEntries;
+    size_t               DirEntryCount;
+    size_t               DirReadIndex;
+    bool                 DirLoaded;
 
     /// Read-ahead buffer (allocated for files, NULL for dirs).
-    UINT8                *ReadAheadBuf;
-    UINT64               ReadAheadStart;
-    UINTN                ReadAheadLen;
+    uint8_t              *ReadAheadBuf;
+    uint64_t             ReadAheadStart;
+    size_t               ReadAheadLen;
 } WEBDAVFS_FILE;
 
 #define WEBDAVFS_FILE_FROM_FILE_PROTOCOL(a) \
     CR(a, WEBDAVFS_FILE, File, WEBDAVFS_FILE_SIGNATURE)
 
-// ----------------------------------------------------------------------------
-// Forward declarations — WebDavFs.c
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Forward declarations -- WebDavFs.c
+// ---------------------------------------------------------------------------
 
-EFI_STATUS EFIAPI WebDavFsDriverEntry (IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable);
-EFI_STATUS EFIAPI WebDavFsDriverUnload (IN EFI_HANDLE ImageHandle);
-EFI_STATUS EFIAPI WebDavFsOpenVolume (IN EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *This, OUT EFI_FILE_PROTOCOL **Root);
+EFI_STATUS EFIAPI DriverEntry(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable);
+EFI_STATUS EFIAPI WebDavFsDriverUnload(EFI_HANDLE ImageHandle);
+EFI_STATUS EFIAPI WebDavFsOpenVolume(EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *This, EFI_FILE_PROTOCOL **Root);
 
-// ----------------------------------------------------------------------------
-// Forward declarations — WebDavFsFile.c
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Forward declarations -- WebDavFsFile.c
+// ---------------------------------------------------------------------------
 
-EFI_STATUS EFIAPI WebDavFsOpen (IN EFI_FILE_PROTOCOL *This, OUT EFI_FILE_PROTOCOL **NewHandle, IN CHAR16 *FileName, IN UINT64 OpenMode, IN UINT64 Attributes);
-EFI_STATUS EFIAPI WebDavFsClose (IN EFI_FILE_PROTOCOL *This);
-EFI_STATUS EFIAPI WebDavFsDelete (IN EFI_FILE_PROTOCOL *This);
-EFI_STATUS EFIAPI WebDavFsRead (IN EFI_FILE_PROTOCOL *This, IN OUT UINTN *BufferSize, OUT VOID *Buffer);
-EFI_STATUS EFIAPI WebDavFsWrite (IN EFI_FILE_PROTOCOL *This, IN OUT UINTN *BufferSize, IN VOID *Buffer);
-EFI_STATUS EFIAPI WebDavFsGetPosition (IN EFI_FILE_PROTOCOL *This, OUT UINT64 *Position);
-EFI_STATUS EFIAPI WebDavFsSetPosition (IN EFI_FILE_PROTOCOL *This, IN UINT64 Position);
-EFI_STATUS EFIAPI WebDavFsGetInfo (IN EFI_FILE_PROTOCOL *This, IN EFI_GUID *InformationType, IN OUT UINTN *BufferSize, OUT VOID *Buffer);
-EFI_STATUS EFIAPI WebDavFsSetInfo (IN EFI_FILE_PROTOCOL *This, IN EFI_GUID *InformationType, IN UINTN BufferSize, IN VOID *Buffer);
-EFI_STATUS EFIAPI WebDavFsFlush (IN EFI_FILE_PROTOCOL *This);
+EFI_STATUS EFIAPI WebDavFsOpen(EFI_FILE_PROTOCOL *This, EFI_FILE_PROTOCOL **NewHandle, CHAR16 *FileName, UINT64 OpenMode, UINT64 Attributes);
+EFI_STATUS EFIAPI WebDavFsClose(EFI_FILE_PROTOCOL *This);
+EFI_STATUS EFIAPI WebDavFsDelete(EFI_FILE_PROTOCOL *This);
+EFI_STATUS EFIAPI WebDavFsRead(EFI_FILE_PROTOCOL *This, UINTN *BufferSize, VOID *Buffer);
+EFI_STATUS EFIAPI WebDavFsWrite(EFI_FILE_PROTOCOL *This, UINTN *BufferSize, VOID *Buffer);
+EFI_STATUS EFIAPI WebDavFsGetPosition(EFI_FILE_PROTOCOL *This, UINT64 *Position);
+EFI_STATUS EFIAPI WebDavFsSetPosition(EFI_FILE_PROTOCOL *This, UINT64 Position);
+EFI_STATUS EFIAPI WebDavFsGetInfo(EFI_FILE_PROTOCOL *This, EFI_GUID *InformationType, UINTN *BufferSize, VOID *Buffer);
+EFI_STATUS EFIAPI WebDavFsSetInfo(EFI_FILE_PROTOCOL *This, EFI_GUID *InformationType, UINTN BufferSize, VOID *Buffer);
+EFI_STATUS EFIAPI WebDavFsFlush(EFI_FILE_PROTOCOL *This);
 
 /// Allocate and initialize a WEBDAVFS_FILE with all function pointers wired.
-WEBDAVFS_FILE * WebDavFsCreateFileHandle (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Path, IN BOOLEAN IsDir, IN UINT64 FileSize);
+WEBDAVFS_FILE * WebDavFsCreateFileHandle(WEBDAVFS_PRIVATE *Private, const char *Path, bool IsDir, uint64_t FileSize);
 
-// ----------------------------------------------------------------------------
-// Forward declarations — WebDavFsCache.c
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Forward declarations -- WebDavFsCache.c
+// ---------------------------------------------------------------------------
 
-EFI_STATUS DirCacheFetch (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Path, OUT DIR_ENTRY **Entries, OUT UINTN *EntryCount);
-EFI_STATUS DirCacheLookupEntry (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *DirPath, IN CONST CHAR8 *Name, OUT DIR_ENTRY *Entry);
-VOID DirCacheInvalidate (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Path);
+int  DirCacheFetch(WEBDAVFS_PRIVATE *Private, const char *Path, DirEntry **Entries, size_t *EntryCount);
+int  DirCacheLookupEntry(WEBDAVFS_PRIVATE *Private, const char *DirPath, const char *Name, DirEntry *Entry);
+void DirCacheInvalidate(WEBDAVFS_PRIVATE *Private, const char *Path);
 
 /// Issue an HTTP request with automatic reconnect on connection error.
 /// Caller must free *Response with axl_http_client_response_free().
-EFI_STATUS WebDavFsHttpRequest (IN WEBDAVFS_PRIVATE *Private, IN CONST CHAR8 *Method, IN CONST CHAR8 *Path, IN AXL_HASH_TABLE *ExtraHeaders OPTIONAL, IN CONST VOID *Body OPTIONAL, IN UINTN BodyLen, OUT AxlHttpClientResponse **Response);
+int WebDavFsHttpRequest(WEBDAVFS_PRIVATE *Private, const char *Method, const char *Path, AxlHashTable *ExtraHeaders, const void *Body, size_t BodyLen, AxlHttpClientResponse **Response);
 
 #endif // WEBDAVFS_INTERNAL_H_

@@ -1,5 +1,5 @@
 /** @file
-  HttpFS — serve command handler.
+  HttpFS -- serve command handler.
 
   HTTP file server using AxlNet's AxlHttpServer. Registers route
   handlers that map REST API endpoints to FileTransferLib operations.
@@ -10,654 +10,612 @@
 
 #include "HttpFsInternal.h"
 
-#include <Library/BaseLib.h>
-#include <Library/BaseMemoryLib.h>
-#include <Library/MemoryAllocationLib.h>
-#include <Library/PrintLib.h>
+#include <axl.h>
+#include <axl/axl-net.h>
 #include <Library/NetworkLib.h>
 #include <Library/FileTransferLib.h>
-#include <axl/axl-log.h>
-#include <axl/axl-net.h>
 
-AXL_LOG_DOMAIN ("serve");
+
 
 // ----------------------------------------------------------------------------
 // Options (passed as handler Data via route registration)
 // ----------------------------------------------------------------------------
 
 typedef struct {
-    UINT16   Port;
-    UINTN    NicIndex;
-    UINTN    IdleTimeoutSec;
-    BOOLEAN  ReadOnly;
-    BOOLEAN  WriteOnly;
-    BOOLEAN  Verbose;
-} SERVE_OPTIONS;
+    uint16_t port;
+    size_t   nic_index;
+    size_t   idle_timeout_sec;
+    bool     read_only;
+    bool     write_only;
+    bool     verbose;
+} ServeOptions;
 
 // ----------------------------------------------------------------------------
 // URL parsing helpers
 // ----------------------------------------------------------------------------
 
 /// Parse "/<vol>/<path>" into volume name and sub-path.
-STATIC EFI_STATUS
-ParseVolumePath (
-  IN  CONST CHAR8  *UrlPath,
-  OUT FT_VOLUME    *Volume,
-  OUT CHAR16       *SubPath,
-  IN  UINTN        SubPathSize
-  )
+static int
+parse_volume_path(const char *url_path, FtVolume *volume,
+                  char *sub_path, size_t sub_path_size)
 {
-  CONST CHAR8  *P = UrlPath;
-  CHAR16       VolName[16];
-  UINTN        I;
+    const char *p = url_path;
+    char        vol_name[16];
+    size_t      i;
 
-  if (*P == '/') {
-    P++;
-  }
+    if (*p == '/') {
+        p++;
+    }
 
-  I = 0;
-  while (*P != '/' && *P != '\0' && I < 15) {
-    VolName[I++] = (CHAR16)*P++;
-  }
+    i = 0;
+    while (*p != '/' && *p != '\0' && i < 15) {
+        vol_name[i++] = *p++;
+    }
 
-  VolName[I] = L'\0';
+    vol_name[i] = '\0';
 
-  EFI_STATUS  Status = FileTransferFindVolume (VolName, Volume);
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
+    if (ft_find_volume(vol_name, volume) != 0) {
+        return -1;
+    }
 
-  I = 0;
-  while (*P != '\0' && I < SubPathSize - 1) {
-    SubPath[I++] = (CHAR16)*P++;
-  }
+    i = 0;
+    while (*p != '\0' && i < sub_path_size - 1) {
+        sub_path[i++] = *p++;
+    }
 
-  SubPath[I] = L'\0';
+    sub_path[i] = '\0';
 
-  if (SubPath[0] == L'\0') {
-    SubPath[0] = L'/';
-    SubPath[1] = L'\0';
-  }
+    if (sub_path[0] == '\0') {
+        sub_path[0] = '/';
+        sub_path[1] = '\0';
+    }
 
-  return EFI_SUCCESS;
+    return 0;
 }
 
 /// Check if Accept header requests JSON.
-STATIC BOOLEAN
-WantsJson (
-  IN AxlHttpRequest  *Req
-  )
+static bool
+wants_json(AxlHttpRequest *req)
 {
-  CONST CHAR8  *Accept = (CONST CHAR8 *)AxlHashGet (Req->headers, "accept");
+    const char *accept = (const char *)axl_hash_table_get(req->headers, "accept");
 
-  if (Accept == NULL) {
-    return FALSE;
-  }
-
-  CONST CHAR8  *P = Accept;
-  while (*P != '\0') {
-    if (AsciiStrnCmp (P, "application/json", 16) == 0) {
-      return TRUE;
+    if (accept == NULL) {
+        return false;
     }
 
-    P++;
-  }
+    const char *p = accept;
+    while (*p != '\0') {
+        if (axl_strncmp(p, "application/json", 16) == 0) {
+            return true;
+        }
 
-  return FALSE;
+        p++;
+    }
+
+    return false;
 }
 
 // ----------------------------------------------------------------------------
 // Permission middleware
 // ----------------------------------------------------------------------------
 
-STATIC
-EFI_STATUS
-PermissionMiddleware (
-  AxlHttpRequest   *Req,
-  AxlHttpResponse  *Resp,
-  VOID               *Data
-  )
+static int
+permission_middleware(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-  SERVE_OPTIONS  *Opts = (SERVE_OPTIONS *)Data;
+    ServeOptions *opts = (ServeOptions *)data;
 
-  if (Opts->ReadOnly &&
-      (AsciiStrCmp (Req->method, "PUT") == 0 ||
-       AsciiStrCmp (Req->method, "DELETE") == 0 ||
-       AsciiStrCmp (Req->method, "POST") == 0))
-  {
-    axl_http_response_set_text (Resp, "Read-only mode\n");
-    axl_http_response_set_status (Resp, 403);
-    return EFI_ACCESS_DENIED;
-  }
+    if (opts->read_only &&
+        (axl_strcmp(req->method, "PUT") == 0 ||
+         axl_strcmp(req->method, "DELETE") == 0 ||
+         axl_strcmp(req->method, "POST") == 0))
+    {
+        axl_http_response_set_text(resp, "Read-only mode\n");
+        axl_http_response_set_status(resp, 403);
+        return -1;
+    }
 
-  if (Opts->WriteOnly && AsciiStrCmp (Req->method, "GET") == 0) {
-    axl_http_response_set_text (Resp, "Write-only mode\n");
-    axl_http_response_set_status (Resp, 403);
-    return EFI_ACCESS_DENIED;
-  }
+    if (opts->write_only && axl_strcmp(req->method, "GET") == 0) {
+        axl_http_response_set_text(resp, "Write-only mode\n");
+        axl_http_response_set_status(resp, 403);
+        return -1;
+    }
 
-  return EFI_SUCCESS;
+    return 0;
 }
 
 // ----------------------------------------------------------------------------
 // Route handlers
 // ----------------------------------------------------------------------------
 
-/// GET / — list all volumes.
-STATIC
-EFI_STATUS
-HandleGetRoot (
-  AxlHttpRequest   *Req,
-  AxlHttpResponse  *Resp,
-  VOID               *Data
-  )
+/// GET / -- list all volumes.
+static int
+handle_get_root(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-  CHAR8    Buf[4096];
-  UINTN    Written = 0;
-  BOOLEAN  AsJson = WantsJson (Req);
+    char   buf[4096];
+    size_t written = 0;
+    bool   as_json = wants_json(req);
 
-  (VOID)Data;
+    (void)data;
 
-  FileTransferListVolumes (AsJson, Buf, sizeof (Buf), &Written);
+    ft_list_volumes(as_json, buf, sizeof(buf), &written);
 
-  if (AsJson) {
-    axl_http_response_set_json (Resp, Buf);
-  } else {
-    Resp->body = AllocatePool (Written);
-    if (Resp->body != NULL) {
-      CopyMem (Resp->body, Buf, Written);
-      Resp->body_size = Written;
-    }
-
-    Resp->content_type = "text/html";
-    Resp->status_code = 200;
-  }
-
-  return EFI_SUCCESS;
-}
-
-/// GET /<vol>/<path> — download file or list directory.
-STATIC
-EFI_STATUS
-HandleGetPath (
-  AxlHttpRequest   *Req,
-  AxlHttpResponse  *Resp,
-  VOID               *Data
-  )
-{
-  FT_VOLUME   Volume;
-  CHAR16      SubPath[512];
-  EFI_STATUS  Status;
-  BOOLEAN     IsDir;
-
-  (VOID)Data;
-
-  Status = ParseVolumePath (Req->path, &Volume, SubPath, 512);
-  if (EFI_ERROR (Status)) {
-    axl_http_response_set_text (Resp, "Volume not found\n");
-    axl_http_response_set_status (Resp, 404);
-    return EFI_SUCCESS;
-  }
-
-  IsDir = FALSE;
-  Status = FileTransferIsDir (&Volume, SubPath, &IsDir);
-  if (EFI_ERROR (Status)) {
-    axl_http_response_set_text (Resp, "Not found\n");
-    axl_http_response_set_status (Resp, 404);
-    return EFI_SUCCESS;
-  }
-
-  if (IsDir) {
-    CHAR8    Buf[8192];
-    UINTN    Written = 0;
-    BOOLEAN  AsJson = WantsJson (Req);
-
-    Status = FileTransferListDir (&Volume, SubPath, AsJson, Buf, sizeof (Buf), &Written);
-    if (EFI_ERROR (Status)) {
-      axl_http_response_set_text (Resp, "Directory listing failed\n");
-      axl_http_response_set_status (Resp, 500);
-      return EFI_SUCCESS;
-    }
-
-    if (AsJson) {
-      axl_http_response_set_json (Resp, Buf);
+    if (as_json) {
+        axl_http_response_set_json(resp, buf);
     } else {
-      Resp->body = AllocatePool (Written);
-      if (Resp->body != NULL) {
-        CopyMem (Resp->body, Buf, Written);
-        Resp->body_size = Written;
-      }
-
-      Resp->content_type = "text/html";
-      Resp->status_code = 200;
-    }
-
-    return EFI_SUCCESS;
-  }
-
-  //
-  // File download — read entire file into memory
-  //
-  UINT64  FileSize = 0;
-  Status = FileTransferGetFileSize (&Volume, SubPath, &FileSize);
-  if (EFI_ERROR (Status)) {
-    axl_http_response_set_text (Resp, "File not found\n");
-    axl_http_response_set_status (Resp, 404);
-    return EFI_SUCCESS;
-  }
-
-  UINT64  Offset = 0;
-  UINTN   SendSize = (UINTN)FileSize;
-
-  //
-  // Handle Range header
-  //
-  CONST CHAR8  *RangeHdr = (CONST CHAR8 *)AxlHashGet (Req->headers, "range");
-  if (RangeHdr != NULL && AsciiStrnCmp (RangeHdr, "bytes=", 6) == 0) {
-    CONST CHAR8  *R = RangeHdr + 6;
-    UINT64       Start = 0;
-    UINT64       End = FileSize - 1;
-
-    while (*R >= '0' && *R <= '9') {
-      Start = Start * 10 + (*R - '0');
-      R++;
-    }
-
-    if (*R == '-') {
-      R++;
-      if (*R >= '0' && *R <= '9') {
-        End = 0;
-        while (*R >= '0' && *R <= '9') {
-          End = End * 10 + (*R - '0');
-          R++;
+        resp->body = axl_malloc(written);
+        if (resp->body != NULL) {
+            axl_memcpy(resp->body, buf, written);
+            resp->body_size = written;
         }
-      }
+
+        resp->content_type = "text/html";
+        resp->status_code = 200;
     }
 
-    if (Start < FileSize) {
-      Offset = Start;
-      SendSize = (UINTN)(End - Start + 1);
-      Resp->status_code = 206;
-
-      //
-      // Set Content-Range header
-      //
-      if (Resp->headers == NULL) {
-        Resp->headers = AxlHashNew ();
-      }
-
-      if (Resp->headers != NULL) {
-        CHAR8  RangeBuf[128];
-        AsciiSPrint (RangeBuf, sizeof (RangeBuf),
-          "bytes %Lu-%Lu/%Lu", (UINT64)Start, (UINT64)End, (UINT64)FileSize);
-        AxlHashSet (Resp->headers, "content-range", AxlStrDup (RangeBuf));
-      }
-    }
-  }
-
-  //
-  // Read file content
-  //
-  FT_READ_CTX  ReadCtx;
-  Status = FileTransferOpenRead (&Volume, SubPath, Offset, NULL, NULL, &ReadCtx);
-  if (EFI_ERROR (Status)) {
-    axl_http_response_set_text (Resp, "Cannot open file\n");
-    axl_http_response_set_status (Resp, 500);
-    return EFI_SUCCESS;
-  }
-
-  VOID  *FileBuf = AllocatePool (SendSize);
-  if (FileBuf == NULL) {
-    FileTransferCloseRead (&ReadCtx);
-    axl_http_response_set_text (Resp, "Out of memory\n");
-    axl_http_response_set_status (Resp, 500);
-    return EFI_SUCCESS;
-  }
-
-  UINTN  TotalRead = 0;
-  while (TotalRead < SendSize) {
-    UINTN  Got = 0;
-    UINTN  Want = SendSize - TotalRead;
-    if (Want > FT_CHUNK_SIZE) {
-      Want = FT_CHUNK_SIZE;
-    }
-
-    Status = FileTransferReadChunk (&ReadCtx, (UINT8 *)FileBuf + TotalRead, Want, &Got);
-    if (EFI_ERROR (Status) || Got == 0) {
-      break;
-    }
-
-    TotalRead += Got;
-  }
-
-  FileTransferCloseRead (&ReadCtx);
-
-  Resp->body = FileBuf;
-  Resp->body_size = TotalRead;
-  Resp->content_type = "application/octet-stream";
-  if (Resp->status_code == 0) {
-    Resp->status_code = 200;
-  }
-
-  return EFI_SUCCESS;
+    return 0;
 }
 
-/// PUT /<vol>/<path> — upload/overwrite file.
-STATIC
-EFI_STATUS
-HandlePutPath (
-  AxlHttpRequest   *Req,
-  AxlHttpResponse  *Resp,
-  VOID               *Data
-  )
+/// GET /<vol>/<path> -- download file or list directory.
+static int
+handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-  FT_VOLUME   Volume;
-  CHAR16      SubPath[512];
-  EFI_STATUS  Status;
+    FtVolume  volume;
+    char       sub_path[512];
+    int        status;
+    bool       is_dir;
 
-  (VOID)Data;
+    (void)data;
 
-  Status = ParseVolumePath (Req->path, &Volume, SubPath, 512);
-  if (EFI_ERROR (Status)) {
-    axl_http_response_set_text (Resp, "Volume not found\n");
-    axl_http_response_set_status (Resp, 404);
-    return EFI_SUCCESS;
-  }
-
-  FT_WRITE_CTX  WriteCtx;
-  Status = FileTransferOpenWrite (&Volume, SubPath, NULL, NULL, &WriteCtx);
-  if (EFI_ERROR (Status)) {
-    axl_http_response_set_text (Resp, "Cannot create file\n");
-    axl_http_response_set_status (Resp, 500);
-    return EFI_SUCCESS;
-  }
-
-  //
-  // Write request body (already fully read by AxlHttpServer)
-  //
-  if (Req->body != NULL && Req->body_size > 0) {
-    UINTN  Written = 0;
-    while (Written < Req->body_size) {
-      UINTN  ChunkSize = Req->body_size - Written;
-      if (ChunkSize > FT_CHUNK_SIZE) {
-        ChunkSize = FT_CHUNK_SIZE;
-      }
-
-      Status = FileTransferWriteChunk (&WriteCtx,
-                 (CONST UINT8 *)Req->body + Written, ChunkSize);
-      if (EFI_ERROR (Status)) {
-        break;
-      }
-
-      Written += ChunkSize;
+    status = parse_volume_path(req->path, &volume, sub_path, 512);
+    if (status != 0) {
+        axl_http_response_set_text(resp, "Volume not found\n");
+        axl_http_response_set_status(resp, 404);
+        return 0;
     }
-  }
 
-  FileTransferCloseWrite (&WriteCtx);
-  axl_http_response_set_text (Resp, "Created\n");
-  axl_http_response_set_status (Resp, 201);
-  return EFI_SUCCESS;
+    is_dir = false;
+    status = ft_is_dir(&volume, sub_path, &is_dir);
+    if (status != 0) {
+        axl_http_response_set_text(resp, "Not found\n");
+        axl_http_response_set_status(resp, 404);
+        return 0;
+    }
+
+    if (is_dir) {
+        char   buf[8192];
+        size_t written = 0;
+        bool   as_json = wants_json(req);
+
+        status = ft_list_dir(&volume, sub_path, as_json, buf, sizeof(buf), &written);
+        if (status != 0) {
+            axl_http_response_set_text(resp, "Directory listing failed\n");
+            axl_http_response_set_status(resp, 500);
+            return 0;
+        }
+
+        if (as_json) {
+            axl_http_response_set_json(resp, buf);
+        } else {
+            resp->body = axl_malloc(written);
+            if (resp->body != NULL) {
+                axl_memcpy(resp->body, buf, written);
+                resp->body_size = written;
+            }
+
+            resp->content_type = "text/html";
+            resp->status_code = 200;
+        }
+
+        return 0;
+    }
+
+    //
+    // File download -- read entire file into memory
+    //
+    uint64_t file_size = 0;
+    status = ft_get_file_size(&volume, sub_path, &file_size);
+    if (status != 0) {
+        axl_http_response_set_text(resp, "File not found\n");
+        axl_http_response_set_status(resp, 404);
+        return 0;
+    }
+
+    uint64_t offset = 0;
+    size_t   send_size = (size_t)file_size;
+
+    //
+    // Handle Range header
+    //
+    const char *range_hdr = (const char *)axl_hash_table_get(req->headers, "range");
+    if (range_hdr != NULL && axl_strncmp(range_hdr, "bytes=", 6) == 0) {
+        const char *r = range_hdr + 6;
+        uint64_t    start = 0;
+        uint64_t    end = file_size - 1;
+
+        while (*r >= '0' && *r <= '9') {
+            start = start * 10 + (*r - '0');
+            r++;
+        }
+
+        if (*r == '-') {
+            r++;
+            if (*r >= '0' && *r <= '9') {
+                end = 0;
+                while (*r >= '0' && *r <= '9') {
+                    end = end * 10 + (*r - '0');
+                    r++;
+                }
+            }
+        }
+
+        if (start < file_size) {
+            offset = start;
+            send_size = (size_t)(end - start + 1);
+            resp->status_code = 206;
+
+            //
+            // Set Content-Range header
+            //
+            if (resp->headers == NULL) {
+                resp->headers = axl_hash_table_new();
+            }
+
+            if (resp->headers != NULL) {
+                char range_buf[128];
+                axl_snprintf(range_buf, sizeof(range_buf),
+                    "bytes %llu-%llu/%llu",
+                    (unsigned long long)start,
+                    (unsigned long long)end,
+                    (unsigned long long)file_size);
+                axl_hash_table_set(resp->headers, "content-range",
+                    axl_strdup(range_buf));
+            }
+        }
+    }
+
+    //
+    // Read file content
+    //
+    FtReadCtx read_ctx;
+    status = ft_open_read(&volume, sub_path, offset, NULL, NULL, &read_ctx);
+    if (status != 0) {
+        axl_http_response_set_text(resp, "Cannot open file\n");
+        axl_http_response_set_status(resp, 500);
+        return 0;
+    }
+
+    void *file_buf = axl_malloc(send_size);
+    if (file_buf == NULL) {
+        ft_close_read(&read_ctx);
+        axl_http_response_set_text(resp, "Out of memory\n");
+        axl_http_response_set_status(resp, 500);
+        return 0;
+    }
+
+    size_t total_read = 0;
+    while (total_read < send_size) {
+        size_t got = 0;
+        size_t want = send_size - total_read;
+        if (want > FT_CHUNK_SIZE) {
+            want = FT_CHUNK_SIZE;
+        }
+
+        status = ft_read_chunk(&read_ctx, (uint8_t *)file_buf + total_read,
+                               want, &got);
+        if (status != 0 || got == 0) {
+            break;
+        }
+
+        total_read += got;
+    }
+
+    ft_close_read(&read_ctx);
+
+    resp->body = file_buf;
+    resp->body_size = total_read;
+    resp->content_type = "application/octet-stream";
+    if (resp->status_code == 0) {
+        resp->status_code = 200;
+    }
+
+    return 0;
 }
 
-/// DELETE /<vol>/<path> — delete file or empty directory.
-STATIC
-EFI_STATUS
-HandleDeletePath (
-  AxlHttpRequest   *Req,
-  AxlHttpResponse  *Resp,
-  VOID               *Data
-  )
+/// PUT /<vol>/<path> -- upload/overwrite file.
+static int
+handle_put_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-  FT_VOLUME   Volume;
-  CHAR16      SubPath[512];
-  EFI_STATUS  Status;
+    FtVolume volume;
+    char      sub_path[512];
+    int       status;
 
-  (VOID)Data;
+    (void)data;
 
-  Status = ParseVolumePath (Req->path, &Volume, SubPath, 512);
-  if (EFI_ERROR (Status)) {
-    axl_http_response_set_text (Resp, "Volume not found\n");
-    axl_http_response_set_status (Resp, 404);
-    return EFI_SUCCESS;
-  }
+    status = parse_volume_path(req->path, &volume, sub_path, 512);
+    if (status != 0) {
+        axl_http_response_set_text(resp, "Volume not found\n");
+        axl_http_response_set_status(resp, 404);
+        return 0;
+    }
 
-  Status = FileTransferDelete (&Volume, SubPath);
-  if (EFI_ERROR (Status)) {
-    axl_http_response_set_text (Resp, "Not found\n");
-    axl_http_response_set_status (Resp, 404);
-    return EFI_SUCCESS;
-  }
+    FtWriteCtx write_ctx;
+    status = ft_open_write(&volume, sub_path, NULL, NULL, &write_ctx);
+    if (status != 0) {
+        axl_http_response_set_text(resp, "Cannot create file\n");
+        axl_http_response_set_status(resp, 500);
+        return 0;
+    }
 
-  axl_http_response_set_text (Resp, "Deleted\n");
-  return EFI_SUCCESS;
+    //
+    // Write request body (already fully read by AxlHttpServer)
+    //
+    if (req->body != NULL && req->body_size > 0) {
+        size_t written = 0;
+        while (written < req->body_size) {
+            size_t chunk_size = req->body_size - written;
+            if (chunk_size > FT_CHUNK_SIZE) {
+                chunk_size = FT_CHUNK_SIZE;
+            }
+
+            status = ft_write_chunk(&write_ctx,
+                         (const uint8_t *)req->body + written, chunk_size);
+            if (status != 0) {
+                break;
+            }
+
+            written += chunk_size;
+        }
+    }
+
+    ft_close_write(&write_ctx);
+    axl_http_response_set_text(resp, "Created\n");
+    axl_http_response_set_status(resp, 201);
+    return 0;
 }
 
-/// POST /<vol>/<path>?mkdir — create directory.
-STATIC
-EFI_STATUS
-HandlePostPath (
-  AxlHttpRequest   *Req,
-  AxlHttpResponse  *Resp,
-  VOID               *Data
-  )
+/// DELETE /<vol>/<path> -- delete file or empty directory.
+static int
+handle_delete_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-  FT_VOLUME   Volume;
-  CHAR16      SubPath[512];
-  EFI_STATUS  Status;
+    FtVolume volume;
+    char      sub_path[512];
+    int       status;
 
-  (VOID)Data;
+    (void)data;
 
-  if (Req->query == NULL || AsciiStrCmp (Req->query, "mkdir") != 0) {
-    axl_http_response_set_text (Resp, "Use ?mkdir\n");
-    axl_http_response_set_status (Resp, 400);
-    return EFI_SUCCESS;
-  }
+    status = parse_volume_path(req->path, &volume, sub_path, 512);
+    if (status != 0) {
+        axl_http_response_set_text(resp, "Volume not found\n");
+        axl_http_response_set_status(resp, 404);
+        return 0;
+    }
 
-  Status = ParseVolumePath (Req->path, &Volume, SubPath, 512);
-  if (EFI_ERROR (Status)) {
-    axl_http_response_set_text (Resp, "Volume not found\n");
-    axl_http_response_set_status (Resp, 404);
-    return EFI_SUCCESS;
-  }
+    status = ft_delete(&volume, sub_path);
+    if (status != 0) {
+        axl_http_response_set_text(resp, "Not found\n");
+        axl_http_response_set_status(resp, 404);
+        return 0;
+    }
 
-  Status = FileTransferMkdir (&Volume, SubPath);
-  if (EFI_ERROR (Status)) {
-    axl_http_response_set_text (Resp, "mkdir failed\n");
-    axl_http_response_set_status (Resp, 500);
-    return EFI_SUCCESS;
-  }
+    axl_http_response_set_text(resp, "Deleted\n");
+    return 0;
+}
 
-  axl_http_response_set_text (Resp, "Created\n");
-  axl_http_response_set_status (Resp, 201);
-  return EFI_SUCCESS;
+/// POST /<vol>/<path>?mkdir -- create directory.
+static int
+handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
+{
+    FtVolume volume;
+    char      sub_path[512];
+    int       status;
+
+    (void)data;
+
+    if (req->query == NULL || axl_strcmp(req->query, "mkdir") != 0) {
+        axl_http_response_set_text(resp, "Use ?mkdir\n");
+        axl_http_response_set_status(resp, 400);
+        return 0;
+    }
+
+    status = parse_volume_path(req->path, &volume, sub_path, 512);
+    if (status != 0) {
+        axl_http_response_set_text(resp, "Volume not found\n");
+        axl_http_response_set_status(resp, 404);
+        return 0;
+    }
+
+    status = ft_mkdir(&volume, sub_path);
+    if (status != 0) {
+        axl_http_response_set_text(resp, "mkdir failed\n");
+        axl_http_response_set_status(resp, 500);
+        return 0;
+    }
+
+    axl_http_response_set_text(resp, "Created\n");
+    axl_http_response_set_status(resp, 201);
+    return 0;
 }
 
 // ----------------------------------------------------------------------------
 // ESC key handler for the event loop
 // ----------------------------------------------------------------------------
 
-STATIC AXL_LOOP  *mServeLoop = NULL;
+static AxlLoop *mServeLoop = NULL;
 
-STATIC
-BOOLEAN
-EFIAPI
-EscKeyHandler (
-  IN EFI_INPUT_KEY  Key,
-  IN VOID           *Data
-  )
+static bool
+esc_key_handler(AxlInputKey key, void *data)
 {
-  (VOID)Data;
+    (void)data;
 
-  if (Key.ScanCode == SCAN_ESC) {
-    Print (L"\nESC \u2014 stopping server.\n");
-    if (mServeLoop != NULL) {
-      AxlLoopQuit (mServeLoop);
+    if (key.scan_code == 0x17) {  /* SCAN_ESC */
+        axl_printf("\nESC -- stopping server.\n");
+        if (mServeLoop != NULL) {
+            axl_loop_quit(mServeLoop);
+        }
+
+        return false;
     }
 
-    return FALSE;
-  }
-
-  return TRUE;
+    return true;
 }
 
 // ----------------------------------------------------------------------------
 // Main serve command
 // ----------------------------------------------------------------------------
 
-EFI_STATUS
-CmdServe (
-  IN EFI_HANDLE  ImageHandle,
-  IN UINTN       Argc,
-  IN CHAR16      **Argv
-  )
+int
+CmdServe(int argc, char **argv)
 {
-  SERVE_OPTIONS    Opts;
-  EFI_STATUS       Status;
-  AxlHttpServer  *Server;
+    ServeOptions    opts;
+    AxlHttpServer  *server;
 
-  Opts.Port = 8080;
-  Opts.NicIndex = (UINTN)-1;
-  Opts.IdleTimeoutSec = 0;
-  Opts.ReadOnly = FALSE;
-  Opts.WriteOnly = FALSE;
-  Opts.Verbose = FALSE;
+    static const AxlOpt serve_opts[] = {
+        { 'p', NULL,           AXL_OPT_VALUE, "PORT",    "Listen port (default: 8080)" },
+        { 'n', NULL,           AXL_OPT_VALUE, "INDEX",   "NIC index" },
+        { 't', NULL,           AXL_OPT_VALUE, "SECONDS", "Idle timeout" },
+        {  0,  "--read-only",  AXL_OPT_FLAG,  NULL,      "Block uploads/deletes" },
+        {  0,  "--write-only", AXL_OPT_FLAG,  NULL,      "Block downloads" },
+        { 'v', NULL,           AXL_OPT_FLAG,  NULL,      "Verbose logging" },
+        { 'h', NULL,           AXL_OPT_FLAG,  NULL,      "Show help" },
+        { 0, NULL, 0, NULL, NULL }
+    };
 
-  // Parse options
-  for (UINTN I = 0; I < Argc; I++) {
-    if (StrCmp (Argv[I], L"-p") == 0 && I + 1 < Argc) {
-      Opts.Port = (UINT16)StrDecimalToUintn (Argv[++I]);
-    } else if (StrCmp (Argv[I], L"-n") == 0 && I + 1 < Argc) {
-      Opts.NicIndex = StrDecimalToUintn (Argv[++I]);
-    } else if (StrCmp (Argv[I], L"-t") == 0 && I + 1 < Argc) {
-      Opts.IdleTimeoutSec = StrDecimalToUintn (Argv[++I]);
-    } else if (StrCmp (Argv[I], L"--read-only") == 0) {
-      Opts.ReadOnly = TRUE;
-    } else if (StrCmp (Argv[I], L"--write-only") == 0) {
-      Opts.WriteOnly = TRUE;
-    } else if (StrCmp (Argv[I], L"-v") == 0) {
-      Opts.Verbose = TRUE;
-    } else if (StrCmp (Argv[I], L"-h") == 0) {
-      Print (L"Usage: HttpFS serve [options]\n");
-      Print (L"  -p <port>       Listen port (default: 8080)\n");
-      Print (L"  -n <index>      NIC index\n");
-      Print (L"  -t <seconds>    Idle timeout\n");
-      Print (L"  --read-only     Block uploads/deletes\n");
-      Print (L"  --write-only    Block downloads\n");
-      Print (L"  -v              Verbose logging\n");
-      return EFI_SUCCESS;
+    AxlArgs *args = axl_args_parse(argc, argv, serve_opts);
+    if (args == NULL) {
+        axl_args_usage("HttpFS serve", "[OPTIONS]", serve_opts);
+        return 1;
     }
-  }
 
-  //
-  // Initialize networking (driver loading, DHCP)
-  //
-  Status = NetworkInit (ImageHandle, Opts.NicIndex, NULL, 10);
-  if (EFI_ERROR (Status)) {
-    Print (L"ERROR: Network init failed: %r\n", Status);
-    return Status;
-  }
+    if (axl_args_flag(args, 'h')) {
+        axl_args_usage("HttpFS serve", "[OPTIONS]", serve_opts);
+        axl_args_free(args);
+        return 0;
+    }
 
-  EFI_IPv4_ADDRESS  Addr;
-  NetworkGetAddress (&Addr);
+    opts.port             = 8080;
+    opts.nic_index        = (size_t)-1;
+    opts.idle_timeout_sec = 0;
+    opts.read_only        = axl_args_flag_long(args, "--read-only");
+    opts.write_only       = axl_args_flag_long(args, "--write-only");
+    opts.verbose          = axl_args_flag(args, 'v');
 
-  //
-  // Initialize file transfer
-  //
-  Status = FileTransferInit ();
-  if (EFI_ERROR (Status)) {
-    Print (L"ERROR: FileTransfer init failed: %r\n", Status);
-    NetworkCleanup ();
-    return Status;
-  }
+    const char *val;
+    if ((val = axl_args_value(args, 'p')) != NULL)
+        opts.port = (uint16_t)axl_strtou64(val);
+    if ((val = axl_args_value(args, 'n')) != NULL)
+        opts.nic_index = (size_t)axl_strtou64(val);
+    if ((val = axl_args_value(args, 't')) != NULL)
+        opts.idle_timeout_sec = (size_t)axl_strtou64(val);
 
-  //
-  // Create HTTP server
-  //
-  Server = axl_http_server_new (Opts.Port);
-  if (Server == NULL) {
-    Print (L"ERROR: HTTP server creation failed\n");
-    NetworkCleanup ();
-    return EFI_OUT_OF_RESOURCES;
-  }
+    axl_args_free(args);
 
-  axl_http_server_set_body_limit (Server, 128 * 1024 * 1024);  // 128 MB
+    //
+    // Initialize networking (driver loading, DHCP)
+    //
+    if (network_init(opts.nic_index, NULL, 10) != 0) {
+        axl_printf("ERROR: Network init failed\n");
+        return 1;
+    }
 
-  //
-  // Disable keep-alive (avoids blocking on single-threaded server)
-  //
-  axl_http_server_set_keep_alive (Server, 0);
+    uint8_t addr[4];
+    network_get_address(addr);
 
-  //
-  // Permission middleware
-  //
-  if (Opts.ReadOnly || Opts.WriteOnly) {
-    axl_http_server_use (Server, PermissionMiddleware, &Opts);
-  }
+    //
+    // Initialize file transfer
+    //
+    if (ft_init() != 0) {
+        axl_printf("ERROR: FileTransfer init failed\n");
+        network_cleanup();
+        return 1;
+    }
 
-  //
-  // Register routes (exact root match first, then prefix matches)
-  //
-  axl_http_server_add_route (Server, "GET",    "/",  HandleGetRoot,   NULL);
-  axl_http_server_add_route (Server, "GET",    "/*", HandleGetPath,   NULL);
-  axl_http_server_add_route (Server, "PUT",    "/*", HandlePutPath,   NULL);
-  axl_http_server_add_route (Server, "DELETE", "/*", HandleDeletePath, NULL);
-  axl_http_server_add_route (Server, "POST",   "/*", HandlePostPath,  NULL);
+    //
+    // Create HTTP server
+    //
+    server = axl_http_server_new(opts.port);
+    if (server == NULL) {
+        axl_printf("ERROR: HTTP server creation failed\n");
+        network_cleanup();
+        return 1;
+    }
 
-  //
-  // Print banner
-  //
-  Print (L"\nHttpFS v0.1 \u2014 UEFI HTTP File Server\n");
-  Print (L"Listening on %d.%d.%d.%d:%d\n",
-    Addr.Addr[0], Addr.Addr[1], Addr.Addr[2], Addr.Addr[3], Opts.Port);
+    axl_http_server_set_body_limit(server, 128 * 1024 * 1024);  // 128 MB
 
-  CONST CHAR16  *Mode = L"read-write";
-  if (Opts.ReadOnly) {
-    Mode = L"read-only";
-  }
+    //
+    // Disable keep-alive (avoids blocking on single-threaded server)
+    //
+    axl_http_server_set_keep_alive(server, 0);
 
-  if (Opts.WriteOnly) {
-    Mode = L"write-only";
-  }
+    //
+    // Permission middleware
+    //
+    if (opts.read_only || opts.write_only) {
+        axl_http_server_use(server, permission_middleware, &opts);
+    }
 
-  Print (L"Mode: %s\n", Mode);
+    //
+    // Register routes (exact root match first, then prefix matches)
+    //
+    axl_http_server_add_route(server, "GET",    "/",  handle_get_root,    NULL);
+    axl_http_server_add_route(server, "GET",    "/*", handle_get_path,    NULL);
+    axl_http_server_add_route(server, "PUT",    "/*", handle_put_path,    NULL);
+    axl_http_server_add_route(server, "DELETE", "/*", handle_delete_path, NULL);
+    axl_http_server_add_route(server, "POST",   "/*", handle_post_path,   NULL);
 
-  Print (L"Volumes:\n");
-  UINTN  VCount = FileTransferGetVolumeCount ();
-  for (UINTN I = 0; I < VCount; I++) {
-    FT_VOLUME  Vol;
-    FileTransferGetVolume (I, &Vol);
-    Print (L"  %s:\n", Vol.Name);
-  }
+    //
+    // Print banner
+    //
+    axl_printf("\nHttpFS v0.1 -- UEFI HTTP File Server\n");
+    axl_printf("Listening on %d.%d.%d.%d:%d\n",
+        addr[0], addr[1], addr[2], addr[3], opts.port);
 
-  Print (L"Press ESC to stop.\n\n");
+    const char *mode = "read-write";
+    if (opts.read_only) {
+        mode = "read-only";
+    }
 
-  //
-  // Run server with event loop (ESC to quit)
-  //
-  AXL_LOOP  *Loop = AxlLoopNew ();
-  if (Loop == NULL) {
-    axl_http_server_free (Server);
-    NetworkCleanup ();
-    return EFI_OUT_OF_RESOURCES;
-  }
+    if (opts.write_only) {
+        mode = "write-only";
+    }
 
-  mServeLoop = Loop;
-  AxlLoopAddKeyPress (Loop, EscKeyHandler, NULL);
+    axl_printf("Mode: %s\n", mode);
 
-  Status = axl_http_server_attach (Server, Loop);
-  if (EFI_ERROR (Status)) {
-    Print (L"ERROR: Server attach failed: %r\n", Status);
-    AxlLoopFree (Loop);
-    axl_http_server_free (Server);
-    NetworkCleanup ();
-    return Status;
-  }
+    axl_printf("Volumes:\n");
+    size_t vcount = ft_get_volume_count();
+    for (size_t i = 0; i < vcount; i++) {
+        FtVolume vol;
+        ft_get_volume(i, &vol);
+        axl_printf("  %s:\n", vol.name);
+    }
 
-  Status = AxlLoopRun (Loop);
+    axl_printf("Press ESC to stop.\n\n");
 
-  mServeLoop = NULL;
-  AxlLoopFree (Loop);
-  axl_http_server_free (Server);
-  NetworkCleanup ();
-  return Status;
+    //
+    // Run server with event loop (ESC to quit)
+    //
+    AxlLoop *loop = axl_loop_new();
+    if (loop == NULL) {
+        axl_http_server_free(server);
+        network_cleanup();
+        return 1;
+    }
+
+    mServeLoop = loop;
+    axl_loop_add_key_press(loop, esc_key_handler, NULL);
+
+    if (axl_http_server_attach(server, loop) != 0) {
+        axl_printf("ERROR: Server attach failed\n");
+        axl_loop_free(loop);
+        axl_http_server_free(server);
+        network_cleanup();
+        return 1;
+    }
+
+    int status = axl_loop_run(loop);
+
+    mServeLoop = NULL;
+    axl_loop_free(loop);
+    axl_http_server_free(server);
+    network_cleanup();
+    return status;
 }

@@ -1,46 +1,58 @@
 /** @file
-  FileTransferLib — Directory listing as JSON and HTML.
+  FileTransferLib -- Directory listing as JSON and HTML.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
 #include <Library/FileTransferLib.h>
+#include <axl.h>
+#include <axl/axl-json.h>
 
-#include <Library/UefiBootServicesTableLib.h>
-#include <Library/BaseLib.h>
-#include <Library/BaseMemoryLib.h>
-#include <Library/MemoryAllocationLib.h>
-#include <Library/PrintLib.h>
 
-#include <Protocol/SimpleFileSystem.h>
-#include <Guid/FileInfo.h>
+/* Safe snprintf accumulation: clamp pos to prevent size_t underflow */
+#define APPEND(pos, buf, sz, ...) do { \
+    int _n = axl_snprintf((buf) + (pos), (sz) - (pos), __VA_ARGS__); \
+    if (_n > 0) (pos) += (size_t)_n; \
+    if ((pos) >= (sz)) (pos) = (sz) - 1; \
+} while (0)
+
+// ----------------------------------------------------------------------------
+// Path helper (duplicated from FileTransfer.c to keep both files independent)
+// ----------------------------------------------------------------------------
+
+static void build_path(const FtVolume *vol, const char *sub_path,
+                       char *out, size_t out_size)
+{
+    axl_snprintf(out, out_size, "%s:%s", vol->name, sub_path);
+    for (char *p = out; *p; p++) {
+        if (*p == '/')
+            *p = '\\';
+    }
+}
 
 // ----------------------------------------------------------------------------
 // Volume listing
 // ----------------------------------------------------------------------------
 
-EFI_STATUS EFIAPI FileTransferListVolumes(
-    IN  BOOLEAN  AsJson,
-    OUT CHAR8    *Buffer,
-    IN  UINTN   BufferSize,
-    OUT UINTN   *Written
-) {
-    UINTN Pos = 0;
-    UINTN Count = FileTransferGetVolumeCount();
+int ft_list_volumes(bool as_json, char *buf, size_t buf_size, size_t *written)
+{
+    size_t pos = 0;
+    size_t count = ft_get_volume_count();
 
-    if (AsJson) {
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, "[");
-        for (UINTN i = 0; i < Count; i++) {
-            FT_VOLUME Vol;
-            FileTransferGetVolume(i, &Vol);
-            if (i > 0) Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, ",");
-            Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-                "{\"name\":\"%s\",\"index\":%d}", Vol.Name, i);
+    if (as_json) {
+        APPEND(pos, buf, buf_size, "[");
+        for (size_t i = 0; i < count; i++) {
+            FtVolume vol;
+            ft_get_volume(i, &vol);
+            if (i > 0)
+                APPEND(pos, buf, buf_size, ",");
+            APPEND(pos, buf, buf_size,
+                "{\"name\":\"%s\",\"index\":%zu}", vol.name, i);
         }
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, "]");
+        APPEND(pos, buf, buf_size, "]");
     } else {
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+        APPEND(pos, buf, buf_size,
             "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
             "<title>HttpFS &mdash; Volumes</title>"
             "<style>"
@@ -62,63 +74,42 @@ EFI_STATUS EFIAPI FileTransferListVolumes(
             "<div class=\"card\"><table>"
             "<tr><th>Volume</th></tr>");
 
-        for (UINTN i = 0; i < Count; i++) {
-            FT_VOLUME Vol;
-            FileTransferGetVolume(i, &Vol);
-            Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-                "<tr><td><a href=\"/%s/\">%s:</a></td></tr>", Vol.Name, Vol.Name);
+        for (size_t i = 0; i < count; i++) {
+            FtVolume vol;
+            ft_get_volume(i, &vol);
+            APPEND(pos, buf, buf_size,
+                "<tr><td><a href=\"/%s/\">%s:</a></td></tr>", vol.name, vol.name);
         }
 
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+        APPEND(pos, buf, buf_size,
             "</table></div></body></html>");
     }
 
-    *Written = Pos;
-    return EFI_SUCCESS;
+    *written = pos;
+    return 0;
 }
 
 // ----------------------------------------------------------------------------
 // Directory listing
 // ----------------------------------------------------------------------------
 
-EFI_STATUS EFIAPI FileTransferListDir(
-    IN  FT_VOLUME    *Volume,
-    IN  CONST CHAR16 *Path,
-    IN  BOOLEAN      AsJson,
-    OUT CHAR8        *Buffer,
-    IN  UINTN        BufferSize,
-    OUT UINTN        *Written
-) {
-    EFI_FILE_PROTOCOL *Root = NULL;
-    EFI_STATUS Status = Volume->Fs->OpenVolume(Volume->Fs, &Root);
-    if (EFI_ERROR(Status)) return Status;
+int ft_list_dir(FtVolume *vol, const char *path, bool as_json,
+                char *buf, size_t buf_size, size_t *written)
+{
+    char dir_full[512];
+    build_path(vol, path, dir_full, sizeof(dir_full));
 
-    // Convert path separators
-    CHAR16 UefiPath[512];
-    UINTN i = 0;
-    while (Path[i] != L'\0' && i < 511) {
-        UefiPath[i] = (Path[i] == L'/') ? L'\\' : Path[i];
-        i++;
-    }
-    UefiPath[i] = L'\0';
+    AxlDir *dir = axl_dir_open(dir_full);
+    if (dir == NULL)
+        return -1;
 
-    CHAR16 *OpenPath = UefiPath;
-    if (OpenPath[0] == L'\\') OpenPath++;
+    size_t pos = 0;
+    bool first = true;
 
-    EFI_FILE_PROTOCOL *Dir = Root;
-    if (OpenPath[0] != L'\0') {
-        Status = Root->Open(Root, &Dir, OpenPath, EFI_FILE_MODE_READ, 0);
-        Root->Close(Root);
-        if (EFI_ERROR(Status)) return Status;
-    }
-
-    UINTN Pos = 0;
-    BOOLEAN First = TRUE;
-
-    if (AsJson) {
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, "[");
+    if (as_json) {
+        APPEND(pos, buf, buf_size, "[");
     } else {
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+        APPEND(pos, buf, buf_size,
             "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
             "<title>%s:%s</title>"
             "<style>"
@@ -136,139 +127,132 @@ EFI_STATUS EFIAPI FileTransferListDir(
             "td{padding:8px 12px;border-bottom:1px solid #0f3460}"
             "tr:hover{background:#1a4a80}"
             ".sz{text-align:right;color:#8888aa;white-space:nowrap}"
-            ".dt{color:#8888aa;white-space:nowrap}.ty{color:#8888aa}"
+            ".ty{color:#8888aa}"
             "</style></head><body>"
             "<h2>HttpFS</h2>",
-            Volume->Name, Path);
+            vol->name, path);
 
-        // Breadcrumb: Volumes / fs0: / path / subdir
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+        /* Breadcrumb: Volumes / fs0: / path / subdir */
+        APPEND(pos, buf, buf_size,
             "<div class=\"crumb\"><a href=\"/\">Volumes</a>"
-            " / <a href=\"/%s/\">%s:</a>", Volume->Name, Volume->Name);
+            " / <a href=\"/%s/\">%s:</a>", vol->name, vol->name);
 
-        // Add path segments as breadcrumb links
+        /* Add path segments as breadcrumb links */
         {
-            CHAR8 Href[512];
-            UINTN HrefLen = AsciiSPrint(Href, sizeof(Href), "/%s", Volume->Name);
-            CHAR8 SegBuf[256];
-            UINTN si = 0;
-            UINTN pi = 0;
-            if (Path[0] == L'/') pi = 1;
+            char href[512];
+            int href_len = axl_snprintf(href, sizeof(href), "/%s", vol->name);
+            char seg[256];
+            size_t si = 0;
+            size_t pi = 0;
+            if (path[0] == '/')
+                pi = 1;
 
-            while (Path[pi] != L'\0') {
-                if (Path[pi] == L'/') {
-                    SegBuf[si] = '\0';
+            while (path[pi] != '\0') {
+                if (path[pi] == '/') {
+                    seg[si] = '\0';
                     if (si > 0) {
-                        HrefLen += AsciiSPrint(Href + HrefLen,
-                            sizeof(Href) - HrefLen, "/%a", SegBuf);
-                        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-                            " / <a href=\"%a/\">%a</a>", Href, SegBuf);
+                        href_len += axl_snprintf(href + href_len,
+                            sizeof(href) - (size_t)href_len, "/%s", seg);
+                        APPEND(pos, buf, buf_size,
+                            " / <a href=\"%s/\">%s</a>", href, seg);
                     }
                     si = 0;
                 } else {
-                    if (si < 255) SegBuf[si++] = (CHAR8)Path[pi];
+                    if (si < 255)
+                        seg[si++] = path[pi];
                 }
                 pi++;
             }
-            // Last segment (current directory — not a link)
+            /* Last segment (current directory -- not a link) */
             if (si > 0) {
-                SegBuf[si] = '\0';
-                Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-                    " / %a", SegBuf);
+                seg[si] = '\0';
+                APPEND(pos, buf, buf_size,
+                    " / %s", seg);
             }
         }
 
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, "</div>");
+        APPEND(pos, buf, buf_size, "</div>");
 
-        // Determine parent link
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+        APPEND(pos, buf, buf_size,
             "<div class=\"card\"><table>"
-            "<tr><th>Name</th><th class=\"sz\">Size</th><th>Modified</th><th>Type</th></tr>");
+            "<tr><th>Name</th><th class=\"sz\">Size</th><th>Type</th></tr>");
 
-        // ".." parent directory link
+        /* ".." parent directory link */
         {
-            // Find parent path: strip last segment from Path
-            CHAR8 ParentHref[512];
-            UINTN pi = 0;
-            while (Path[pi] != L'\0' && pi < 511) {
-                ParentHref[pi] = (CHAR8)Path[pi];
+            char parent_href[512];
+            size_t pi = 0;
+            while (path[pi] != '\0' && pi < 511) {
+                parent_href[pi] = path[pi];
                 pi++;
             }
-            ParentHref[pi] = '\0';
-            // Remove trailing slash
-            if (pi > 0 && ParentHref[pi - 1] == '/') ParentHref[--pi] = '\0';
-            // Find last slash
-            INTN Last = (INTN)pi - 1;
-            while (Last >= 0 && ParentHref[Last] != '/') Last--;
-            if (Last >= 0) {
-                ParentHref[Last + 1] = '\0';
-                Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-                    "<tr><td><a href=\"/%s%a\">..</a></td>"
-                    "<td class=\"sz\">&mdash;</td><td class=\"dt\"></td><td class=\"ty\">dir</td></tr>",
-                    Volume->Name, ParentHref);
+            parent_href[pi] = '\0';
+            /* Remove trailing slash */
+            if (pi > 0 && parent_href[pi - 1] == '/')
+                parent_href[--pi] = '\0';
+            /* Find last slash */
+            int last = (int)pi - 1;
+            while (last >= 0 && parent_href[last] != '/')
+                last--;
+            if (last >= 0) {
+                parent_href[last + 1] = '\0';
+                APPEND(pos, buf, buf_size,
+                    "<tr><td><a href=\"/%s%s\">..</a></td>"
+                    "<td class=\"sz\">&mdash;</td>"
+                    "<td class=\"ty\">dir</td></tr>",
+                    vol->name, parent_href);
             } else {
-                // At volume root — parent is volume list
-                Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+                /* At volume root -- parent is volume list */
+                APPEND(pos, buf, buf_size,
                     "<tr><td><a href=\"/\">..</a></td>"
-                    "<td class=\"sz\">&mdash;</td><td class=\"dt\"></td><td class=\"ty\">dir</td></tr>");
+                    "<td class=\"sz\">&mdash;</td>"
+                    "<td class=\"ty\">dir</td></tr>");
             }
         }
     }
 
-    // Read directory entries
-    UINT8 InfoBuf[512];
-    for (;;) {
-        UINTN InfoSize = sizeof(InfoBuf);
-        Status = Dir->Read(Dir, &InfoSize, InfoBuf);
-        if (EFI_ERROR(Status) || InfoSize == 0) break;
-
-        EFI_FILE_INFO *Info = (EFI_FILE_INFO *)InfoBuf;
-        BOOLEAN IsDir = (Info->Attribute & EFI_FILE_DIRECTORY) != 0;
-
-        // Skip . and ..
-        if (StrCmp(Info->FileName, L".") == 0 || StrCmp(Info->FileName, L"..") == 0) {
+    /* Read directory entries */
+    AxlDirEntry entry;
+    while (axl_dir_read(dir, &entry)) {
+        if (axl_strcmp(entry.name, ".") == 0 || axl_strcmp(entry.name, "..") == 0)
             continue;
-        }
 
-        if (AsJson) {
-            if (!First) Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, ",");
-            First = FALSE;
-            Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
-                "{\"name\":\"%s\",\"size\":%llu,\"dir\":%a}",
-                Info->FileName, Info->FileSize,
-                IsDir ? "true" : "false");
+        if (as_json) {
+            if (!first)
+                APPEND(pos, buf, buf_size, ",");
+            first = false;
+            APPEND(pos, buf, buf_size,
+                "{\"name\":\"%s\",\"size\":%llu,\"dir\":%s}",
+                entry.name, (unsigned long long)entry.size,
+                entry.is_dir ? "true" : "false");
         } else {
-            EFI_TIME *Mt = &Info->ModificationTime;
-            if (IsDir) {
-                Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+            if (entry.is_dir) {
+                APPEND(pos, buf, buf_size,
                     "<tr><td><a href=\"%s/\">%s/</a></td>"
                     "<td class=\"sz\">&mdash;</td>"
-                    "<td class=\"dt\">%04d-%02d-%02d %02d:%02d</td>"
                     "<td class=\"ty\">dir</td></tr>",
-                    Info->FileName, Info->FileName,
-                    Mt->Year, Mt->Month, Mt->Day, Mt->Hour, Mt->Minute);
+                    entry.name, entry.name);
             } else {
-                Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+                APPEND(pos, buf, buf_size,
                     "<tr><td><a href=\"%s\">%s</a></td>"
                     "<td class=\"sz\">%llu</td>"
-                    "<td class=\"dt\">%04d-%02d-%02d %02d:%02d</td>"
                     "<td class=\"ty\">file</td></tr>",
-                    Info->FileName, Info->FileName, Info->FileSize,
-                    Mt->Year, Mt->Month, Mt->Day, Mt->Hour, Mt->Minute);
+                    entry.name, entry.name,
+                    (unsigned long long)entry.size);
             }
         }
 
-        if (Pos >= BufferSize - 256) break;  // Safety margin
+        if (pos >= buf_size - 256)
+            break;  /* Safety margin */
     }
 
-    if (AsJson) {
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos, "]");
+    if (as_json) {
+        APPEND(pos, buf, buf_size, "]");
     } else {
-        Pos += AsciiSPrint(Buffer + Pos, BufferSize - Pos,
+        APPEND(pos, buf, buf_size,
             "</table></div></body></html>");
     }
 
-    Dir->Close(Dir);
-    *Written = Pos;
-    return EFI_SUCCESS;
+    axl_dir_close(dir);
+    *written = pos;
+    return 0;
 }

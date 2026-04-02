@@ -1,5 +1,5 @@
 /** @file
-  NetworkLib — NIC discovery, DHCP configuration, and static IP setup.
+  NetworkLib -- NIC discovery, DHCP configuration, and static IP setup.
 
   Adapted from SoftBMC Core/Network.c. Auto-loads NIC drivers from
   \drivers\{arch}\ on mounted filesystems, connects network stack
@@ -12,438 +12,402 @@
 
 #include <Library/NetworkLib.h>
 
-#include <Library/UefiBootServicesTableLib.h>
-#include <Library/BaseLib.h>
-#include <Library/BaseMemoryLib.h>
-#include <Library/MemoryAllocationLib.h>
-#include <Library/UefiLib.h>
-#include <Library/PrintLib.h>
-#include <Library/DevicePathLib.h>
+#include <axl.h>
+#include <axl/axl-driver.h>
+#include <axl/axl-sys.h>
+#include <axl/axl-net.h>
+#include <uefi/axl-uefi.h>
 
-#include <Protocol/SimpleNetwork.h>
-#include <Protocol/Ip4Config2.h>
-#include <Protocol/Dhcp4.h>
-#include <Protocol/ServiceBinding.h>
-#include <Protocol/Tcp4.h>
-#include <Protocol/SimpleFileSystem.h>
-#include <Protocol/LoadedImage.h>
-#include <Guid/FileInfo.h>
 
-#if defined(MDE_CPU_X64)
-  #define DRIVER_DIR_PATH  L"\\drivers\\x64"
-#elif defined(MDE_CPU_AARCH64)
-  #define DRIVER_DIR_PATH  L"\\drivers\\aa64"
+/* gBS is defined in AXL's native backend (axl-backend-native.c) */
+extern EFI_BOOT_SERVICES *gBS;
+
+
+/* ------------------------------------------------------------------ */
+/* IP4Config2 types not in the generated UEFI headers                 */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    Ip4Config2PolicyStatic = 0,
+    Ip4Config2PolicyDhcp   = 1
+} EFI_IP4_CONFIG2_POLICY;
+
+typedef struct {
+    EFI_IPv4_ADDRESS  Address;
+    EFI_IPv4_ADDRESS  SubnetMask;
+} EFI_IP4_CONFIG2_MANUAL_ADDRESS;
+
+/* ------------------------------------------------------------------ */
+/* Architecture-dependent driver path                                 */
+/* ------------------------------------------------------------------ */
+
+#if defined(__x86_64__) || defined(_M_X64)
+  #define DRIVER_DIR_PATH  "\\drivers\\x64"
+#elif defined(__aarch64__)
+  #define DRIVER_DIR_PATH  "\\drivers\\aa64"
 #else
-  #define DRIVER_DIR_PATH  L"\\drivers"
+  #define DRIVER_DIR_PATH  "\\drivers"
 #endif
 
-// ----------------------------------------------------------------------------
-// Module state
-// ----------------------------------------------------------------------------
+/* ------------------------------------------------------------------ */
+/* Module state                                                       */
+/* ------------------------------------------------------------------ */
 
-static BOOLEAN                mInitialized = FALSE;
-static EFI_HANDLE             mImageHandle = NULL;
-static NETWORK_INTERFACE_INFO mIfaceInfo;
+static bool         mInitialized = false;
+static NetworkInfo  mIfaceInfo;
+static void        *mNicHandle = NULL;  /* IP4Config2 handle */
 
-// DHCP4 direct fallback state
-static BOOLEAN                mDhcp4Fallback = FALSE;
-static EFI_HANDLE             mDhcp4SbHandle = NULL;
-static EFI_HANDLE             mDhcp4ChildHandle = NULL;
+/* DHCP4 direct fallback state */
+static bool   mDhcp4Fallback = false;
+static void  *mDhcp4SbHandle = NULL;
+static void  *mDhcp4ChildHandle = NULL;
 
-// Selected NIC handle (for TCP4 ServiceBinding lookup)
-static EFI_HANDLE             mNicHandle = NULL;
+/* ------------------------------------------------------------------ */
+/* IP4Config2 helpers                                                 */
+/* ------------------------------------------------------------------ */
 
-// ----------------------------------------------------------------------------
-// IP4Config2 helpers
-// ----------------------------------------------------------------------------
+/** Check if a handle already has a non-zero IP via IP4Config2. */
+static int
+check_existing_ip(void *handle, NetworkInfo *info)
+{
+    EFI_IP4_CONFIG2_PROTOCOL *ip4cfg2 = NULL;
+    if (axl_handle_get_service(handle, "ip4-config2", (void **)&ip4cfg2) != 0)
+        return -1;
 
-/// Check if a handle already has a non-zero IP via IP4Config2.
-static EFI_STATUS CheckExistingIp(
-    IN  EFI_HANDLE                 Handle,
-    OUT NETWORK_INTERFACE_INFO     *Info
-) {
-    EFI_IP4_CONFIG2_PROTOCOL *Ip4Cfg2 = NULL;
-    EFI_STATUS Status = gBS->OpenProtocol(
-        Handle, &gEfiIp4Config2ProtocolGuid, (VOID **)&Ip4Cfg2,
-        mImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-    if (EFI_ERROR(Status)) return Status;
+    UINTN data_size = 0;
+    EFI_STATUS status = ip4cfg2->GetData(
+        ip4cfg2, Ip4Config2DataTypeInterfaceInfo, &data_size, NULL);
+    if (status != EFI_BUFFER_TOO_SMALL || data_size == 0)
+        return -1;
 
-    UINTN DataSize = 0;
-    Status = Ip4Cfg2->GetData(
-        Ip4Cfg2, Ip4Config2DataTypeInterfaceInfo, &DataSize, NULL);
-    if (Status != EFI_BUFFER_TOO_SMALL || DataSize == 0) {
-        return EFI_NOT_FOUND;
+    EFI_IP4_CONFIG2_INTERFACE_INFO *if_info = axl_malloc(data_size);
+    if (if_info == NULL) return -1;
+
+    status = ip4cfg2->GetData(
+        ip4cfg2, Ip4Config2DataTypeInterfaceInfo, &data_size, if_info);
+    if (EFI_ERROR(status)) { axl_free(if_info); return -1; }
+
+    /* Check for non-zero IP */
+    if ((if_info->StationAddress.Addr[0] | if_info->StationAddress.Addr[1] |
+         if_info->StationAddress.Addr[2] | if_info->StationAddress.Addr[3]) == 0) {
+        axl_free(if_info);
+        return -1;
     }
 
-    EFI_IP4_CONFIG2_INTERFACE_INFO *IfInfo = AllocatePool(DataSize);
-    if (IfInfo == NULL) return EFI_OUT_OF_RESOURCES;
+    axl_memset(info, 0, sizeof(*info));
+    info->valid = true;
+    axl_memcpy(info->ip, &if_info->StationAddress, 4);
+    axl_memcpy(info->subnet_mask, &if_info->SubnetMask, 4);
+    axl_memcpy(info->mac, &if_info->HwAddress, 6);
+    info->mac_len = if_info->HwAddressSize;
+    axl_free(if_info);
 
-    Status = Ip4Cfg2->GetData(
-        Ip4Cfg2, Ip4Config2DataTypeInterfaceInfo, &DataSize, IfInfo);
-    if (EFI_ERROR(Status)) {
-        FreePool(IfInfo);
-        return Status;
-    }
-
-    // Check for non-zero IP
-    if ((IfInfo->StationAddress.Addr[0] | IfInfo->StationAddress.Addr[1] |
-         IfInfo->StationAddress.Addr[2] | IfInfo->StationAddress.Addr[3]) == 0) {
-        FreePool(IfInfo);
-        return EFI_NOT_FOUND;
-    }
-
-    SetMem(Info, sizeof(*Info), 0);
-    Info->Valid = TRUE;
-    Info->NicHandle = Handle;
-    CopyMem(&Info->Ip, &IfInfo->StationAddress, sizeof(EFI_IPv4_ADDRESS));
-    CopyMem(&Info->SubnetMask, &IfInfo->SubnetMask, sizeof(EFI_IPv4_ADDRESS));
-    CopyMem(&Info->Mac, &IfInfo->HwAddress, sizeof(EFI_MAC_ADDRESS));
-    Info->MacLen = IfInfo->HwAddressSize;
-    FreePool(IfInfo);
-
-    // Query gateway (separate data type)
-    UINTN GwSize = 0;
-    Status = Ip4Cfg2->GetData(
-        Ip4Cfg2, Ip4Config2DataTypeGateway, &GwSize, NULL);
-    if (Status == EFI_BUFFER_TOO_SMALL && GwSize >= sizeof(EFI_IPv4_ADDRESS)) {
-        EFI_IPv4_ADDRESS *Gw = AllocatePool(GwSize);
-        if (Gw != NULL) {
-            Status = Ip4Cfg2->GetData(
-                Ip4Cfg2, Ip4Config2DataTypeGateway, &GwSize, Gw);
-            if (!EFI_ERROR(Status)) {
-                CopyMem(&Info->Gateway, Gw, sizeof(EFI_IPv4_ADDRESS));
-            }
-            FreePool(Gw);
+    /* Query gateway (separate data type) */
+    UINTN gw_size = 0;
+    status = ip4cfg2->GetData(
+        ip4cfg2, Ip4Config2DataTypeGateway, &gw_size, NULL);
+    if (status == EFI_BUFFER_TOO_SMALL && gw_size >= 4) {
+        EFI_IPv4_ADDRESS *gw = axl_malloc(gw_size);
+        if (gw != NULL) {
+            status = ip4cfg2->GetData(
+                ip4cfg2, Ip4Config2DataTypeGateway, &gw_size, gw);
+            if (!EFI_ERROR(status))
+                axl_memcpy(info->gateway, gw, 4);
+            axl_free(gw);
         }
     }
 
-    return EFI_SUCCESS;
+    return 0;
 }
 
-/// Set DHCP policy on a handle and wait for an IP.
-static EFI_STATUS ConfigureDhcpViaIp4Config2(
-    IN  EFI_HANDLE  Handle,
-    IN  UINTN       TimeoutSeconds
-) {
-    EFI_IP4_CONFIG2_PROTOCOL *Ip4Cfg2 = NULL;
-    EFI_STATUS Status = gBS->OpenProtocol(
-        Handle, &gEfiIp4Config2ProtocolGuid, (VOID **)&Ip4Cfg2,
-        mImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-    if (EFI_ERROR(Status)) return Status;
+/** Set DHCP policy on a handle and wait for an IP. */
+static int
+configure_dhcp_via_ip4config2(void *handle, size_t timeout_sec)
+{
+    EFI_IP4_CONFIG2_PROTOCOL *ip4cfg2 = NULL;
+    if (axl_handle_get_service(handle, "ip4-config2", (void **)&ip4cfg2) != 0)
+        return -1;
 
-    EFI_IP4_CONFIG2_POLICY DhcpPolicy = Ip4Config2PolicyDhcp;
-    Status = Ip4Cfg2->SetData(
-        Ip4Cfg2, Ip4Config2DataTypePolicy,
-        sizeof(EFI_IP4_CONFIG2_POLICY), &DhcpPolicy);
-    if (EFI_ERROR(Status)) return Status;
+    EFI_IP4_CONFIG2_POLICY dhcp_policy = Ip4Config2PolicyDhcp;
+    EFI_STATUS status = ip4cfg2->SetData(
+        ip4cfg2, Ip4Config2DataTypePolicy,
+        sizeof(EFI_IP4_CONFIG2_POLICY), &dhcp_policy);
+    if (EFI_ERROR(status)) return -1;
 
-    // Poll for IP assignment
-    for (UINTN Sec = 0; Sec < TimeoutSeconds; Sec++) {
-        gBS->Stall(1000000);  // 1 second
+    /* Poll for IP assignment */
+    for (size_t sec = 0; sec < timeout_sec; sec++) {
+        axl_stall(1000000);  /* 1 second */
 
-        UINTN DataSize = 0;
-        Status = Ip4Cfg2->GetData(
-            Ip4Cfg2, Ip4Config2DataTypeInterfaceInfo, &DataSize, NULL);
-        if (Status != EFI_BUFFER_TOO_SMALL || DataSize == 0) continue;
+        UINTN data_size = 0;
+        status = ip4cfg2->GetData(
+            ip4cfg2, Ip4Config2DataTypeInterfaceInfo, &data_size, NULL);
+        if (status != EFI_BUFFER_TOO_SMALL || data_size == 0) continue;
 
-        EFI_IP4_CONFIG2_INTERFACE_INFO *Info = AllocatePool(DataSize);
-        if (Info == NULL) continue;
+        EFI_IP4_CONFIG2_INTERFACE_INFO *info = axl_malloc(data_size);
+        if (info == NULL) continue;
 
-        Status = Ip4Cfg2->GetData(
-            Ip4Cfg2, Ip4Config2DataTypeInterfaceInfo, &DataSize, Info);
-        if (!EFI_ERROR(Status) &&
-            (Info->StationAddress.Addr[0] | Info->StationAddress.Addr[1] |
-             Info->StationAddress.Addr[2] | Info->StationAddress.Addr[3]) != 0) {
-            FreePool(Info);
-            return EFI_SUCCESS;
+        status = ip4cfg2->GetData(
+            ip4cfg2, Ip4Config2DataTypeInterfaceInfo, &data_size, info);
+        if (!EFI_ERROR(status) &&
+            (info->StationAddress.Addr[0] | info->StationAddress.Addr[1] |
+             info->StationAddress.Addr[2] | info->StationAddress.Addr[3]) != 0) {
+            axl_free(info);
+            return 0;
         }
-        FreePool(Info);
+        axl_free(info);
     }
 
-    return EFI_TIMEOUT;
+    return -1;  /* timeout */
 }
 
-/// Configure a static IP on a handle via IP4Config2.
-static EFI_STATUS ConfigureStaticIp(
-    IN EFI_HANDLE              Handle,
-    IN CONST EFI_IPv4_ADDRESS  *StaticIp
-) {
-    EFI_IP4_CONFIG2_PROTOCOL *Ip4Cfg2 = NULL;
-    EFI_STATUS Status = gBS->OpenProtocol(
-        Handle, &gEfiIp4Config2ProtocolGuid, (VOID **)&Ip4Cfg2,
-        mImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-    if (EFI_ERROR(Status)) return Status;
+/** Configure a static IP on a handle via IP4Config2. */
+static int
+configure_static_ip(void *handle, const uint8_t *static_ip)
+{
+    EFI_IP4_CONFIG2_PROTOCOL *ip4cfg2 = NULL;
+    if (axl_handle_get_service(handle, "ip4-config2", (void **)&ip4cfg2) != 0)
+        return -1;
 
-    // Set static policy first
-    EFI_IP4_CONFIG2_POLICY StaticPolicy = Ip4Config2PolicyStatic;
-    Status = Ip4Cfg2->SetData(
-        Ip4Cfg2, Ip4Config2DataTypePolicy,
-        sizeof(EFI_IP4_CONFIG2_POLICY), &StaticPolicy);
-    if (EFI_ERROR(Status)) return Status;
+    /* Set static policy first */
+    EFI_IP4_CONFIG2_POLICY static_policy = Ip4Config2PolicyStatic;
+    EFI_STATUS status = ip4cfg2->SetData(
+        ip4cfg2, Ip4Config2DataTypePolicy,
+        sizeof(EFI_IP4_CONFIG2_POLICY), &static_policy);
+    if (EFI_ERROR(status)) return -1;
 
-    // Set manual address with /24 default subnet
-    EFI_IP4_CONFIG2_MANUAL_ADDRESS ManualAddr;
-    SetMem(&ManualAddr, sizeof(ManualAddr), 0);
-    CopyMem(&ManualAddr.Address, StaticIp, sizeof(EFI_IPv4_ADDRESS));
-    ManualAddr.SubnetMask.Addr[0] = 255;
-    ManualAddr.SubnetMask.Addr[1] = 255;
-    ManualAddr.SubnetMask.Addr[2] = 255;
-    ManualAddr.SubnetMask.Addr[3] = 0;
+    /* Set manual address with /24 default subnet */
+    EFI_IP4_CONFIG2_MANUAL_ADDRESS manual_addr;
+    axl_memset(&manual_addr, 0, sizeof(manual_addr));
+    axl_memcpy(&manual_addr.Address, static_ip, 4);
+    manual_addr.SubnetMask.Addr[0] = 255;
+    manual_addr.SubnetMask.Addr[1] = 255;
+    manual_addr.SubnetMask.Addr[2] = 255;
+    manual_addr.SubnetMask.Addr[3] = 0;
 
-    Status = Ip4Cfg2->SetData(
-        Ip4Cfg2, Ip4Config2DataTypeManualAddress,
-        sizeof(ManualAddr), &ManualAddr);
-    return Status;
+    status = ip4cfg2->SetData(
+        ip4cfg2, Ip4Config2DataTypeManualAddress,
+        sizeof(manual_addr), &manual_addr);
+    return EFI_ERROR(status) ? -1 : 0;
 }
 
-// ----------------------------------------------------------------------------
-// Link status check
-// ----------------------------------------------------------------------------
+/* ------------------------------------------------------------------ */
+/* Link status check                                                  */
+/* ------------------------------------------------------------------ */
 
-/// Check link status via SNP. Returns EFI_NO_MEDIA if cable unplugged.
-static EFI_STATUS CheckLinkStatus(
-    IN EFI_HANDLE  NicHandle
-) {
-    EFI_SIMPLE_NETWORK_PROTOCOL *Snp = NULL;
-    EFI_STATUS Status = gBS->OpenProtocol(
-        NicHandle, &gEfiSimpleNetworkProtocolGuid, (VOID **)&Snp,
-        mImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-    if (EFI_ERROR(Status) || Snp == NULL) {
-        // SNP not on this handle — skip check
-        return EFI_SUCCESS;
+/** Check link status via SNP. Warns if cable unplugged. */
+static void
+check_link_status(void *nic_handle)
+{
+    EFI_SIMPLE_NETWORK_PROTOCOL *snp = NULL;
+    EFI_STATUS status = gBS->HandleProtocol(
+        nic_handle, &gEfiSimpleNetworkProtocolGuid, (VOID **)&snp);
+    if (EFI_ERROR(status) || snp == NULL)
+        return;
+
+    if (snp->Mode->MediaPresentSupported && !snp->Mode->MediaPresent) {
+        axl_printf("WARNING: NIC reports no link (cable unplugged?)\n");
+        axl_printf("  Some firmware reports link-down incorrectly -- continuing anyway.\n");
     }
-
-    if (Snp->Mode->MediaPresentSupported && !Snp->Mode->MediaPresent) {
-        Print(L"WARNING: NIC reports no link (cable unplugged?)\n");
-        Print(L"  Some firmware reports link-down incorrectly — continuing anyway.\n");
-    }
-
-    return EFI_SUCCESS;
 }
 
-// ----------------------------------------------------------------------------
-// Auto-load NIC drivers from filesystem
-// ----------------------------------------------------------------------------
+/* ------------------------------------------------------------------ */
+/* Auto-load NIC drivers from filesystem                              */
+/* ------------------------------------------------------------------ */
 
-/// Search mounted filesystems for \drivers\{arch}\*.efi and load them.
-/// Adapted from SoftBMC NetworkLoadDrivers(). Stops after the first
-/// filesystem that has a drivers directory.
-static UINTN LoadNicDrivers(VOID) {
-    EFI_STATUS Status;
-    EFI_HANDLE *FsHandles = NULL;
-    UINTN FsCount = 0;
-    UINTN DriversLoaded = 0;
+/** Search mounted filesystems for \drivers\{arch}\*.efi and load them.
+    Stops after the first filesystem that has a drivers directory. */
+static size_t
+load_nic_drivers(void)
+{
+    void **fs_handles = NULL;
+    size_t fs_count = 0;
+    size_t loaded = 0;
 
-    Status = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiSimpleFileSystemProtocolGuid, NULL,
-        &FsCount, &FsHandles);
-    if (EFI_ERROR(Status) || FsCount == 0) {
-        if (FsHandles) FreePool(FsHandles);
+    if (axl_service_enumerate("simple-fs", &fs_handles, &fs_count) != 0 || fs_count == 0) {
+        axl_free(fs_handles);
         return 0;
     }
 
-    for (UINTN i = 0; i < FsCount; i++) {
-        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs = NULL;
-        EFI_FILE_PROTOCOL *Root = NULL;
-        EFI_FILE_PROTOCOL *DirHandle = NULL;
+    for (size_t i = 0; i < fs_count; i++) {
+        char *label = axl_volume_get_label_by_handle(fs_handles[i]);
+        if (label == NULL) continue;
 
-        Status = gBS->OpenProtocol(
-            FsHandles[i], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs,
-            mImageHandle, NULL, EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL);
-        if (EFI_ERROR(Status)) continue;
+        /* Build dir path like "fs0:\drivers\x64" */
+        char dir_path[256];
+        axl_snprintf(dir_path, sizeof(dir_path), "%s:%s", label, DRIVER_DIR_PATH);
 
-        Status = Fs->OpenVolume(Fs, &Root);
-        if (EFI_ERROR(Status)) continue;
-
-        Status = Root->Open(Root, &DirHandle, DRIVER_DIR_PATH, EFI_FILE_MODE_READ, 0);
-        if (EFI_ERROR(Status)) {
-            Root->Close(Root);
+        AxlDir *dir = axl_dir_open(dir_path);
+        if (dir == NULL) {
+            axl_free(label);
             continue;
         }
 
-        // Enumerate .efi files in the drivers directory
-        UINT8 Buffer[512];
-        for (;;) {
-            UINTN BufSize = sizeof(Buffer);
-            Status = DirHandle->Read(DirHandle, &BufSize, Buffer);
-            if (EFI_ERROR(Status) || BufSize == 0) break;
-
-            EFI_FILE_INFO *FileInfo = (EFI_FILE_INFO *)Buffer;
-            if (FileInfo->Attribute & EFI_FILE_DIRECTORY) continue;
-
-            UINTN NameLen = StrLen(FileInfo->FileName);
-            if (NameLen <= 4) continue;
-            if (StrnCmp(&FileInfo->FileName[NameLen - 4], L".efi", 4) != 0 &&
-                StrnCmp(&FileInfo->FileName[NameLen - 4], L".EFI", 4) != 0) {
+        AxlDirEntry entry;
+        while (axl_dir_read(dir, &entry)) {
+            if (entry.is_dir) continue;
+            size_t name_len = axl_strlen(entry.name);
+            if (name_len <= 4) continue;
+            if (axl_strcmp(&entry.name[name_len - 4], ".efi") != 0 &&
+                axl_strcmp(&entry.name[name_len - 4], ".EFI") != 0)
                 continue;
-            }
 
-            CHAR16 FullPath[256];
-            UnicodeSPrint(FullPath, sizeof(FullPath),
-                          L"%s\\%s", DRIVER_DIR_PATH, FileInfo->FileName);
+            char full_path[512];
+            axl_snprintf(full_path, sizeof(full_path), "%s:%s\\%s",
+                         label, DRIVER_DIR_PATH, entry.name);
 
-            EFI_DEVICE_PATH_PROTOCOL *DevicePath = FileDevicePath(FsHandles[i], FullPath);
-            if (DevicePath == NULL) continue;
-
-            EFI_HANDLE DriverHandle = NULL;
-            Print(L"  Loading %s ... ", FileInfo->FileName);
-            Status = gBS->LoadImage(FALSE, mImageHandle, DevicePath, NULL, 0, &DriverHandle);
-            if (!EFI_ERROR(Status)) {
-                Status = gBS->StartImage(DriverHandle, NULL, NULL);
-                if (!EFI_ERROR(Status)) {
-                    DriversLoaded++;
-                    Print(L"OK\n");
+            axl_printf("  Loading %s ... ", entry.name);
+            AxlDriverHandle drv;
+            if (axl_driver_load(full_path, &drv) == 0) {
+                if (axl_driver_start(drv) == 0) {
+                    axl_driver_connect(drv);
+                    loaded++;
+                    axl_printf("OK\n");
                 } else {
-                    Print(L"start failed: %r\n", Status);
-                    gBS->UnloadImage(DriverHandle);
+                    axl_printf("start failed\n");
+                    axl_driver_unload(drv);
                 }
             } else {
-                Print(L"load failed: %r\n", Status);
+                axl_printf("load failed\n");
             }
-
-            FreePool(DevicePath);
         }
-
-        DirHandle->Close(DirHandle);
-        Root->Close(Root);
-
-        if (DriversLoaded > 0) break;
+        axl_dir_close(dir);
+        axl_free(label);
+        if (loaded > 0) break;
     }
 
-    FreePool(FsHandles);
-    return DriversLoaded;
+    axl_free(fs_handles);
+    return loaded;
 }
 
-// ----------------------------------------------------------------------------
-// DHCP4 direct fallback (when IP4Config2 is not available)
-// ----------------------------------------------------------------------------
+/* ------------------------------------------------------------------ */
+/* DHCP4 direct fallback (when IP4Config2 is not available)           */
+/* ------------------------------------------------------------------ */
 
-static EFI_STATUS ConfigureDhcp4Direct(
-    IN UINTN TimeoutSeconds
-) {
-    EFI_HANDLE *Handles = NULL;
-    UINTN HandleCount = 0;
+static int
+configure_dhcp4_direct(size_t timeout_sec)
+{
+    (void)timeout_sec;
 
-    EFI_STATUS Status = gBS->LocateHandleBuffer(
+    EFI_HANDLE *handles = NULL;
+    UINTN handle_count = 0;
+
+    EFI_STATUS st = gBS->LocateHandleBuffer(
         ByProtocol, &gEfiDhcp4ServiceBindingProtocolGuid, NULL,
-        &HandleCount, &Handles);
-    if (EFI_ERROR(Status) || HandleCount == 0) {
-        if (Handles) FreePool(Handles);
-        return EFI_NOT_FOUND;
+        &handle_count, &handles);
+    if (EFI_ERROR(st) || handle_count == 0) {
+        if (handles) gBS->FreePool(handles);
+        return -1;
     }
 
-    Print(L"  No IP4Config2 — trying DHCP4 direct...\n");
+    axl_printf("  No IP4Config2 -- trying DHCP4 direct...\n");
 
-    for (UINTN i = 0; i < HandleCount; i++) {
-        EFI_SERVICE_BINDING_PROTOCOL *Dhcp4Sb = NULL;
-        Status = gBS->HandleProtocol(
-            Handles[i], &gEfiDhcp4ServiceBindingProtocolGuid, (VOID **)&Dhcp4Sb);
-        if (EFI_ERROR(Status) || Dhcp4Sb == NULL) continue;
+    for (UINTN i = 0; i < handle_count; i++) {
+        EFI_SERVICE_BINDING_PROTOCOL *dhcp4_sb = NULL;
+        st = gBS->HandleProtocol(
+            handles[i], &gEfiDhcp4ServiceBindingProtocolGuid,
+            (VOID **)&dhcp4_sb);
+        if (EFI_ERROR(st) || dhcp4_sb == NULL) continue;
 
-        EFI_HANDLE ChildHandle = NULL;
-        Status = Dhcp4Sb->CreateChild(Dhcp4Sb, &ChildHandle);
-        if (EFI_ERROR(Status)) continue;
+        EFI_HANDLE child_handle = NULL;
+        st = dhcp4_sb->CreateChild(dhcp4_sb, &child_handle);
+        if (EFI_ERROR(st)) continue;
 
-        EFI_DHCP4_PROTOCOL *Dhcp4 = NULL;
-        Status = gBS->HandleProtocol(
-            ChildHandle, &gEfiDhcp4ProtocolGuid, (VOID **)&Dhcp4);
-        if (EFI_ERROR(Status)) {
-            Dhcp4Sb->DestroyChild(Dhcp4Sb, ChildHandle);
+        EFI_DHCP4_PROTOCOL *dhcp4 = NULL;
+        st = gBS->HandleProtocol(
+            child_handle, &gEfiDhcp4ProtocolGuid, (VOID **)&dhcp4);
+        if (EFI_ERROR(st)) {
+            dhcp4_sb->DestroyChild(dhcp4_sb, child_handle);
             continue;
         }
 
-        UINT32 DiscoverTimeout[] = { 4, 8, 16 };
-        UINT32 RequestTimeout[] = { 4, 8 };
-        EFI_DHCP4_CONFIG_DATA Cfg;
-        ZeroMem(&Cfg, sizeof(Cfg));
-        Cfg.DiscoverTryCount = 3;
-        Cfg.DiscoverTimeout = DiscoverTimeout;
-        Cfg.RequestTryCount = 2;
-        Cfg.RequestTimeout = RequestTimeout;
+        UINT32 discover_timeout[] = { 4, 8, 16 };
+        UINT32 request_timeout[] = { 4, 8 };
+        EFI_DHCP4_CONFIG_DATA cfg;
+        axl_memset(&cfg, 0, sizeof(cfg));
+        cfg.DiscoverTryCount = 3;
+        cfg.DiscoverTimeout = discover_timeout;
+        cfg.RequestTryCount = 2;
+        cfg.RequestTimeout = request_timeout;
 
-        Status = Dhcp4->Configure(Dhcp4, &Cfg);
-        if (EFI_ERROR(Status)) {
-            Dhcp4Sb->DestroyChild(Dhcp4Sb, ChildHandle);
+        st = dhcp4->Configure(dhcp4, &cfg);
+        if (EFI_ERROR(st)) {
+            dhcp4_sb->DestroyChild(dhcp4_sb, child_handle);
             continue;
         }
 
-        // Check link before DHCP4 discover (warn only — firmware may misreport)
+        /* Check link before DHCP4 discover (warn only) */
         {
-            EFI_SIMPLE_NETWORK_PROTOCOL *Snp = NULL;
+            EFI_SIMPLE_NETWORK_PROTOCOL *snp = NULL;
             gBS->HandleProtocol(
-                Handles[i], &gEfiSimpleNetworkProtocolGuid, (VOID **)&Snp);
-            if (Snp != NULL &&
-                Snp->Mode->MediaPresentSupported && !Snp->Mode->MediaPresent) {
-                Print(L"  NIC %d: reports no link (may be incorrect)\n", i);
+                handles[i], &gEfiSimpleNetworkProtocolGuid, (VOID **)&snp);
+            if (snp != NULL &&
+                snp->Mode->MediaPresentSupported && !snp->Mode->MediaPresent) {
+                axl_printf("  NIC %llu: reports no link (may be incorrect)\n",
+                           (unsigned long long)i);
             }
         }
 
-        Print(L"  DHCP4 discovering...\n");
-        Status = Dhcp4->Start(Dhcp4, NULL);
-        if (EFI_ERROR(Status)) {
-            Dhcp4->Configure(Dhcp4, NULL);
-            Dhcp4Sb->DestroyChild(Dhcp4Sb, ChildHandle);
+        axl_printf("  DHCP4 discovering...\n");
+        st = dhcp4->Start(dhcp4, NULL);
+        if (EFI_ERROR(st)) {
+            dhcp4->Configure(dhcp4, NULL);
+            dhcp4_sb->DestroyChild(dhcp4_sb, child_handle);
             continue;
         }
 
-        EFI_DHCP4_MODE_DATA ModeData;
-        Status = Dhcp4->GetModeData(Dhcp4, &ModeData);
-        if (EFI_ERROR(Status)) {
-            Dhcp4->Stop(Dhcp4);
-            Dhcp4->Configure(Dhcp4, NULL);
-            Dhcp4Sb->DestroyChild(Dhcp4Sb, ChildHandle);
+        EFI_DHCP4_MODE_DATA mode_data;
+        st = dhcp4->GetModeData(dhcp4, &mode_data);
+        if (EFI_ERROR(st)) {
+            dhcp4->Stop(dhcp4);
+            dhcp4->Configure(dhcp4, NULL);
+            dhcp4_sb->DestroyChild(dhcp4_sb, child_handle);
             continue;
         }
 
-        // Store results
-        mDhcp4Fallback = TRUE;
-        mDhcp4SbHandle = Handles[i];
-        mDhcp4ChildHandle = ChildHandle;
+        /* Store results */
+        mDhcp4Fallback = true;
+        mDhcp4SbHandle = handles[i];
+        mDhcp4ChildHandle = child_handle;
 
-        SetMem(&mIfaceInfo, sizeof(mIfaceInfo), 0);
-        mIfaceInfo.Valid = TRUE;
-        mIfaceInfo.NicHandle = Handles[i];
-        CopyMem(&mIfaceInfo.Ip, &ModeData.ClientAddress, sizeof(EFI_IPv4_ADDRESS));
-        CopyMem(&mIfaceInfo.SubnetMask, &ModeData.SubnetMask, sizeof(EFI_IPv4_ADDRESS));
-        CopyMem(&mIfaceInfo.Gateway, &ModeData.RouterAddress, sizeof(EFI_IPv4_ADDRESS));
-        CopyMem(&mIfaceInfo.Mac, &ModeData.ClientMacAddress, sizeof(EFI_MAC_ADDRESS));
-        mIfaceInfo.MacLen = 6;
-        mNicHandle = Handles[i];
+        axl_memset(&mIfaceInfo, 0, sizeof(mIfaceInfo));
+        mIfaceInfo.valid = true;
+        axl_memcpy(mIfaceInfo.ip, &mode_data.ClientAddress, 4);
+        axl_memcpy(mIfaceInfo.subnet_mask, &mode_data.SubnetMask, 4);
+        axl_memcpy(mIfaceInfo.gateway, &mode_data.RouterAddress, 4);
+        axl_memcpy(mIfaceInfo.mac, &mode_data.ClientMacAddress, 6);
+        mIfaceInfo.mac_len = 6;
+        mNicHandle = handles[i];
 
-        FreePool(Handles);
-        return EFI_SUCCESS;
+        gBS->FreePool(handles);
+        return 0;
     }
 
-    FreePool(Handles);
-    return EFI_NOT_FOUND;
+    gBS->FreePool(handles);
+    return -1;
 }
 
-// ----------------------------------------------------------------------------
-// Public API
-// ----------------------------------------------------------------------------
+/* ------------------------------------------------------------------ */
+/* Network stack bring-up                                             */
+/* ------------------------------------------------------------------ */
 
-/// Try to bring up the network stack: connect SNP handles, optionally
-/// load drivers from filesystem first. Returns the number of IP4Config2
-/// handles found after connecting.
-static UINTN BringUpNetworkStack(VOID) {
-    EFI_HANDLE *SnpHandles = NULL;
-    UINTN SnpCount = 0;
-    EFI_STATUS Status;
+/** Try to bring up the network stack: connect SNP handles, optionally
+    load drivers from filesystem first. Returns the number of IP4Config2
+    handles found after connecting. */
+static size_t
+bring_up_network_stack(void)
+{
+    void **snp_handles = NULL;
+    size_t snp_count = 0;
 
-    Status = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL,
-        &SnpCount, &SnpHandles);
-
-    if (EFI_ERROR(Status) || SnpCount == 0) {
-        // No SNP at all — try loading NIC drivers from filesystem
-        if (SnpHandles) FreePool(SnpHandles);
-        UINTN Loaded = LoadNicDrivers();
-        if (Loaded > 0) {
-            Status = gBS->LocateHandleBuffer(
-                ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL,
-                &SnpCount, &SnpHandles);
-            if (EFI_ERROR(Status) || SnpCount == 0) {
-                if (SnpHandles) FreePool(SnpHandles);
+    if (axl_service_enumerate("simple-network", &snp_handles, &snp_count) != 0
+        || snp_count == 0) {
+        /* No SNP at all -- try loading NIC drivers from filesystem */
+        axl_free(snp_handles);
+        size_t loaded = load_nic_drivers();
+        if (loaded > 0) {
+            if (axl_service_enumerate("simple-network", &snp_handles, &snp_count) != 0
+                || snp_count == 0) {
+                axl_free(snp_handles);
                 return 0;
             }
         } else {
@@ -451,405 +415,253 @@ static UINTN BringUpNetworkStack(VOID) {
         }
     }
 
-    // Recursively connect all SNP handles to bring up MNP/ARP/IP4/TCP4
-    Print(L"  Connecting network stack on %d NIC(s)...\n", SnpCount);
-    for (UINTN i = 0; i < SnpCount; i++) {
-        gBS->ConnectController(SnpHandles[i], NULL, NULL, TRUE);
+    /* Recursively connect all SNP handles to bring up MNP/ARP/IP4/TCP4 */
+    axl_printf("  Connecting network stack on %zu NIC(s)...\n", snp_count);
+    for (size_t i = 0; i < snp_count; i++) {
+        gBS->ConnectController(snp_handles[i], NULL, NULL, TRUE);
     }
-    FreePool(SnpHandles);
+    axl_free(snp_handles);
 
-    // Count IP4Config2 handles now available
-    EFI_HANDLE *Ip4Handles = NULL;
-    UINTN Ip4Count = 0;
-    Status = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiIp4Config2ProtocolGuid, NULL,
-        &Ip4Count, &Ip4Handles);
-    if (Ip4Handles) FreePool(Ip4Handles);
-    return EFI_ERROR(Status) ? 0 : Ip4Count;
+    /* Count IP4Config2 handles now available */
+    void **ip4_handles = NULL;
+    size_t ip4_count = 0;
+    if (axl_service_enumerate("ip4-config2", &ip4_handles, &ip4_count) != 0)
+        ip4_count = 0;
+    axl_free(ip4_handles);
+    return ip4_count;
 }
 
-/// Find the IP4Config2 handle that corresponds to a given SNP handle.
-/// SNP and IP4Config2 may be on the same handle or on parent/child handles
-/// sharing the same MAC address.
-static EFI_HANDLE FindIp4HandleForSnp(
-    IN EFI_HANDLE  SnpHandle
-) {
-    EFI_STATUS Status;
+/** Find the IP4Config2 handle that corresponds to a given SNP handle.
+    SNP and IP4Config2 may be on the same handle or on parent/child handles
+    sharing the same MAC address. */
+static void *
+find_ip4_handle_for_snp(void *snp_handle)
+{
+    /* Fast path: IP4Config2 is on the same handle as SNP */
+    EFI_IP4_CONFIG2_PROTOCOL *test = NULL;
+    if (axl_handle_get_service(snp_handle, "ip4-config2", (void **)&test) == 0)
+        return snp_handle;
 
-    // Fast path: IP4Config2 is on the same handle as SNP
-    Status = gBS->OpenProtocol(
-        SnpHandle, &gEfiIp4Config2ProtocolGuid, NULL,
-        mImageHandle, NULL, EFI_OPEN_PROTOCOL_TEST_PROTOCOL);
-    if (!EFI_ERROR(Status)) {
-        return SnpHandle;
-    }
+    /* Slow path: match by MAC address */
+    EFI_SIMPLE_NETWORK_PROTOCOL *snp = NULL;
+    EFI_STATUS status = gBS->HandleProtocol(
+        snp_handle, &gEfiSimpleNetworkProtocolGuid, (VOID **)&snp);
+    if (EFI_ERROR(status) || snp == NULL) return NULL;
 
-    // Slow path: match by MAC address
-    EFI_SIMPLE_NETWORK_PROTOCOL *Snp = NULL;
-    Status = gBS->OpenProtocol(
-        SnpHandle, &gEfiSimpleNetworkProtocolGuid, (VOID **)&Snp,
-        mImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-    if (EFI_ERROR(Status) || Snp == NULL) return NULL;
-
-    EFI_HANDLE *Ip4Handles = NULL;
-    UINTN Ip4Count = 0;
-    Status = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiIp4Config2ProtocolGuid, NULL,
-        &Ip4Count, &Ip4Handles);
-    if (EFI_ERROR(Status) || Ip4Count == 0) {
-        if (Ip4Handles) FreePool(Ip4Handles);
+    void **ip4_handles = NULL;
+    size_t ip4_count = 0;
+    if (axl_service_enumerate("ip4-config2", &ip4_handles, &ip4_count) != 0
+        || ip4_count == 0) {
+        axl_free(ip4_handles);
         return NULL;
     }
 
-    EFI_HANDLE Match = NULL;
-    for (UINTN i = 0; i < Ip4Count; i++) {
-        NETWORK_INTERFACE_INFO TmpInfo;
-        if (!EFI_ERROR(CheckExistingIp(Ip4Handles[i], &TmpInfo)) ||
-            TmpInfo.MacLen > 0) {
-            // CheckExistingIp only fills info if IP is non-zero.
-            // For MAC-only match, query IP4Config2 directly.
-        }
-        EFI_IP4_CONFIG2_PROTOCOL *Ip4Cfg2 = NULL;
-        Status = gBS->OpenProtocol(
-            Ip4Handles[i], &gEfiIp4Config2ProtocolGuid, (VOID **)&Ip4Cfg2,
-            mImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-        if (EFI_ERROR(Status)) continue;
+    void *match = NULL;
+    for (size_t i = 0; i < ip4_count; i++) {
+        EFI_IP4_CONFIG2_PROTOCOL *ip4cfg2 = NULL;
+        if (axl_handle_get_service(ip4_handles[i], "ip4-config2",
+                                   (void **)&ip4cfg2) != 0)
+            continue;
 
-        UINTN DataSize = 0;
-        Status = Ip4Cfg2->GetData(
-            Ip4Cfg2, Ip4Config2DataTypeInterfaceInfo, &DataSize, NULL);
-        if (Status != EFI_BUFFER_TOO_SMALL || DataSize == 0) continue;
+        UINTN data_size = 0;
+        status = ip4cfg2->GetData(
+            ip4cfg2, Ip4Config2DataTypeInterfaceInfo, &data_size, NULL);
+        if (status != EFI_BUFFER_TOO_SMALL || data_size == 0) continue;
 
-        EFI_IP4_CONFIG2_INTERFACE_INFO *IfInfo = AllocatePool(DataSize);
-        if (IfInfo == NULL) continue;
+        EFI_IP4_CONFIG2_INTERFACE_INFO *if_info = axl_malloc(data_size);
+        if (if_info == NULL) continue;
 
-        Status = Ip4Cfg2->GetData(
-            Ip4Cfg2, Ip4Config2DataTypeInterfaceInfo, &DataSize, IfInfo);
-        if (!EFI_ERROR(Status)) {
-            if (CompareMem(&IfInfo->HwAddress, &Snp->Mode->CurrentAddress,
-                           Snp->Mode->HwAddressSize) == 0) {
-                Match = Ip4Handles[i];
-                FreePool(IfInfo);
+        status = ip4cfg2->GetData(
+            ip4cfg2, Ip4Config2DataTypeInterfaceInfo, &data_size, if_info);
+        if (!EFI_ERROR(status)) {
+            if (axl_memcmp(&if_info->HwAddress, &snp->Mode->CurrentAddress,
+                           snp->Mode->HwAddressSize) == 0) {
+                match = ip4_handles[i];
+                axl_free(if_info);
                 break;
             }
         }
-        FreePool(IfInfo);
+        axl_free(if_info);
     }
 
-    FreePool(Ip4Handles);
-    return Match;
+    axl_free(ip4_handles);
+    return match;
 }
 
-EFI_STATUS
-EFIAPI
-NetworkInit (
-    IN EFI_HANDLE              ImageHandle,
-    IN UINTN                   NicIndex,
-    IN EFI_IPv4_ADDRESS        *StaticIp       OPTIONAL,
-    IN UINTN                   TimeoutSeconds
-    )
+/* ------------------------------------------------------------------ */
+/* Public API                                                         */
+/* ------------------------------------------------------------------ */
+
+int
+network_init(size_t nic_index, const uint8_t *static_ip, size_t timeout_sec)
 {
-    if (mInitialized) return EFI_ALREADY_STARTED;
+    if (mInitialized) return -1;
 
-    mImageHandle = ImageHandle;
-    SetMem(&mIfaceInfo, sizeof(mIfaceInfo), 0);
+    axl_memset(&mIfaceInfo, 0, sizeof(mIfaceInfo));
 
-    //
-    // Phase 1: Ensure IP4Config2 handles exist.
-    // Try direct enumeration first, then connect SNP, then load drivers.
-    //
-    EFI_HANDLE *Ip4Handles = NULL;
-    UINTN Ip4Count = 0;
-    EFI_STATUS Status = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiIp4Config2ProtocolGuid, NULL,
-        &Ip4Count, &Ip4Handles);
+    /*
+     * Phase 1: Ensure IP4Config2 handles exist.
+     * Try direct enumeration first, then connect SNP, then load drivers.
+     */
+    void **ip4_handles = NULL;
+    size_t ip4_count = 0;
+    int rc = axl_service_enumerate("ip4-config2", &ip4_handles, &ip4_count);
 
-    if (EFI_ERROR(Status) || Ip4Count == 0) {
-        if (Ip4Handles) FreePool(Ip4Handles);
-        Ip4Handles = NULL;
-        Ip4Count = 0;
+    if (rc != 0 || ip4_count == 0) {
+        axl_free(ip4_handles);
+        ip4_handles = NULL;
+        ip4_count = 0;
 
-        UINTN NewCount = BringUpNetworkStack();
-        if (NewCount == 0) {
-            // Last resort: DHCP4 direct fallback
-            Status = ConfigureDhcp4Direct(TimeoutSeconds);
-            if (EFI_ERROR(Status)) {
-                Print(L"ERROR: No network interface found\n");
-                return EFI_NOT_FOUND;
+        size_t new_count = bring_up_network_stack();
+        if (new_count == 0) {
+            /* Last resort: DHCP4 direct fallback */
+            if (configure_dhcp4_direct(timeout_sec) != 0) {
+                axl_printf("ERROR: No network interface found\n");
+                return -1;
             }
-            mInitialized = TRUE;
-            return EFI_SUCCESS;
+            mInitialized = true;
+            return 0;
         }
 
-        // Re-enumerate after bringing up the stack
-        Status = gBS->LocateHandleBuffer(
-            ByProtocol, &gEfiIp4Config2ProtocolGuid, NULL,
-            &Ip4Count, &Ip4Handles);
-        if (EFI_ERROR(Status) || Ip4Count == 0) {
-            if (Ip4Handles) FreePool(Ip4Handles);
-            Status = ConfigureDhcp4Direct(TimeoutSeconds);
-            if (EFI_ERROR(Status)) {
-                Print(L"ERROR: No network interface found\n");
-                return EFI_NOT_FOUND;
+        /* Re-enumerate after bringing up the stack */
+        rc = axl_service_enumerate("ip4-config2", &ip4_handles, &ip4_count);
+        if (rc != 0 || ip4_count == 0) {
+            axl_free(ip4_handles);
+            if (configure_dhcp4_direct(timeout_sec) != 0) {
+                axl_printf("ERROR: No network interface found\n");
+                return -1;
             }
-            mInitialized = TRUE;
-            return EFI_SUCCESS;
+            mInitialized = true;
+            return 0;
         }
     }
 
-    //
-    // Phase 2: Select a NIC.
-    // NicIndex uses SNP handle ordering (consistent with list-nics).
-    // Map it to the corresponding IP4Config2 handle.
-    //
-    EFI_HANDLE SelectedIp4Handle = NULL;
+    /*
+     * Phase 2: Select a NIC.
+     * nic_index uses SNP handle ordering (consistent with axl_net_list_interfaces).
+     * Map it to the corresponding IP4Config2 handle.
+     */
+    void *selected_ip4_handle = NULL;
 
-    if (NicIndex != (UINTN)-1) {
-        // User specified -n: use SNP-based indexing (matches list-nics)
-        EFI_HANDLE *SnpHandles = NULL;
-        UINTN SnpCount = 0;
-        Status = gBS->LocateHandleBuffer(
-            ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL,
-            &SnpCount, &SnpHandles);
-        if (EFI_ERROR(Status) || NicIndex >= SnpCount) {
-            Print(L"ERROR: NIC index %d out of range (0-%d)\n",
-                  NicIndex, EFI_ERROR(Status) ? 0 : SnpCount - 1);
-            if (SnpHandles) FreePool(SnpHandles);
-            FreePool(Ip4Handles);
-            return EFI_NOT_FOUND;
+    if (nic_index != (size_t)-1) {
+        /* User specified -n: use SNP-based indexing */
+        void **snp_handles = NULL;
+        size_t snp_count = 0;
+        rc = axl_service_enumerate("simple-network", &snp_handles, &snp_count);
+        if (rc != 0 || nic_index >= snp_count) {
+            axl_printf("ERROR: NIC index %zu out of range (0-%zu)\n",
+                       nic_index, (rc != 0 || snp_count == 0) ? (size_t)0 : snp_count - 1);
+            axl_free(snp_handles);
+            axl_free(ip4_handles);
+            return -1;
         }
-        SelectedIp4Handle = FindIp4HandleForSnp(SnpHandles[NicIndex]);
-        if (SelectedIp4Handle == NULL) {
-            Print(L"ERROR: NIC %d has no IP4 stack (try 'connect -r' first)\n", NicIndex);
-            FreePool(SnpHandles);
-            FreePool(Ip4Handles);
-            return EFI_NOT_FOUND;
+        selected_ip4_handle = find_ip4_handle_for_snp(snp_handles[nic_index]);
+        if (selected_ip4_handle == NULL) {
+            axl_printf("ERROR: NIC %zu has no IP4 stack (try 'connect -r' first)\n",
+                       nic_index);
+            axl_free(snp_handles);
+            axl_free(ip4_handles);
+            return -1;
         }
-        FreePool(SnpHandles);
+        axl_free(snp_handles);
     } else {
-        // Auto-select: find first NIC that already has an IP
-        for (UINTN i = 0; i < Ip4Count; i++) {
-            NETWORK_INTERFACE_INFO TmpInfo;
-            if (!EFI_ERROR(CheckExistingIp(Ip4Handles[i], &TmpInfo))) {
-                SelectedIp4Handle = Ip4Handles[i];
-                Print(L"  Found NIC with IP %d.%d.%d.%d\n",
-                      TmpInfo.Ip.Addr[0], TmpInfo.Ip.Addr[1],
-                      TmpInfo.Ip.Addr[2], TmpInfo.Ip.Addr[3]);
+        /* Auto-select: find first NIC that already has an IP */
+        for (size_t i = 0; i < ip4_count; i++) {
+            NetworkInfo tmp_info;
+            if (check_existing_ip(ip4_handles[i], &tmp_info) == 0) {
+                selected_ip4_handle = ip4_handles[i];
+                axl_printf("  Found NIC with IP %d.%d.%d.%d\n",
+                           tmp_info.ip[0], tmp_info.ip[1],
+                           tmp_info.ip[2], tmp_info.ip[3]);
                 break;
             }
         }
-        // If none have an IP yet, use first handle and DHCP
-        if (SelectedIp4Handle == NULL) {
-            SelectedIp4Handle = Ip4Handles[0];
+        /* If none have an IP yet, use first handle and DHCP */
+        if (selected_ip4_handle == NULL) {
+            selected_ip4_handle = ip4_handles[0];
         }
     }
 
-    mNicHandle = SelectedIp4Handle;
-    FreePool(Ip4Handles);
+    mNicHandle = selected_ip4_handle;
+    axl_free(ip4_handles);
 
-    // Check link (warning only)
-    CheckLinkStatus(SelectedIp4Handle);
+    /* Check link (warning only) */
+    check_link_status(selected_ip4_handle);
 
-    // Static IP requested?
-    if (StaticIp != NULL) {
-        Status = ConfigureStaticIp(SelectedIp4Handle, StaticIp);
-        if (EFI_ERROR(Status)) {
-            Print(L"ERROR: Failed to set static IP: %r\n", Status);
-            return Status;
+    /* Static IP requested? */
+    if (static_ip != NULL) {
+        if (configure_static_ip(selected_ip4_handle, static_ip) != 0) {
+            axl_printf("ERROR: Failed to set static IP\n");
+            return -1;
         }
-        gBS->Stall(500000);
+        axl_stall(500000);
     }
 
-    // Check if NIC already has an IP
-    Status = CheckExistingIp(SelectedIp4Handle, &mIfaceInfo);
-    if (!EFI_ERROR(Status)) {
-        mInitialized = TRUE;
-        return EFI_SUCCESS;
+    /* Check if NIC already has an IP */
+    if (check_existing_ip(selected_ip4_handle, &mIfaceInfo) == 0) {
+        mInitialized = true;
+        return 0;
     }
 
-    // No IP yet — run DHCP via IP4Config2
-    Print(L"  DHCP...\n");
-    Status = ConfigureDhcpViaIp4Config2(SelectedIp4Handle, TimeoutSeconds);
-    if (EFI_ERROR(Status)) {
-        Print(L"ERROR: DHCP timeout after %ds\n", TimeoutSeconds);
-        return EFI_TIMEOUT;
+    /* No IP yet -- run DHCP via IP4Config2 */
+    axl_printf("  DHCP...\n");
+    if (configure_dhcp_via_ip4config2(selected_ip4_handle, timeout_sec) != 0) {
+        axl_printf("ERROR: DHCP timeout after %zus\n", timeout_sec);
+        return -1;
     }
 
-    // Re-read the assigned IP
-    Status = CheckExistingIp(SelectedIp4Handle, &mIfaceInfo);
-    if (EFI_ERROR(Status)) {
-        Print(L"ERROR: DHCP completed but no IP assigned\n");
-        return EFI_DEVICE_ERROR;
+    /* Re-read the assigned IP */
+    if (check_existing_ip(selected_ip4_handle, &mIfaceInfo) != 0) {
+        axl_printf("ERROR: DHCP completed but no IP assigned\n");
+        return -1;
     }
 
-    mInitialized = TRUE;
-    return EFI_SUCCESS;
+    mInitialized = true;
+    return 0;
 }
 
-EFI_STATUS
-EFIAPI
-NetworkGetAddress (
-    OUT EFI_IPv4_ADDRESS  *Addr
-    )
+int
+network_get_address(uint8_t ip_out[4])
 {
-    if (!mInitialized || !mIfaceInfo.Valid) return EFI_NOT_READY;
-    CopyMem(Addr, &mIfaceInfo.Ip, sizeof(EFI_IPv4_ADDRESS));
-    return EFI_SUCCESS;
+    if (!mInitialized || !mIfaceInfo.valid) return -1;
+    axl_memcpy(ip_out, mIfaceInfo.ip, 4);
+    return 0;
 }
 
-EFI_STATUS
-EFIAPI
-NetworkGetInterfaceInfo (
-    OUT NETWORK_INTERFACE_INFO  *Info
-    )
+int
+network_get_info(NetworkInfo *info)
 {
-    if (!mInitialized || !mIfaceInfo.Valid) return EFI_NOT_READY;
-    CopyMem(Info, &mIfaceInfo, sizeof(NETWORK_INTERFACE_INFO));
-    return EFI_SUCCESS;
+    if (!mInitialized || !mIfaceInfo.valid) return -1;
+    axl_memcpy(info, &mIfaceInfo, sizeof(NetworkInfo));
+    return 0;
 }
 
-EFI_STATUS
-EFIAPI
-NetworkGetTcpServiceBinding (
-    OUT EFI_HANDLE  *SbHandle
-    )
-{
-    if (!mInitialized) return EFI_NOT_READY;
-    if (SbHandle == NULL) return EFI_INVALID_PARAMETER;
-
-    // Find TCP4 ServiceBinding on the selected NIC handle or its children.
-    // Try the NIC handle first, then scan all TCP4 SB handles.
-    EFI_STATUS Status = gBS->OpenProtocol(
-        mNicHandle, &gEfiTcp4ServiceBindingProtocolGuid, NULL,
-        mImageHandle, NULL, EFI_OPEN_PROTOCOL_TEST_PROTOCOL);
-    if (!EFI_ERROR(Status)) {
-        *SbHandle = mNicHandle;
-        return EFI_SUCCESS;
-    }
-
-    // TCP4 SB may be on a child handle — find the first one
-    EFI_HANDLE *Handles = NULL;
-    UINTN HandleCount = 0;
-    Status = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiTcp4ServiceBindingProtocolGuid, NULL,
-        &HandleCount, &Handles);
-    if (EFI_ERROR(Status) || HandleCount == 0) {
-        if (Handles) FreePool(Handles);
-        return EFI_NOT_FOUND;
-    }
-
-    *SbHandle = Handles[0];
-    FreePool(Handles);
-    return EFI_SUCCESS;
-}
-
-VOID
-EFIAPI
-NetworkCleanup (
-    VOID
-    )
+void
+network_cleanup(void)
 {
     if (mDhcp4Fallback && mDhcp4ChildHandle != NULL) {
-        EFI_DHCP4_PROTOCOL *Dhcp4 = NULL;
+        EFI_DHCP4_PROTOCOL *dhcp4 = NULL;
         gBS->HandleProtocol(
-            mDhcp4ChildHandle, &gEfiDhcp4ProtocolGuid, (VOID **)&Dhcp4);
-        if (Dhcp4 != NULL) {
-            Dhcp4->Stop(Dhcp4);
-            Dhcp4->Configure(Dhcp4, NULL);
+            mDhcp4ChildHandle, &gEfiDhcp4ProtocolGuid, (VOID **)&dhcp4);
+        if (dhcp4 != NULL) {
+            dhcp4->Stop(dhcp4);
+            dhcp4->Configure(dhcp4, NULL);
         }
 
-        EFI_SERVICE_BINDING_PROTOCOL *Dhcp4Sb = NULL;
+        EFI_SERVICE_BINDING_PROTOCOL *dhcp4_sb = NULL;
         gBS->HandleProtocol(
-            mDhcp4SbHandle, &gEfiDhcp4ServiceBindingProtocolGuid, (VOID **)&Dhcp4Sb);
-        if (Dhcp4Sb != NULL) {
-            Dhcp4Sb->DestroyChild(Dhcp4Sb, mDhcp4ChildHandle);
+            mDhcp4SbHandle, &gEfiDhcp4ServiceBindingProtocolGuid,
+            (VOID **)&dhcp4_sb);
+        if (dhcp4_sb != NULL) {
+            dhcp4_sb->DestroyChild(dhcp4_sb, mDhcp4ChildHandle);
         }
 
         mDhcp4ChildHandle = NULL;
         mDhcp4SbHandle = NULL;
-        mDhcp4Fallback = FALSE;
+        mDhcp4Fallback = false;
     }
 
-    SetMem(&mIfaceInfo, sizeof(mIfaceInfo), 0);
+    axl_memset(&mIfaceInfo, 0, sizeof(mIfaceInfo));
     mNicHandle = NULL;
-    mImageHandle = NULL;
-    mInitialized = FALSE;
-}
-
-VOID
-EFIAPI
-NetworkListNics (
-    IN EFI_HANDLE  ImageHandle
-    )
-{
-    EFI_HANDLE *Handles = NULL;
-    UINTN HandleCount = 0;
-
-    EFI_STATUS Status = gBS->LocateHandleBuffer(
-        ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL,
-        &HandleCount, &Handles);
-    if (EFI_ERROR(Status) || HandleCount == 0) {
-        if (Handles) FreePool(Handles);
-        Print(L"No network interfaces found\n");
-        return;
-    }
-
-    Print(L"NIC  MAC                Link  IP\n");
-    Print(L"---  -----------------  ----  ---------------\n");
-
-    for (UINTN i = 0; i < HandleCount; i++) {
-        EFI_SIMPLE_NETWORK_PROTOCOL *Snp = NULL;
-        Status = gBS->OpenProtocol(
-            Handles[i], &gEfiSimpleNetworkProtocolGuid, (VOID **)&Snp,
-            ImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-        if (EFI_ERROR(Status) || Snp == NULL) continue;
-
-        // MAC address
-        EFI_MAC_ADDRESS *Mac = &Snp->Mode->CurrentAddress;
-        UINT32 MacLen = Snp->Mode->HwAddressSize;
-        if (MacLen > 6) MacLen = 6;
-
-        // Link status
-        CHAR16 *LinkStr = L"??";
-        if (Snp->Mode->MediaPresentSupported) {
-            LinkStr = Snp->Mode->MediaPresent ? L"UP" : L"DOWN";
-        }
-
-        // Try to get current IP via IP4Config2
-        CHAR16 IpStr[16];
-        StrCpyS(IpStr, sizeof(IpStr) / sizeof(CHAR16), L"(none)");
-
-        EFI_IP4_CONFIG2_PROTOCOL *Ip4Cfg2 = NULL;
-        Status = gBS->OpenProtocol(
-            Handles[i], &gEfiIp4Config2ProtocolGuid, (VOID **)&Ip4Cfg2,
-            ImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-        if (!EFI_ERROR(Status) && Ip4Cfg2 != NULL) {
-            UINTN DataSize = 0;
-            Status = Ip4Cfg2->GetData(
-                Ip4Cfg2, Ip4Config2DataTypeInterfaceInfo, &DataSize, NULL);
-            if (Status == EFI_BUFFER_TOO_SMALL && DataSize > 0) {
-                EFI_IP4_CONFIG2_INTERFACE_INFO *IfInfo = AllocatePool(DataSize);
-                if (IfInfo != NULL) {
-                    Status = Ip4Cfg2->GetData(
-                        Ip4Cfg2, Ip4Config2DataTypeInterfaceInfo, &DataSize, IfInfo);
-                    if (!EFI_ERROR(Status) &&
-                        (IfInfo->StationAddress.Addr[0] | IfInfo->StationAddress.Addr[1] |
-                         IfInfo->StationAddress.Addr[2] | IfInfo->StationAddress.Addr[3]) != 0) {
-                        UnicodeSPrint(IpStr, sizeof(IpStr), L"%d.%d.%d.%d",
-                            IfInfo->StationAddress.Addr[0], IfInfo->StationAddress.Addr[1],
-                            IfInfo->StationAddress.Addr[2], IfInfo->StationAddress.Addr[3]);
-                    }
-                    FreePool(IfInfo);
-                }
-            }
-        }
-
-        Print(L"%3d  %02x:%02x:%02x:%02x:%02x:%02x  %-4s  %s\n",
-              i,
-              Mac->Addr[0], Mac->Addr[1], Mac->Addr[2],
-              Mac->Addr[3], Mac->Addr[4], Mac->Addr[5],
-              LinkStr, IpStr);
-    }
-
-    FreePool(Handles);
+    mInitialized = false;
 }
