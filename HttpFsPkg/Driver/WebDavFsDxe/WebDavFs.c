@@ -27,24 +27,16 @@ static WEBDAVFS_PRIVATE *mPrivate = NULL;
 /// Parse "http://1.2.3.4:8080/path" into components using axl_url_parse.
 static int
 ParseUrl(
-    const CHAR16     *Url,
-    size_t            UrlLen,
+    const char       *UrlUtf8,
     EFI_IPv4_ADDRESS *ServerAddr,
     UINT16           *Port,
     char             *BasePath,
     size_t            BasePathSize
 )
 {
-    // Convert UCS-2 load options to UTF-8
-    char *Utf8 = axl_ucs2_to_utf8((const unsigned short *)Url);
-    if (Utf8 == NULL) return -1;
-
     AxlUrl *Parsed = NULL;
-    if (axl_url_parse(Utf8, &Parsed) != 0) {
-        axl_free(Utf8);
+    if (axl_url_parse(UrlUtf8, &Parsed) != 0)
         return -1;
-    }
-    axl_free(Utf8);
 
     // Parse IPv4 address from host string
     unsigned int Octets[4] = {0};
@@ -55,16 +47,10 @@ ParseUrl(
             Val = Val * 10 + (unsigned int)(*P - '0');
             P++;
         }
-        if (Val > 255) {
-            axl_url_free(Parsed);
-            return -1;
-        }
+        if (Val > 255) { axl_url_free(Parsed); return -1; }
         Octets[i] = Val;
         if (i < 3) {
-            if (*P != '.') {
-                axl_url_free(Parsed);
-                return -1;
-            }
+            if (*P != '.') { axl_url_free(Parsed); return -1; }
             P++;
         }
     }
@@ -74,15 +60,12 @@ ParseUrl(
     ServerAddr->Addr[2] = (UINT8)Octets[2];
     ServerAddr->Addr[3] = (UINT8)Octets[3];
 
-    // Port
     *Port = (Parsed->port != 0) ? Parsed->port : DEFAULT_SERVER_PORT;
 
-    // Copy path (or "/" if empty)
     const char *UrlPath = (Parsed->path != NULL && Parsed->path[0] != '\0')
                           ? Parsed->path : "/";
     axl_strlcpy(BasePath, UrlPath, BasePathSize);
 
-    // Ensure trailing slash
     size_t PathLen = axl_strlen(BasePath);
     if (PathLen > 0 && BasePath[PathLen - 1] != '/' && PathLen < BasePathSize - 1) {
         BasePath[PathLen] = '/';
@@ -130,36 +113,25 @@ DriverEntry(
     // Initialize AXL runtime (sets gST/gBS/gRT, enables axl_printf)
     axl_driver_init(ImageHandle, SystemTable);
 
-    // Get load options (URL string)
-    EFI_LOADED_IMAGE_PROTOCOL *LoadedImage = NULL;
-    Status = gBS->OpenProtocol(
-        ImageHandle, &gEfiLoadedImageProtocolGuid,
-        (VOID **)&LoadedImage, ImageHandle, NULL,
-        EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-    if (EFI_ERROR(Status) || LoadedImage == NULL) {
-        axl_printf("WebDavFsDxe: Failed to get loaded image protocol\n");
-        return EFI_DEVICE_ERROR;
-    }
-
-    if (LoadedImage->LoadOptions == NULL || LoadedImage->LoadOptionsSize < 4) {
+    // Get URL from load options (UTF-8, allocated by SDK)
+    char *UrlUtf8 = axl_driver_get_load_options();
+    if (UrlUtf8 == NULL) {
         axl_printf("WebDavFsDxe: No URL in load options\n");
         return EFI_INVALID_PARAMETER;
     }
 
-    CHAR16 *UrlStr = (CHAR16 *)LoadedImage->LoadOptions;
-    size_t UrlLen = LoadedImage->LoadOptionsSize / sizeof(CHAR16);
-
     // Allocate private context
     WEBDAVFS_PRIVATE *Private = axl_calloc(1, sizeof(WEBDAVFS_PRIVATE));
-    if (Private == NULL) return EFI_OUT_OF_RESOURCES;
+    if (Private == NULL) { axl_free(UrlUtf8); return EFI_OUT_OF_RESOURCES; }
 
     Private->Signature = WEBDAVFS_PRIVATE_SIGNATURE;
     Private->ImageHandle = ImageHandle;
 
     // Parse URL
-    int Ret = ParseUrl(UrlStr, UrlLen, &Private->ServerAddr,
+    int Ret = ParseUrl(UrlUtf8, &Private->ServerAddr,
                        &Private->ServerPort, Private->BasePath,
                        sizeof(Private->BasePath));
+    axl_free(UrlUtf8);
     if (Ret != 0) {
         axl_printf("WebDavFsDxe: Invalid URL\n");
         axl_free(Private);
@@ -244,8 +216,17 @@ DriverEntry(
         return Status;
     }
 
-    // Register unload handler
-    LoadedImage->Unload = WebDavFsDriverUnload;
+    // Register unload handler via loaded image protocol
+    {
+        EFI_LOADED_IMAGE_PROTOCOL *LoadedImage = NULL;
+        gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid,
+                            (VOID **)&LoadedImage);
+        if (LoadedImage != NULL)
+            LoadedImage->Unload = WebDavFsDriverUnload;
+    }
+
+    // Connect controllers so Shell sees the new FS mapping
+    axl_driver_connect_handle(Private->FsHandle);
 
     mPrivate = Private;
     axl_printf("WebDavFsDxe: Mounted successfully\n");

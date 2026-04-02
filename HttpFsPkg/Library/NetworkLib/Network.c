@@ -214,68 +214,86 @@ check_link_status(void *nic_handle)
 /* Auto-load NIC drivers from filesystem                              */
 /* ------------------------------------------------------------------ */
 
-/** Search mounted filesystems for \drivers\{arch}\*.efi and load them.
-    Stops after the first filesystem that has a drivers directory. */
+/** Search for NIC drivers in \drivers\{arch}\ relative to the app's
+    location on disk. Uses axl_driver_get_image_path() to find the
+    app directory, then scans for .efi files. */
 static size_t
 load_nic_drivers(void)
 {
-    void **fs_handles = NULL;
-    size_t fs_count = 0;
     size_t loaded = 0;
 
-    if (axl_service_enumerate("simple-fs", &fs_handles, &fs_count) != 0 || fs_count == 0) {
-        axl_free(fs_handles);
+    /* Get the app's image path, e.g. "\HttpFS.efi" or "\tools\HttpFS.efi" */
+    char *img_path = axl_driver_get_image_path();
+    if (img_path == NULL)
         return 0;
+
+    /* Derive directory: strip filename to get e.g. "\" or "\tools\" */
+    char dir_base[256];
+    axl_strlcpy(dir_base, img_path, sizeof(dir_base));
+    axl_free(img_path);
+
+    /* Find last separator */
+    size_t last_sep = 0;
+    for (size_t i = 0; dir_base[i]; i++) {
+        if (dir_base[i] == '\\' || dir_base[i] == '/')
+            last_sep = i;
     }
+    dir_base[last_sep + 1] = '\0';  /* keep trailing separator */
 
-    for (size_t i = 0; i < fs_count; i++) {
-        char *label = axl_volume_get_label_by_handle(fs_handles[i]);
-        if (label == NULL) continue;
+    /* Build driver directory path: <app_dir>\drivers\{arch} */
+    char drv_dir[512];
+    axl_snprintf(drv_dir, sizeof(drv_dir), "%s%s", dir_base, DRIVER_DIR_PATH);
 
-        /* Build dir path like "fs0:\drivers\x64" */
-        char dir_path[256];
-        axl_snprintf(dir_path, sizeof(dir_path), "%s:%s", label, DRIVER_DIR_PATH);
-
-        AxlDir *dir = axl_dir_open(dir_path);
-        if (dir == NULL) {
+    AxlDir *dir = axl_dir_open(drv_dir);
+    if (dir == NULL) {
+        /* No drivers directory — try scanning all mounted volumes */
+        void **fs_handles = NULL;
+        size_t fs_count = 0;
+        if (axl_service_enumerate("simple-fs", &fs_handles, &fs_count) != 0 ||
+            fs_count == 0) {
+            axl_free(fs_handles);
+            return 0;
+        }
+        for (size_t i = 0; i < fs_count; i++) {
+            char *label = axl_volume_get_label_by_handle(fs_handles[i]);
+            if (label == NULL) continue;
+            axl_snprintf(drv_dir, sizeof(drv_dir), "%s:%s", label, DRIVER_DIR_PATH);
             axl_free(label);
-            continue;
+            dir = axl_dir_open(drv_dir);
+            if (dir != NULL) break;
         }
-
-        AxlDirEntry entry;
-        while (axl_dir_read(dir, &entry)) {
-            if (entry.is_dir) continue;
-            size_t name_len = axl_strlen(entry.name);
-            if (name_len <= 4) continue;
-            if (axl_strcmp(&entry.name[name_len - 4], ".efi") != 0 &&
-                axl_strcmp(&entry.name[name_len - 4], ".EFI") != 0)
-                continue;
-
-            char full_path[512];
-            axl_snprintf(full_path, sizeof(full_path), "%s:%s\\%s",
-                         label, DRIVER_DIR_PATH, entry.name);
-
-            axl_printf("  Loading %s ... ", entry.name);
-            AxlDriverHandle drv;
-            if (axl_driver_load(full_path, &drv) == 0) {
-                if (axl_driver_start(drv) == 0) {
-                    axl_driver_connect(drv);
-                    loaded++;
-                    axl_printf("OK\n");
-                } else {
-                    axl_printf("start failed\n");
-                    axl_driver_unload(drv);
-                }
-            } else {
-                axl_printf("load failed\n");
-            }
-        }
-        axl_dir_close(dir);
-        axl_free(label);
-        if (loaded > 0) break;
+        axl_free(fs_handles);
+        if (dir == NULL) return 0;
     }
 
-    axl_free(fs_handles);
+    AxlDirEntry entry;
+    while (axl_dir_read(dir, &entry)) {
+        if (entry.is_dir) continue;
+        size_t name_len = axl_strlen(entry.name);
+        if (name_len <= 4) continue;
+        if (axl_strcmp(&entry.name[name_len - 4], ".efi") != 0 &&
+            axl_strcmp(&entry.name[name_len - 4], ".EFI") != 0)
+            continue;
+
+        char full_path[512];
+        axl_snprintf(full_path, sizeof(full_path), "%s\\%s", drv_dir, entry.name);
+
+        axl_printf("  Loading %s ... ", entry.name);
+        AxlDriverHandle drv;
+        if (axl_driver_load(full_path, &drv) == 0) {
+            if (axl_driver_start(drv) == 0) {
+                axl_driver_connect(drv);
+                loaded++;
+                axl_printf("OK\n");
+            } else {
+                axl_printf("start failed\n");
+                axl_driver_unload(drv);
+            }
+        } else {
+            axl_printf("load failed\n");
+        }
+    }
+    axl_dir_close(dir);
     return loaded;
 }
 
