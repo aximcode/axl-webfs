@@ -120,23 +120,9 @@ WebDavFsHttpRequest(
     char Url[MAX_PATH_LEN + 280];
     axl_snprintf(Url, sizeof(Url), "%s%s", Private->BaseUrl, Path);
 
-    int Ret = axl_http_request(
+    return axl_http_request(
         Private->HttpClient, Method, Url, Body, BodyLen,
         NULL, ExtraHeaders, Response);
-
-    if (Ret != 0) {
-        // Attempt reconnect: destroy client and recreate
-        axl_http_client_free(Private->HttpClient);
-        Private->HttpClient = axl_http_client_new();
-        if (Private->HttpClient == NULL) return -1;
-
-        // Retry once
-        Ret = axl_http_request(
-            Private->HttpClient, Method, Url, Body, BodyLen,
-            NULL, ExtraHeaders, Response);
-    }
-
-    return Ret;
 }
 
 // ---------------------------------------------------------------------------
