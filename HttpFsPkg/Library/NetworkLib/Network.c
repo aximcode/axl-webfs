@@ -19,9 +19,6 @@
 #include <uefi/axl-uefi.h>
 
 
-/* gBS is defined in AXL's native backend (axl-backend-native.c) */
-extern EFI_BOOT_SERVICES *gBS;
-
 
 /* ------------------------------------------------------------------ */
 /* IP4Config2 types not in the generated UEFI headers                 */
@@ -199,9 +196,8 @@ static void
 check_link_status(void *nic_handle)
 {
     EFI_SIMPLE_NETWORK_PROTOCOL *snp = NULL;
-    EFI_STATUS status = gBS->HandleProtocol(
-        nic_handle, &gEfiSimpleNetworkProtocolGuid, (VOID **)&snp);
-    if (EFI_ERROR(status) || snp == NULL)
+    if (axl_handle_get_service(nic_handle, "simple-network",
+                               (void **)&snp) != 0 || snp == NULL)
         return;
 
     if (snp->Mode->MediaPresentSupported && !snp->Mode->MediaPresent) {
@@ -430,7 +426,7 @@ bring_up_network_stack(void)
     /* Recursively connect all SNP handles to bring up MNP/ARP/IP4/TCP4 */
     axl_printf("  Connecting network stack on %zu NIC(s)...\n", snp_count);
     for (size_t i = 0; i < snp_count; i++) {
-        gBS->ConnectController(snp_handles[i], NULL, NULL, TRUE);
+        axl_driver_connect_handle(snp_handles[i]);
     }
     axl_free(snp_handles);
 
@@ -456,9 +452,9 @@ find_ip4_handle_for_snp(void *snp_handle)
 
     /* Slow path: match by MAC address */
     EFI_SIMPLE_NETWORK_PROTOCOL *snp = NULL;
-    EFI_STATUS status = gBS->HandleProtocol(
-        snp_handle, &gEfiSimpleNetworkProtocolGuid, (VOID **)&snp);
-    if (EFI_ERROR(status) || snp == NULL) return NULL;
+    if (axl_handle_get_service(snp_handle, "simple-network",
+                               (void **)&snp) != 0 || snp == NULL)
+        return NULL;
 
     void **ip4_handles = NULL;
     size_t ip4_count = 0;
@@ -476,16 +472,16 @@ find_ip4_handle_for_snp(void *snp_handle)
             continue;
 
         UINTN data_size = 0;
-        status = ip4cfg2->GetData(
+        EFI_STATUS st = ip4cfg2->GetData(
             ip4cfg2, Ip4Config2DataTypeInterfaceInfo, &data_size, NULL);
-        if (status != EFI_BUFFER_TOO_SMALL || data_size == 0) continue;
+        if (st != EFI_BUFFER_TOO_SMALL || data_size == 0) continue;
 
         EFI_IP4_CONFIG2_INTERFACE_INFO *if_info = axl_malloc(data_size);
         if (if_info == NULL) continue;
 
-        status = ip4cfg2->GetData(
+        st = ip4cfg2->GetData(
             ip4cfg2, Ip4Config2DataTypeInterfaceInfo, &data_size, if_info);
-        if (!EFI_ERROR(status)) {
+        if (!EFI_ERROR(st)) {
             if (axl_memcmp(&if_info->HwAddress, &snp->Mode->CurrentAddress,
                            snp->Mode->HwAddressSize) == 0) {
                 match = ip4_handles[i];

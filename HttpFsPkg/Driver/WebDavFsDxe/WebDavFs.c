@@ -108,8 +108,6 @@ DriverEntry(
     EFI_SYSTEM_TABLE *SystemTable
 )
 {
-    EFI_STATUS Status;
-
     // Initialize AXL runtime (sets gST/gBS/gRT, enables axl_printf)
     axl_driver_init(ImageHandle, SystemTable);
 
@@ -201,29 +199,20 @@ DriverEntry(
 
     // Install protocols on a new handle
     Private->FsHandle = NULL;
-    Status = gBS->InstallMultipleProtocolInterfaces(
-        &Private->FsHandle,
-        &gEfiSimpleFileSystemProtocolGuid, &Private->SimpleFs,
-        &gEfiDevicePathProtocolGuid, Private->DevicePath,
-        NULL);
-    if (EFI_ERROR(Status)) {
-        axl_printf("WebDavFsDxe: Protocol install failed: 0x%lx\n",
-                   (unsigned long)Status);
+    if (axl_service_register_multiple(&Private->FsHandle,
+            "simple-fs", &Private->SimpleFs,
+            "device-path", Private->DevicePath,
+            NULL) != 0) {
+        axl_printf("WebDavFsDxe: Protocol install failed\n");
         axl_free(DevPath);
         axl_http_client_free(Private->HttpClient);
         network_cleanup();
         axl_free(Private);
-        return Status;
+        return EFI_DEVICE_ERROR;
     }
 
-    // Register unload handler via loaded image protocol
-    {
-        EFI_LOADED_IMAGE_PROTOCOL *LoadedImage = NULL;
-        gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid,
-                            (VOID **)&LoadedImage);
-        if (LoadedImage != NULL)
-            LoadedImage->Unload = WebDavFsDriverUnload;
-    }
+    // Register unload handler
+    axl_driver_set_unload(WebDavFsDriverUnload);
 
     // Connect controllers so Shell sees the new FS mapping
     axl_driver_connect_handle(Private->FsHandle);
@@ -242,11 +231,8 @@ WebDavFsDriverUnload(
     if (mPrivate == NULL) return EFI_SUCCESS;
 
     // Uninstall protocols
-    gBS->UninstallMultipleProtocolInterfaces(
-        mPrivate->FsHandle,
-        &gEfiSimpleFileSystemProtocolGuid, &mPrivate->SimpleFs,
-        &gEfiDevicePathProtocolGuid, mPrivate->DevicePath,
-        NULL);
+    axl_service_unregister(mPrivate->FsHandle, "simple-fs", &mPrivate->SimpleFs);
+    axl_service_unregister(mPrivate->FsHandle, "device-path", mPrivate->DevicePath);
 
     // Close HTTP client
     axl_http_client_free(mPrivate->HttpClient);
