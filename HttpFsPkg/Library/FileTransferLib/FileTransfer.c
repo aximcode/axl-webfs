@@ -18,22 +18,9 @@ static size_t   mVolumeCount = 0;
 
 int ft_init(void)
 {
-    void **handles = NULL;
-    size_t count = 0;
-
-    if (axl_service_enumerate("simple-fs", &handles, &count) != 0)
-        return -1;
-
     mVolumeCount = 0;
-    for (size_t i = 0; i < count && mVolumeCount < FT_MAX_VOLUMES; i++) {
-        FtVolume *v = &mVolumes[mVolumeCount];
-        v->handle = handles[i];
-        axl_snprintf(v->name, sizeof(v->name), "fs%zu", mVolumeCount);
-        mVolumeCount++;
-    }
-
-    axl_free(handles);
-    return 0;
+    /* AxlVolume and FtVolume have identical layout */
+    return axl_volume_enumerate((AxlVolume *)mVolumes, FT_MAX_VOLUMES, &mVolumeCount);
 }
 
 size_t ft_get_volume_count(void)

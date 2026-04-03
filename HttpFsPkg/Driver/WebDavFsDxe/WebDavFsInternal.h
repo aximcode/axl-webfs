@@ -21,22 +21,11 @@
 #include <Library/NetworkLib.h>
 
 // ---------------------------------------------------------------------------
-// Macros (not provided by axl-sdk)
-// ---------------------------------------------------------------------------
-
-#define SIGNATURE_32(a,b,c,d) \
-    ((uint32_t)(a) | ((uint32_t)(b)<<8) | ((uint32_t)(c)<<16) | ((uint32_t)(d)<<24))
-
-#define CR(Record, TYPE, Field, Sig) \
-    ((TYPE *)((char *)(Record) - __builtin_offsetof(TYPE, Field)))
-
-
-// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-#define WEBDAVFS_PRIVATE_SIGNATURE   SIGNATURE_32('W','D','F','S')
-#define WEBDAVFS_FILE_SIGNATURE      SIGNATURE_32('W','D','F','L')
+#define WEBDAVFS_PRIVATE_SIGNATURE   AXL_SIGNATURE_32('W','D','F','S')
+#define WEBDAVFS_FILE_SIGNATURE      AXL_SIGNATURE_32('W','D','F','L')
 
 #define DIR_CACHE_TTL_MS             2000     ///< 2 second directory cache TTL.
 #define DIR_CACHE_MAX_SLOTS          16       ///< Maximum cached directories.
@@ -94,7 +83,7 @@ typedef struct {
 } WEBDAVFS_PRIVATE;
 
 #define WEBDAVFS_PRIVATE_FROM_SIMPLE_FS(a) \
-    CR(a, WEBDAVFS_PRIVATE, SimpleFs, WEBDAVFS_PRIVATE_SIGNATURE)
+    AXL_CONTAINER_OF(a, WEBDAVFS_PRIVATE, SimpleFs)
 
 // ---------------------------------------------------------------------------
 // Per-file-handle context (one per Open)
@@ -124,7 +113,7 @@ typedef struct {
 } WEBDAVFS_FILE;
 
 #define WEBDAVFS_FILE_FROM_FILE_PROTOCOL(a) \
-    CR(a, WEBDAVFS_FILE, File, WEBDAVFS_FILE_SIGNATURE)
+    AXL_CONTAINER_OF(a, WEBDAVFS_FILE, File)
 
 // ---------------------------------------------------------------------------
 // Forward declarations -- WebDavFs.c

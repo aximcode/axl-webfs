@@ -11,81 +11,43 @@
 
 #include "WebDavFsInternal.h"
 
-// ---------------------------------------------------------------------------
-// UCS-2 helpers (no EDK2 StrCmp / StrLen / StrCpyS available)
-// ---------------------------------------------------------------------------
-
-static bool
-ucs2_equal(const CHAR16 *a, const CHAR16 *b)
-{
-    while (*a && *b && *a == *b) { a++; b++; }
-    return *a == *b;
-}
-
-static size_t
-ucs2_len(const CHAR16 *s)
-{
-    size_t n = 0;
-    while (s[n]) n++;
-    return n;
-}
-
-static void
-ucs2_copy(CHAR16 *dst, size_t dst_count, const CHAR16 *src)
-{
-    size_t i = 0;
-    while (src[i] && i < dst_count - 1) {
-        dst[i] = src[i];
-        i++;
-    }
-    dst[i] = 0;
-}
-
 
 // ---------------------------------------------------------------------------
-// Path helpers
+// Path helpers — thin wrappers around AXL SDK path functions
 // ---------------------------------------------------------------------------
 
-/// Get the parent directory path. E.g., "/foo/bar/" -> "/foo/", "/foo/bar.txt" -> "/foo/"
+/// Copy dirname of Path into stack buffer Parent.
 static void
 GetParentPath(const char *Path, char *Parent, size_t ParentSize)
 {
-    size_t Len = axl_strlen(Path);
-
-    // Strip trailing slash for processing
-    if (Len > 1 && Path[Len - 1] == '/') Len--;
-
-    // Find last slash
-    size_t LastSlash = 0;
-    for (size_t i = 0; i < Len; i++) {
-        if (Path[i] == '/') LastSlash = i;
-    }
-
-    if (LastSlash == 0) {
-        axl_strlcpy(Parent, "/", ParentSize);
+    char *dir = axl_path_get_dirname(Path);
+    if (dir != NULL) {
+        axl_strlcpy(Parent, dir, ParentSize);
+        axl_free(dir);
     } else {
-        size_t CopyLen = LastSlash + 1;
-        if (CopyLen >= ParentSize) CopyLen = ParentSize - 1;
-        axl_memcpy(Parent, Path, CopyLen);
-        Parent[CopyLen] = '\0';
+        axl_strlcpy(Parent, "/", ParentSize);
     }
 }
 
-/// Get the filename from a path. E.g., "/foo/bar.txt" -> "bar.txt"
+/// Return basename of Path (pointer into Path or allocated — caller must NOT free).
+/// For compatibility, returns pointer into the original string.
 static const char *
 GetFileName(const char *Path)
 {
-    size_t Len = axl_strlen(Path);
-    if (Len > 1 && Path[Len - 1] == '/') Len--;
-
-    for (size_t i = Len; i > 0; i--) {
-        if (Path[i - 1] == '/') return &Path[i];
+    char *base = axl_path_get_basename(Path);
+    /* axl_path_get_basename allocates, but callers expect a borrowed pointer.
+       Use a static buffer for simplicity (single-threaded UEFI). */
+    static char sBaseName[256];
+    if (base != NULL) {
+        axl_strlcpy(sBaseName, base, sizeof(sBaseName));
+        axl_free(base);
+    } else {
+        axl_strlcpy(sBaseName, Path, sizeof(sBaseName));
     }
-    return Path;
+    return sBaseName;
 }
 
 /// Resolve a CHAR16 filename relative to a base char path.
-/// Handles \, ., .., and converts to forward slashes.
 static EFI_STATUS
 ResolvePath(
     const char   *BasePath,
@@ -94,75 +56,18 @@ ResolvePath(
     size_t        ResolvedSize
 )
 {
-    // Convert FileName to ASCII
-    char Name8[MAX_PATH_LEN];
-    size_t i = 0;
-    while (FileName[i] != L'\0' && i < MAX_PATH_LEN - 1) {
-        CHAR16 Ch = FileName[i];
-        Name8[i] = (Ch == L'\\') ? '/' : (char)Ch;
-        i++;
-    }
-    Name8[i] = '\0';
+    // Convert CHAR16 filename to UTF-8
+    char *name_utf8 = axl_ucs2_to_utf8((const unsigned short *)FileName);
+    if (name_utf8 == NULL) return EFI_INVALID_PARAMETER;
 
-    // Absolute path (starts with /)
-    if (Name8[0] == '/') {
-        axl_strlcpy(Resolved, Name8, ResolvedSize);
-    } else {
-        // Relative -- append to base
-        axl_strlcpy(Resolved, BasePath, ResolvedSize);
-        size_t BaseLen = axl_strlen(Resolved);
-        if (BaseLen > 0 && Resolved[BaseLen - 1] != '/') {
-            axl_strlcat(Resolved, "/", ResolvedSize);
-        }
-        axl_strlcat(Resolved, Name8, ResolvedSize);
+    // Replace backslashes with forward slashes
+    for (char *p = name_utf8; *p; p++) {
+        if (*p == '\\') *p = '/';
     }
 
-    // Resolve . and .. components in place
-    char Temp[MAX_PATH_LEN];
-    size_t TempPos = 0;
-    char *P = Resolved;
-
-    if (*P == '/') {
-        Temp[TempPos++] = '/';
-        P++;
-    }
-
-    while (*P != '\0' && TempPos < MAX_PATH_LEN - 1) {
-        // Skip consecutive slashes
-        if (*P == '/') { P++; continue; }
-
-        // Find end of component
-        char *CompStart = P;
-        while (*P != '/' && *P != '\0') P++;
-        size_t CompLen = (size_t)(P - CompStart);
-        if (*P == '/') P++;
-
-        if (CompLen == 1 && CompStart[0] == '.') {
-            continue;  // Skip "."
-        }
-
-        if (CompLen == 2 && CompStart[0] == '.' && CompStart[1] == '.') {
-            // Go up one level
-            if (TempPos > 1) {
-                TempPos--;  // Back over trailing slash
-                while (TempPos > 1 && Temp[TempPos - 1] != '/') TempPos--;
-            }
-            continue;
-        }
-
-        // Copy component
-        if (TempPos + CompLen + 1 >= MAX_PATH_LEN) break;
-        axl_memcpy(Temp + TempPos, CompStart, CompLen);
-        TempPos += CompLen;
-        Temp[TempPos++] = '/';
-    }
-
-    // Remove trailing slash unless it's the root
-    if (TempPos > 1 && Temp[TempPos - 1] == '/') TempPos--;
-    Temp[TempPos] = '\0';
-
-    axl_strlcpy(Resolved, Temp, ResolvedSize);
-    return EFI_SUCCESS;
+    int rc = axl_path_resolve(BasePath, name_utf8, Resolved, ResolvedSize);
+    axl_free(name_utf8);
+    return (rc == 0) ? EFI_SUCCESS : EFI_INVALID_PARAMETER;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +130,7 @@ WebDavFsOpen(
     WEBDAVFS_PRIVATE *Private = Self->Private;
 
     // Handle opening "." -- return a new handle to the same path
-    if (ucs2_equal(FileName, L".") || ucs2_equal(FileName, L"")) {
+    if (axl_wcseql(FileName, L".") || axl_wcseql(FileName, L"")) {
         WEBDAVFS_FILE *New = WebDavFsCreateFileHandle(
             Private, Self->Path, Self->IsDir, Self->FileSize);
         if (New == NULL) return EFI_OUT_OF_RESOURCES;
@@ -639,7 +544,7 @@ WebDavFsGetInfo(
     }
 
     if (axl_guid_equal(InformationType, &gEfiFileSystemInfoGuid)) {
-        size_t LabelLen = ucs2_len(VOLUME_LABEL);
+        size_t LabelLen = axl_wcslen(VOLUME_LABEL);
         size_t Needed = SIZE_OF_EFI_FILE_SYSTEM_INFO + (LabelLen + 1) * sizeof(CHAR16);
 
         if (*BufferSize < Needed) {
@@ -654,14 +559,14 @@ WebDavFsGetInfo(
         FsInfo->VolumeSize = 0;
         FsInfo->FreeSpace = 0;
         FsInfo->BlockSize = 512;
-        ucs2_copy(FsInfo->VolumeLabel, LabelLen + 1, VOLUME_LABEL);
+        axl_wcscpy(FsInfo->VolumeLabel, VOLUME_LABEL, LabelLen + 1);
 
         *BufferSize = Needed;
         return EFI_SUCCESS;
     }
 
     if (axl_guid_equal(InformationType, &gEfiFileSystemVolumeLabelInfoIdGuid)) {
-        size_t LabelLen = ucs2_len(VOLUME_LABEL);
+        size_t LabelLen = axl_wcslen(VOLUME_LABEL);
         size_t Needed = sizeof(EFI_FILE_SYSTEM_VOLUME_LABEL) + (LabelLen + 1) * sizeof(CHAR16);
 
         if (*BufferSize < Needed) {
@@ -670,7 +575,7 @@ WebDavFsGetInfo(
         }
 
         EFI_FILE_SYSTEM_VOLUME_LABEL *Label = (EFI_FILE_SYSTEM_VOLUME_LABEL *)Buffer;
-        ucs2_copy(Label->VolumeLabel, LabelLen + 1, VOLUME_LABEL);
+        axl_wcscpy(Label->VolumeLabel, VOLUME_LABEL, LabelLen + 1);
         *BufferSize = Needed;
         return EFI_SUCCESS;
     }

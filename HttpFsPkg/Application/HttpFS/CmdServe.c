@@ -227,45 +227,21 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     // Handle Range header
     //
     const char *range_hdr = (const char *)axl_hash_table_get(req->headers, "range");
-    if (range_hdr != NULL && axl_strncmp(range_hdr, "bytes=", 6) == 0) {
-        const char *r = range_hdr + 6;
-        uint64_t    start = 0;
-        uint64_t    end = file_size - 1;
-
-        while (*r >= '0' && *r <= '9') {
-            start = start * 10 + (*r - '0');
-            r++;
-        }
-
-        if (*r == '-') {
-            r++;
-            if (*r >= '0' && *r <= '9') {
-                end = 0;
-                while (*r >= '0' && *r <= '9') {
-                    end = end * 10 + (*r - '0');
-                    r++;
-                }
-            }
-        }
-
-        if (start < file_size) {
-            offset = start;
-            send_size = (size_t)(end - start + 1);
+    if (range_hdr != NULL) {
+        AxlHttpRange range;
+        if (axl_http_parse_range(range_hdr, file_size, &range)) {
+            offset = range.start;
+            send_size = (size_t)(range.end - range.start + 1);
             resp->status_code = 206;
 
-            //
-            // Set Content-Range header
-            //
-            if (resp->headers == NULL) {
+            if (resp->headers == NULL)
                 resp->headers = axl_hash_table_new();
-            }
-
             if (resp->headers != NULL) {
                 char range_buf[128];
                 axl_snprintf(range_buf, sizeof(range_buf),
                     "bytes %llu-%llu/%llu",
-                    (unsigned long long)start,
-                    (unsigned long long)end,
+                    (unsigned long long)range.start,
+                    (unsigned long long)range.end,
                     (unsigned long long)file_size);
                 axl_hash_table_set(resp->headers, "content-range",
                     axl_strdup(range_buf));

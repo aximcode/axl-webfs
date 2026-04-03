@@ -39,26 +39,15 @@ ParseUrl(
         return -1;
 
     // Parse IPv4 address from host string
-    unsigned int Octets[4] = {0};
-    const char *P = Parsed->host;
-    for (int i = 0; i < 4; i++) {
-        unsigned int Val = 0;
-        while (*P >= '0' && *P <= '9') {
-            Val = Val * 10 + (unsigned int)(*P - '0');
-            P++;
-        }
-        if (Val > 255) { axl_url_free(Parsed); return -1; }
-        Octets[i] = Val;
-        if (i < 3) {
-            if (*P != '.') { axl_url_free(Parsed); return -1; }
-            P++;
-        }
+    uint8_t octets[4];
+    if (axl_ipv4_parse(Parsed->host, octets) != 0) {
+        axl_url_free(Parsed);
+        return -1;
     }
-
-    ServerAddr->Addr[0] = (UINT8)Octets[0];
-    ServerAddr->Addr[1] = (UINT8)Octets[1];
-    ServerAddr->Addr[2] = (UINT8)Octets[2];
-    ServerAddr->Addr[3] = (UINT8)Octets[3];
+    ServerAddr->Addr[0] = octets[0];
+    ServerAddr->Addr[1] = octets[1];
+    ServerAddr->Addr[2] = octets[2];
+    ServerAddr->Addr[3] = octets[3];
 
     *Port = (Parsed->port != 0) ? Parsed->port : DEFAULT_SERVER_PORT;
 
