@@ -1,5 +1,5 @@
 /** @file
-  WebDavFsDxe -- Directory cache and HTTP request helper (axl-cc port).
+  WebDavFsDxe -- Directory cache and HTTP request helper.
 
   Caches GET /list/ responses for 2 seconds to avoid hammering the
   network on repeated ls/access patterns. Provides auto-reconnect
@@ -166,27 +166,39 @@ DirCacheFetch(
     // NUL-terminate body for JSON parsing
     size_t BodySize = Response->body_size;
     if (BodySize >= HTTP_BODY_BUF_SIZE) BodySize = HTTP_BODY_BUF_SIZE - 1;
-    char BodyBuf[HTTP_BODY_BUF_SIZE];
+    char *BodyBuf = axl_malloc(BodySize + 1);
+    if (BodyBuf == NULL) {
+        axl_http_client_response_free(Response);
+        return -1;
+    }
     axl_memcpy(BodyBuf, Response->body, BodySize);
     BodyBuf[BodySize] = '\0';
     axl_http_client_response_free(Response);
 
     // Parse JSON array
     AxlJsonCtx Ctx;
-    if (!axl_json_parse(BodyBuf, BodySize, &Ctx)) return -1;
+    if (!axl_json_parse(BodyBuf, BodySize, &Ctx)) {
+        axl_free(BodyBuf);
+        return -1;
+    }
 
-    // Must be a root-level array
     AxlJsonArrayIter Iter;
-    if (!axl_json_root_array_begin(&Ctx, &Iter)) return -1;
+    if (!axl_json_root_array_begin(&Ctx, &Iter)) {
+        axl_free(BodyBuf);
+        return -1;
+    }
 
-    DirEntry TempEntries[DIR_CACHE_MAX_ENTRIES];
+    DirEntry *TempEntries = axl_calloc(DIR_CACHE_MAX_ENTRIES, sizeof(DirEntry));
+    if (TempEntries == NULL) {
+        axl_free(BodyBuf);
+        return -1;
+    }
     size_t Count = 0;
 
     AxlJsonCtx Elem;
     while (axl_json_array_next(&Iter, &Elem) &&
            Count < DIR_CACHE_MAX_ENTRIES) {
         DirEntry *E = &TempEntries[Count];
-        axl_memset(E, 0, sizeof(*E));
 
         axl_json_get_string(&Elem, "name", E->Name, sizeof(E->Name));
         axl_json_get_uint(&Elem, "size", &E->Size);
@@ -196,8 +208,11 @@ DirCacheFetch(
         if (E->Name[0] != '\0') Count++;
     }
 
+    axl_free(BodyBuf);
+
     // Store in cache
     DirCachePut(Private, Path, TempEntries, Count);
+    axl_free(TempEntries);
 
     // Return from cache (stable pointers)
     Slot = DirCacheFind(Private, Path);

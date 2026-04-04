@@ -1,5 +1,5 @@
 /** @file
-  WebDavFsDxe -- Driver entry point, URL parsing, protocol install (axl-cc port).
+  WebDavFsDxe -- Driver entry point, URL parsing, protocol install.
 
   Loads as a UEFI driver, parses the server URL from load options,
   establishes an HTTP connection, and installs EFI_SIMPLE_FILE_SYSTEM_PROTOCOL

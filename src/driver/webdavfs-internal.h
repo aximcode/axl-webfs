@@ -1,5 +1,5 @@
 /** @file
-  WebDavFsDxe -- Internal types and declarations (axl-cc port).
+  WebDavFsDxe -- Internal types and declarations.
 
   Private data structures for the remote filesystem driver.
   Uses SIGNATURE_32 + CR macros for container derivation.

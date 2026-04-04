@@ -1,5 +1,11 @@
 # HttpFS Design Document
 
+> **Note:** This document was written for the original EDK2-based build.
+> HttpFS has been ported to the AXL SDK (axl-cc). References to EDK2,
+> .inf/.dsc/.dec files, JsonLib, UdkLib, and the HttpFsPkg directory
+> structure are historical. See CLAUDE.md for the current project layout
+> and build instructions.
+
 ## Overview
 
 HttpFS is a UEFI toolkit for bidirectional file transfer and remote

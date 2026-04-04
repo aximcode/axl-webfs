@@ -1,5 +1,5 @@
 /** @file
-  WebDavFsDxe -- EFI_FILE_PROTOCOL implementation (axl-cc port).
+  WebDavFsDxe -- EFI_FILE_PROTOCOL implementation.
 
   Every UEFI file operation translates to HTTP requests against
   xfer-server.py. Directory listings use GET /list/, file I/O uses
@@ -219,8 +219,8 @@ WebDavFsClose(
     if (F->ReadAheadBuf != NULL) {
         axl_free(F->ReadAheadBuf);
     }
-    if (F->DirEntries != NULL && F->DirLoaded) {
-        // DirEntries points into cache -- no free needed
+    if (F->DirEntries != NULL) {
+        axl_free(F->DirEntries);
     }
     axl_free(F);
     return EFI_SUCCESS;
@@ -360,11 +360,18 @@ ReadDir(
 {
     WEBDAVFS_PRIVATE *Private = F->Private;
 
-    // Lazy-load directory listing
+    // Lazy-load directory listing (copy from cache for stability)
     if (!F->DirLoaded) {
+        DirEntry *cache_entries = NULL;
+        size_t cache_count = 0;
         int Ret = DirCacheFetch(
-            Private, F->Path, &F->DirEntries, &F->DirEntryCount);
+            Private, F->Path, &cache_entries, &cache_count);
         if (Ret != 0) return EFI_DEVICE_ERROR;
+
+        F->DirEntries = axl_calloc(cache_count, sizeof(DirEntry));
+        if (F->DirEntries == NULL) return EFI_OUT_OF_RESOURCES;
+        axl_memcpy(F->DirEntries, cache_entries, cache_count * sizeof(DirEntry));
+        F->DirEntryCount = cache_count;
         F->DirLoaded = true;
         F->DirReadIndex = 0;
     }

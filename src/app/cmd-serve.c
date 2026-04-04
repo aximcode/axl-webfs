@@ -131,23 +131,25 @@ permission_middleware(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 static int
 handle_get_root(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-    char   buf[4096];
+    size_t buf_size = 4096;
+    char  *buf = axl_malloc(buf_size);
     size_t written = 0;
     bool   as_json = wants_json(req);
 
     (void)data;
+    if (buf == NULL) {
+        axl_http_response_set_status(resp, 500);
+        return 0;
+    }
 
-    ft_list_volumes(as_json, buf, sizeof(buf), &written);
+    ft_list_volumes(as_json, buf, buf_size, &written);
 
     if (as_json) {
         axl_http_response_set_json(resp, buf);
+        axl_free(buf);
     } else {
-        resp->body = axl_malloc(written);
-        if (resp->body != NULL) {
-            axl_memcpy(resp->body, buf, written);
-            resp->body_size = written;
-        }
-
+        resp->body = buf;
+        resp->body_size = written;
         resp->content_type = "text/html";
         resp->status_code = 200;
     }
@@ -182,12 +184,19 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     }
 
     if (is_dir) {
-        char   buf[8192];
+        size_t buf_size = 8192;
+        char  *buf = axl_malloc(buf_size);
         size_t written = 0;
         bool   as_json = wants_json(req);
 
-        status = ft_list_dir(&volume, sub_path, as_json, buf, sizeof(buf), &written);
+        if (buf == NULL) {
+            axl_http_response_set_status(resp, 500);
+            return 0;
+        }
+
+        status = ft_list_dir(&volume, sub_path, as_json, buf, buf_size, &written);
         if (status != 0) {
+            axl_free(buf);
             axl_http_response_set_text(resp, "Directory listing failed\n");
             axl_http_response_set_status(resp, 500);
             return 0;
@@ -195,13 +204,10 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 
         if (as_json) {
             axl_http_response_set_json(resp, buf);
+            axl_free(buf);
         } else {
-            resp->body = axl_malloc(written);
-            if (resp->body != NULL) {
-                axl_memcpy(resp->body, buf, written);
-                resp->body_size = written;
-            }
-
+            resp->body = buf;
+            resp->body_size = written;
             resp->content_type = "text/html";
             resp->status_code = 200;
         }

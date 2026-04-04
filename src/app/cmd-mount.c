@@ -1,5 +1,5 @@
 /** @file
-  HttpFS -- mount and umount command handlers (axl-cc port).
+  HttpFS -- mount and umount command handlers.
 
   mount: Loads WebDavFsDxe.efi via axl_driver_load, passes the server
   URL as UCS-2 load options, and starts the driver.
@@ -18,7 +18,6 @@
 
 #define DRIVER_FILENAME  "WebDavFsDxe.efi"
 
-// TODO: Verify this GUID matches the value from the .dec / build system.
 // It was previously supplied via extern EFI_GUID gHttpFsVendorGuid.
 static const EFI_GUID HttpFsVendorGuid = {
     0xf47c0fa2, 0xbf67, 0x4c0d,
