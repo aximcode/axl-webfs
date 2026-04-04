@@ -5,7 +5,7 @@
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
-#include <Library/FileTransferLib.h>
+#include "transfer/file-transfer.h"
 #include <axl.h>
 
 

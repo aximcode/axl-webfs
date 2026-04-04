@@ -3,19 +3,19 @@ AXL_CC   = $(AXL_SDK)/bin/axl-cc
 ARCH     ?= x64
 OUTDIR   = build/axl/$(ARCH)
 
-APP_SRCS = HttpFsPkg/Application/HttpFS/Main.c \
-           HttpFsPkg/Application/HttpFS/CmdServe.c \
-           HttpFsPkg/Application/HttpFS/CmdMount.c \
-           HttpFsPkg/Library/NetworkLib/Network.c \
-           HttpFsPkg/Library/FileTransferLib/FileTransfer.c \
-           HttpFsPkg/Library/FileTransferLib/DirList.c
+APP_SRCS = src/app/main.c \
+           src/app/cmd-serve.c \
+           src/app/cmd-mount.c \
+           src/net/network.c \
+           src/transfer/file-transfer.c \
+           src/transfer/dir-list.c
 
-DRV_SRCS = HttpFsPkg/Driver/WebDavFsDxe/WebDavFs.c \
-           HttpFsPkg/Driver/WebDavFsDxe/WebDavFsFile.c \
-           HttpFsPkg/Driver/WebDavFsDxe/WebDavFsCache.c \
-           HttpFsPkg/Library/NetworkLib/Network.c
+DRV_SRCS = src/driver/webdavfs.c \
+           src/driver/webdavfs-file.c \
+           src/driver/webdavfs-cache.c \
+           src/net/network.c
 
-CFLAGS   = -IHttpFsPkg/Include
+CFLAGS   = -Isrc
 
 all: HttpFS WebDavFsDxe
 

@@ -9,7 +9,7 @@
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
-#include "WebDavFsInternal.h"
+#include "webdavfs-internal.h"
 
 /// Vendor GUID for the WebDavFs device path node.
 static const EFI_GUID HttpFsVendorGuid = {

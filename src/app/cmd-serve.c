@@ -8,12 +8,12 @@
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
-#include "HttpFsInternal.h"
+#include "httpfs-internal.h"
 
 #include <axl.h>
 #include <axl/axl-net.h>
-#include <Library/NetworkLib.h>
-#include <Library/FileTransferLib.h>
+#include "net/network.h"
+#include "transfer/file-transfer.h"
 
 
 

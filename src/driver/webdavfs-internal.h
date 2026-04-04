@@ -18,7 +18,7 @@
 #include <uefi/axl-uefi.h>
 
 
-#include <Library/NetworkLib.h>
+#include "net/network.h"
 
 // ---------------------------------------------------------------------------
 // Constants

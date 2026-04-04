@@ -8,7 +8,7 @@
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
-#include <Library/NetworkLib.h>
+#include "net/network.h"
 
 #include <axl.h>
 #include <axl/axl-driver.h>
