@@ -226,47 +226,19 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         return 0;
     }
 
-    uint64_t offset = 0;
-    size_t   send_size = (size_t)file_size;
-
     //
-    // Handle Range header
-    //
-    const char *range_hdr = (const char *)axl_hash_table_get(req->headers, "range");
-    if (range_hdr != NULL) {
-        AxlHttpRange range;
-        if (axl_http_parse_range(range_hdr, file_size, &range)) {
-            offset = range.start;
-            send_size = (size_t)(range.end - range.start + 1);
-            resp->status_code = 206;
-
-            if (resp->headers == NULL)
-                resp->headers = axl_hash_table_new();
-            if (resp->headers != NULL) {
-                char range_buf[128];
-                axl_snprintf(range_buf, sizeof(range_buf),
-                    "bytes %llu-%llu/%llu",
-                    (unsigned long long)range.start,
-                    (unsigned long long)range.end,
-                    (unsigned long long)file_size);
-                axl_hash_table_set(resp->headers, "content-range",
-                    axl_strdup(range_buf));
-            }
-        }
-    }
-
-    //
-    // Read file content
+    // Read entire file into memory
     //
     FtReadCtx read_ctx;
-    status = ft_open_read(&volume, sub_path, offset, NULL, NULL, &read_ctx);
+    status = ft_open_read(&volume, sub_path, 0, NULL, NULL, &read_ctx);
     if (status != 0) {
         axl_http_response_set_text(resp, "Cannot open file\n");
         axl_http_response_set_status(resp, 500);
         return 0;
     }
 
-    void *file_buf = axl_malloc(send_size);
+    size_t full_size = (size_t)file_size;
+    void *file_buf = axl_malloc(full_size);
     if (file_buf == NULL) {
         ft_close_read(&read_ctx);
         axl_http_response_set_text(resp, "Out of memory\n");
@@ -275,9 +247,9 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     }
 
     size_t total_read = 0;
-    while (total_read < send_size) {
+    while (total_read < full_size) {
         size_t got = 0;
-        size_t want = send_size - total_read;
+        size_t want = full_size - total_read;
         if (want > FT_CHUNK_SIZE) {
             want = FT_CHUNK_SIZE;
         }
@@ -293,12 +265,26 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 
     ft_close_read(&read_ctx);
 
+    //
+    // Handle Range header — set_range slices the buffer, sets 206 + Content-Range
+    //
+    const char *range_hdr = (const char *)axl_hash_table_get(req->headers, "range");
+    if (range_hdr != NULL) {
+        AxlHttpRange range;
+        if (axl_http_parse_range(range_hdr, file_size, &range)) {
+            axl_http_response_set_range(resp, file_buf,
+                (size_t)range.start,
+                (size_t)(range.end - range.start + 1),
+                total_read);
+            axl_free(file_buf);
+            return 0;
+        }
+    }
+
     resp->body = file_buf;
     resp->body_size = total_read;
     resp->content_type = "application/octet-stream";
-    if (resp->status_code == 0) {
-        resp->status_code = 200;
-    }
+    resp->status_code = 200;
 
     return 0;
 }

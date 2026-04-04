@@ -184,12 +184,14 @@ DirCacheFetch(
 
     AxlJsonArrayIter Iter;
     if (!axl_json_root_array_begin(&Ctx, &Iter)) {
+        axl_json_free(&Ctx);
         axl_free(BodyBuf);
         return -1;
     }
 
     DirEntry *TempEntries = axl_calloc(DIR_CACHE_MAX_ENTRIES, sizeof(DirEntry));
     if (TempEntries == NULL) {
+        axl_json_free(&Ctx);
         axl_free(BodyBuf);
         return -1;
     }
@@ -208,6 +210,7 @@ DirCacheFetch(
         if (E->Name[0] != '\0') Count++;
     }
 
+    axl_json_free(&Ctx);
     axl_free(BodyBuf);
 
     // Store in cache
