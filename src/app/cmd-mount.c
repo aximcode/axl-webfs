@@ -32,7 +32,7 @@ static AxlDriverHandle mDriverHandle;
 
 /// Check if a device path contains a vendor node with the HttpFS GUID.
 static bool
-HasVendorNode(EFI_DEVICE_PATH_PROTOCOL *dp, const EFI_GUID *guid)
+has_vendor_node(EFI_DEVICE_PATH_PROTOCOL *dp, const EFI_GUID *guid)
 {
     if (dp == NULL) return false;
 
@@ -52,7 +52,7 @@ HasVendorNode(EFI_DEVICE_PATH_PROTOCOL *dp, const EFI_GUID *guid)
 // ----------------------------------------------------------------------------
 
 int
-CmdMount(int argc, char **argv)
+cmd_mount(int argc, char **argv)
 {
     static const AxlOpt mount_opts[] = {
         { 'r', NULL, AXL_OPT_FLAG, NULL, "Mount read-only" },
@@ -118,7 +118,7 @@ CmdMount(int argc, char **argv)
             EFI_DEVICE_PATH_PROTOCOL *devpath = NULL;
             if (axl_handle_get_service(fs_handles[i], "device-path",
                                        (void **)&devpath) == 0) {
-                if (HasVendorNode(devpath, &HttpFsVendorGuid)) {
+                if (has_vendor_node(devpath, &HttpFsVendorGuid)) {
                     axl_printf("Mounted as FS handle %p\n", fs_handles[i]);
                     axl_printf("Use 'map -r' to refresh Shell mappings.\n");
                     break;
@@ -136,7 +136,7 @@ CmdMount(int argc, char **argv)
 // ----------------------------------------------------------------------------
 
 int
-CmdUmount(int argc, char **argv)
+cmd_umount(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
@@ -168,7 +168,7 @@ CmdUmount(int argc, char **argv)
         if (axl_handle_get_service(fs_handles[i], "device-path",
                                    (void **)&devpath) != 0)
             continue;
-        if (!HasVendorNode(devpath, &HttpFsVendorGuid))
+        if (!has_vendor_node(devpath, &HttpFsVendorGuid))
             continue;
 
         /* Found the HttpFS volume — scan loaded images for the driver */

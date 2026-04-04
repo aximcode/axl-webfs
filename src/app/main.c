@@ -15,7 +15,7 @@
 
 #define HTTPFS_VERSION  "0.1"
 
-static void PrintUsage(void)
+static void print_usage(void)
 {
     axl_printf("HttpFS v%s -- File Transfer Toolkit\n\n", HTTPFS_VERSION);
     axl_printf("Usage:\n");
@@ -29,7 +29,7 @@ static void PrintUsage(void)
     axl_printf("  HttpFS umount\n");
 }
 
-static int CmdListNics(void)
+static int cmd_list_nics(void)
 {
     size_t count = 0;
 
@@ -71,7 +71,7 @@ static int CmdListNics(void)
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        PrintUsage();
+        print_usage();
         return 0;
     }
 
@@ -79,27 +79,27 @@ int main(int argc, char **argv)
 
     if (axl_streql(cmd, "-h") || axl_streql(cmd, "--help") ||
         axl_streql(cmd, "help")) {
-        PrintUsage();
+        print_usage();
         return 0;
     }
 
     if (axl_streql(cmd, "mount")) {
-        return CmdMount(argc - 1, argv + 1);
+        return cmd_mount(argc - 1, argv + 1);
     }
 
     if (axl_streql(cmd, "umount")) {
-        return CmdUmount(argc - 1, argv + 1);
+        return cmd_umount(argc - 1, argv + 1);
     }
 
     if (axl_streql(cmd, "serve")) {
-        return CmdServe(argc - 1, argv + 1);
+        return cmd_serve(argc - 1, argv + 1);
     }
 
     if (axl_streql(cmd, "list-nics")) {
-        return CmdListNics();
+        return cmd_list_nics();
     }
 
     axl_printf("ERROR: Unknown command '%s'\n\n", cmd);
-    PrintUsage();
+    print_usage();
     return 1;
 }

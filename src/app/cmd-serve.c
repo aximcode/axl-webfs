@@ -432,7 +432,7 @@ esc_key_handler(AxlInputKey key, void *data)
 // ----------------------------------------------------------------------------
 
 int
-CmdServe(int argc, char **argv)
+cmd_serve(int argc, char **argv)
 {
     ServeOptions    opts;
     AxlHttpServer  *server;

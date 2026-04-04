@@ -43,19 +43,19 @@
 
 /// A single file or directory entry from a JSON listing.
 typedef struct {
-    char       Name[256];
-    uint64_t   Size;
-    bool       IsDir;
-    char       Modified[32];   ///< ISO 8601 timestamp from server.
+    char       name[256];
+    uint64_t   size;
+    bool       is_dir;
+    char       modified[32];   ///< ISO 8601 timestamp from server.
 } DirEntry;
 
 /// A cached directory listing.
 typedef struct {
-    char       Path[MAX_PATH_LEN];
-    uint64_t   TimestampMs;
-    DirEntry   Entries[DIR_CACHE_MAX_ENTRIES];
-    size_t     EntryCount;
-    bool       Valid;
+    char       path[MAX_PATH_LEN];
+    uint64_t   timestamp_ms;
+    DirEntry   entries[DIR_CACHE_MAX_ENTRIES];
+    size_t     entry_count;
+    bool       valid;
 } DirCacheSlot;
 
 // ---------------------------------------------------------------------------
@@ -63,57 +63,57 @@ typedef struct {
 // ---------------------------------------------------------------------------
 
 typedef struct {
-    UINT32                              Signature;
-    EFI_HANDLE                          ImageHandle;
-    EFI_HANDLE                          FsHandle;
+    UINT32                              signature;
+    void                               *image_handle;
+    void                               *fs_handle;
 
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL     SimpleFs;
-    EFI_DEVICE_PATH_PROTOCOL            *DevicePath;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL     simple_fs;
+    EFI_DEVICE_PATH_PROTOCOL            *device_path;
 
     /// Server connection.
-    AxlHttpClient                       *HttpClient;
-    EFI_IPv4_ADDRESS                    ServerAddr;
-    UINT16                              ServerPort;
-    char                                BasePath[256];
-    char                                BaseUrl[280];
-    bool                                ReadOnly;
+    AxlHttpClient                       *http_client;
+    uint8_t                             server_addr[4];
+    uint16_t                            server_port;
+    char                                base_path[256];
+    char                                base_url[280];
+    bool                                read_only;
 
     /// Directory cache.
-    DirCacheSlot                        DirCache[DIR_CACHE_MAX_SLOTS];
-} WEBDAVFS_PRIVATE;
+    DirCacheSlot                        dir_cache[DIR_CACHE_MAX_SLOTS];
+} WebDavFsPrivate;
 
 #define WEBDAVFS_PRIVATE_FROM_SIMPLE_FS(a) \
-    AXL_CONTAINER_OF(a, WEBDAVFS_PRIVATE, SimpleFs)
+    AXL_CONTAINER_OF(a, WebDavFsPrivate, simple_fs)
 
 // ---------------------------------------------------------------------------
 // Per-file-handle context (one per Open)
 // ---------------------------------------------------------------------------
 
 typedef struct {
-    UINT32               Signature;
-    EFI_FILE_PROTOCOL    File;
-    WEBDAVFS_PRIVATE     *Private;
+    UINT32               signature;
+    EFI_FILE_PROTOCOL    file;
+    WebDavFsPrivate      *private_data;
 
-    char                 Path[MAX_PATH_LEN];
-    bool                 IsDir;
-    bool                 IsRoot;
-    uint64_t             FileSize;
-    uint64_t             Position;
+    char                 path[MAX_PATH_LEN];
+    bool                 is_dir;
+    bool                 is_root;
+    uint64_t             file_size;
+    uint64_t             position;
 
     /// Directory iteration state.
-    DirEntry             *DirEntries;
-    size_t               DirEntryCount;
-    size_t               DirReadIndex;
-    bool                 DirLoaded;
+    DirEntry             *dir_entries;
+    size_t               dir_entry_count;
+    size_t               dir_read_index;
+    bool                 dir_loaded;
 
     /// Read-ahead buffer (allocated for files, NULL for dirs).
-    uint8_t              *ReadAheadBuf;
-    uint64_t             ReadAheadStart;
-    size_t               ReadAheadLen;
-} WEBDAVFS_FILE;
+    uint8_t              *read_ahead_buf;
+    uint64_t             read_ahead_start;
+    size_t               read_ahead_len;
+} WebDavFsFileCtx;
 
 #define WEBDAVFS_FILE_FROM_FILE_PROTOCOL(a) \
-    AXL_CONTAINER_OF(a, WEBDAVFS_FILE, File)
+    AXL_CONTAINER_OF(a, WebDavFsFileCtx, file)
 
 // ---------------------------------------------------------------------------
 // Forward declarations -- WebDavFs.c
@@ -138,19 +138,19 @@ EFI_STATUS EFIAPI WebDavFsGetInfo(EFI_FILE_PROTOCOL *This, EFI_GUID *Information
 EFI_STATUS EFIAPI WebDavFsSetInfo(EFI_FILE_PROTOCOL *This, EFI_GUID *InformationType, UINTN BufferSize, VOID *Buffer);
 EFI_STATUS EFIAPI WebDavFsFlush(EFI_FILE_PROTOCOL *This);
 
-/// Allocate and initialize a WEBDAVFS_FILE with all function pointers wired.
-WEBDAVFS_FILE * WebDavFsCreateFileHandle(WEBDAVFS_PRIVATE *Private, const char *Path, bool IsDir, uint64_t FileSize);
+/// Allocate and initialize a WebDavFsFileCtx with all function pointers wired.
+WebDavFsFileCtx * webdavfs_create_file_handle(WebDavFsPrivate *priv, const char *path, bool is_dir, uint64_t file_size);
 
 // ---------------------------------------------------------------------------
 // Forward declarations -- WebDavFsCache.c
 // ---------------------------------------------------------------------------
 
-int  DirCacheFetch(WEBDAVFS_PRIVATE *Private, const char *Path, DirEntry **Entries, size_t *EntryCount);
-int  DirCacheLookupEntry(WEBDAVFS_PRIVATE *Private, const char *DirPath, const char *Name, DirEntry *Entry);
-void DirCacheInvalidate(WEBDAVFS_PRIVATE *Private, const char *Path);
+int  dir_cache_fetch(WebDavFsPrivate *priv, const char *path, DirEntry **entries, size_t *count);
+int  dir_cache_lookup_entry(WebDavFsPrivate *priv, const char *dir_path, const char *name, DirEntry *entry);
+void dir_cache_invalidate(WebDavFsPrivate *priv, const char *path);
 
 /// Issue an HTTP request with automatic reconnect on connection error.
-/// Caller must free *Response with axl_http_client_response_free().
-int WebDavFsHttpRequest(WEBDAVFS_PRIVATE *Private, const char *Method, const char *Path, AxlHashTable *ExtraHeaders, const void *Body, size_t BodyLen, AxlHttpClientResponse **Response);
+/// Caller must free *response with axl_http_client_response_free().
+int webdavfs_http_request(WebDavFsPrivate *priv, const char *method, const char *path, AxlHashTable *extra_headers, const void *body, size_t body_len, AxlHttpClientResponse **response);
 
 #endif // WEBDAVFS_INTERNAL_H_

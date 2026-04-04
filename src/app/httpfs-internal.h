@@ -10,8 +10,8 @@
 
 #include <axl.h>
 
-int CmdMount(int argc, char **argv);
-int CmdUmount(int argc, char **argv);
-int CmdServe(int argc, char **argv);
+int cmd_mount(int argc, char **argv);
+int cmd_umount(int argc, char **argv);
+int cmd_serve(int argc, char **argv);
 
 #endif // HTTPFS_INTERNAL_H_

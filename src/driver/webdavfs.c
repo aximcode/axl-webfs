@@ -18,7 +18,7 @@ static const EFI_GUID HttpFsVendorGuid = {
 };
 
 /// Module-global pointer to the driver private context (for unload path).
-static WEBDAVFS_PRIVATE *mPrivate = NULL;
+static WebDavFsPrivate *mPrivate = NULL;
 
 // ---------------------------------------------------------------------------
 // URL parsing
@@ -26,42 +26,42 @@ static WEBDAVFS_PRIVATE *mPrivate = NULL;
 
 /// Parse "http://1.2.3.4:8080/path" into components using axl_url_parse.
 static int
-ParseUrl(
-    const char       *UrlUtf8,
-    EFI_IPv4_ADDRESS *ServerAddr,
-    UINT16           *Port,
-    char             *BasePath,
-    size_t            BasePathSize
+parse_url(
+    const char  *url_utf8,
+    uint8_t      server_addr[4],
+    uint16_t    *port,
+    char        *base_path,
+    size_t       base_path_size
 )
 {
-    AxlUrl *Parsed = NULL;
-    if (axl_url_parse(UrlUtf8, &Parsed) != 0)
+    AxlUrl *parsed = NULL;
+    if (axl_url_parse(url_utf8, &parsed) != 0)
         return -1;
 
     // Parse IPv4 address from host string
     uint8_t octets[4];
-    if (axl_ipv4_parse(Parsed->host, octets) != 0) {
-        axl_url_free(Parsed);
+    if (axl_ipv4_parse(parsed->host, octets) != 0) {
+        axl_url_free(parsed);
         return -1;
     }
-    ServerAddr->Addr[0] = octets[0];
-    ServerAddr->Addr[1] = octets[1];
-    ServerAddr->Addr[2] = octets[2];
-    ServerAddr->Addr[3] = octets[3];
+    server_addr[0] = octets[0];
+    server_addr[1] = octets[1];
+    server_addr[2] = octets[2];
+    server_addr[3] = octets[3];
 
-    *Port = (Parsed->port != 0) ? Parsed->port : DEFAULT_SERVER_PORT;
+    *port = (parsed->port != 0) ? parsed->port : DEFAULT_SERVER_PORT;
 
-    const char *UrlPath = (Parsed->path != NULL && Parsed->path[0] != '\0')
-                          ? Parsed->path : "/";
-    axl_strlcpy(BasePath, UrlPath, BasePathSize);
+    const char *url_path = (parsed->path != NULL && parsed->path[0] != '\0')
+                           ? parsed->path : "/";
+    axl_strlcpy(base_path, url_path, base_path_size);
 
-    size_t PathLen = axl_strlen(BasePath);
-    if (PathLen > 0 && BasePath[PathLen - 1] != '/' && PathLen < BasePathSize - 1) {
-        BasePath[PathLen] = '/';
-        BasePath[PathLen + 1] = '\0';
+    size_t path_len = axl_strlen(base_path);
+    if (path_len > 0 && base_path[path_len - 1] != '/' && path_len < base_path_size - 1) {
+        base_path[path_len] = '/';
+        base_path[path_len + 1] = '\0';
     }
 
-    axl_url_free(Parsed);
+    axl_url_free(parsed);
     return 0;
 }
 
@@ -101,102 +101,102 @@ DriverEntry(
     axl_driver_init(ImageHandle, SystemTable);
 
     // Get URL from load options (UTF-8, allocated by SDK)
-    char *UrlUtf8 = axl_driver_get_load_options();
-    if (UrlUtf8 == NULL) {
+    char *url_utf8 = axl_driver_get_load_options();
+    if (url_utf8 == NULL) {
         axl_printf("WebDavFsDxe: No URL in load options\n");
         return EFI_INVALID_PARAMETER;
     }
 
     // Allocate private context
-    WEBDAVFS_PRIVATE *Private = axl_calloc(1, sizeof(WEBDAVFS_PRIVATE));
-    if (Private == NULL) { axl_free(UrlUtf8); return EFI_OUT_OF_RESOURCES; }
+    WebDavFsPrivate *priv = axl_calloc(1, sizeof(WebDavFsPrivate));
+    if (priv == NULL) { axl_free(url_utf8); return EFI_OUT_OF_RESOURCES; }
 
-    Private->Signature = WEBDAVFS_PRIVATE_SIGNATURE;
-    Private->ImageHandle = ImageHandle;
+    priv->signature = WEBDAVFS_PRIVATE_SIGNATURE;
+    priv->image_handle = ImageHandle;
 
     // Parse URL
-    int Ret = ParseUrl(UrlUtf8, &Private->ServerAddr,
-                       &Private->ServerPort, Private->BasePath,
-                       sizeof(Private->BasePath));
-    axl_free(UrlUtf8);
-    if (Ret != 0) {
+    int ret = parse_url(url_utf8, priv->server_addr,
+                        &priv->server_port, priv->base_path,
+                        sizeof(priv->base_path));
+    axl_free(url_utf8);
+    if (ret != 0) {
         axl_printf("WebDavFsDxe: Invalid URL\n");
-        axl_free(Private);
+        axl_free(priv);
         return EFI_INVALID_PARAMETER;
     }
 
     // Build base URL for AxlHttpClient
-    axl_snprintf(Private->BaseUrl, sizeof(Private->BaseUrl),
+    axl_snprintf(priv->base_url, sizeof(priv->base_url),
                  "http://%d.%d.%d.%d:%d",
-                 Private->ServerAddr.Addr[0], Private->ServerAddr.Addr[1],
-                 Private->ServerAddr.Addr[2], Private->ServerAddr.Addr[3],
-                 Private->ServerPort);
+                 priv->server_addr[0], priv->server_addr[1],
+                 priv->server_addr[2], priv->server_addr[3],
+                 priv->server_port);
 
     axl_printf("WebDavFsDxe: Connecting to %d.%d.%d.%d:%d%s\n",
-               Private->ServerAddr.Addr[0], Private->ServerAddr.Addr[1],
-               Private->ServerAddr.Addr[2], Private->ServerAddr.Addr[3],
-               Private->ServerPort, Private->BasePath);
+               priv->server_addr[0], priv->server_addr[1],
+               priv->server_addr[2], priv->server_addr[3],
+               priv->server_port, priv->base_path);
 
     // Initialize networking
-    int NetRet = network_init((size_t)-1, NULL, 10);
-    if (NetRet != 0) {
+    int net_ret = network_init((size_t)-1, NULL, 10);
+    if (net_ret != 0) {
         axl_printf("WebDavFsDxe: Network init failed\n");
-        axl_free(Private);
+        axl_free(priv);
         return EFI_DEVICE_ERROR;
     }
 
     // Create HTTP client
-    Private->HttpClient = axl_http_client_new();
-    if (Private->HttpClient == NULL) {
+    priv->http_client = axl_http_client_new();
+    if (priv->http_client == NULL) {
         axl_printf("WebDavFsDxe: Failed to create HTTP client\n");
         network_cleanup();
-        axl_free(Private);
+        axl_free(priv);
         return EFI_OUT_OF_RESOURCES;
     }
 
     // Validate server with GET /info
-    char InfoUrl[320];
-    axl_snprintf(InfoUrl, sizeof(InfoUrl), "%s/info", Private->BaseUrl);
+    char info_url[320];
+    axl_snprintf(info_url, sizeof(info_url), "%s/info", priv->base_url);
 
-    AxlHttpClientResponse *InfoResp = NULL;
-    int InfoRet = axl_http_get(Private->HttpClient, InfoUrl, &InfoResp);
-    if (InfoRet != 0 || InfoResp == NULL || InfoResp->status_code != 200) {
+    AxlHttpClientResponse *info_resp = NULL;
+    int info_ret = axl_http_get(priv->http_client, info_url, &info_resp);
+    if (info_ret != 0 || info_resp == NULL || info_resp->status_code != 200) {
         axl_printf("WebDavFsDxe: Server validation failed\n");
-        if (InfoResp != NULL) axl_http_client_response_free(InfoResp);
-        axl_http_client_free(Private->HttpClient);
+        if (info_resp != NULL) axl_http_client_response_free(info_resp);
+        axl_http_client_free(priv->http_client);
         network_cleanup();
-        axl_free(Private);
+        axl_free(priv);
         return EFI_DEVICE_ERROR;
     }
-    axl_http_client_response_free(InfoResp);
+    axl_http_client_response_free(info_resp);
 
     // Set up SimpleFileSystem protocol
-    Private->SimpleFs.Revision = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_REVISION;
-    Private->SimpleFs.OpenVolume = WebDavFsOpenVolume;
+    priv->simple_fs.Revision = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_REVISION;
+    priv->simple_fs.OpenVolume = WebDavFsOpenVolume;
 
     // Create vendor device path
-    WebDavFsDevicePath *DevPath = axl_malloc(sizeof(WebDavFsDevicePath));
-    if (DevPath == NULL) {
-        axl_http_client_free(Private->HttpClient);
+    WebDavFsDevicePath *dev_path = axl_malloc(sizeof(WebDavFsDevicePath));
+    if (dev_path == NULL) {
+        axl_http_client_free(priv->http_client);
         network_cleanup();
-        axl_free(Private);
+        axl_free(priv);
         return EFI_OUT_OF_RESOURCES;
     }
-    axl_memcpy(DevPath, &mDevicePathTemplate, sizeof(WebDavFsDevicePath));
-    axl_memcpy(&DevPath->Vendor.Guid, &HttpFsVendorGuid, sizeof(EFI_GUID));
-    Private->DevicePath = (EFI_DEVICE_PATH_PROTOCOL *)DevPath;
+    axl_memcpy(dev_path, &mDevicePathTemplate, sizeof(WebDavFsDevicePath));
+    axl_memcpy(&dev_path->Vendor.Guid, &HttpFsVendorGuid, sizeof(EFI_GUID));
+    priv->device_path = (EFI_DEVICE_PATH_PROTOCOL *)dev_path;
 
     // Install protocols on a new handle
-    Private->FsHandle = NULL;
-    if (axl_service_register_multiple(&Private->FsHandle,
-            "simple-fs", &Private->SimpleFs,
-            "device-path", Private->DevicePath,
+    priv->fs_handle = NULL;
+    if (axl_service_register_multiple(&priv->fs_handle,
+            "simple-fs", &priv->simple_fs,
+            "device-path", priv->device_path,
             NULL) != 0) {
         axl_printf("WebDavFsDxe: Protocol install failed\n");
-        axl_free(DevPath);
-        axl_http_client_free(Private->HttpClient);
+        axl_free(dev_path);
+        axl_http_client_free(priv->http_client);
         network_cleanup();
-        axl_free(Private);
+        axl_free(priv);
         return EFI_DEVICE_ERROR;
     }
 
@@ -204,9 +204,9 @@ DriverEntry(
     axl_driver_set_unload(WebDavFsDriverUnload);
 
     // Connect controllers so Shell sees the new FS mapping
-    axl_driver_connect_handle(Private->FsHandle);
+    axl_driver_connect_handle(priv->fs_handle);
 
-    mPrivate = Private;
+    mPrivate = priv;
     axl_printf("WebDavFsDxe: Mounted successfully\n");
     return EFI_SUCCESS;
 }
@@ -220,18 +220,18 @@ WebDavFsDriverUnload(
     if (mPrivate == NULL) return EFI_SUCCESS;
 
     // Uninstall protocols
-    axl_service_unregister(mPrivate->FsHandle, "simple-fs", &mPrivate->SimpleFs);
-    axl_service_unregister(mPrivate->FsHandle, "device-path", mPrivate->DevicePath);
+    axl_service_unregister(mPrivate->fs_handle, "simple-fs", &mPrivate->simple_fs);
+    axl_service_unregister(mPrivate->fs_handle, "device-path", mPrivate->device_path);
 
     // Close HTTP client
-    axl_http_client_free(mPrivate->HttpClient);
+    axl_http_client_free(mPrivate->http_client);
 
     // Clean up networking
     network_cleanup();
 
     // Free resources
-    if (mPrivate->DevicePath != NULL) {
-        axl_free(mPrivate->DevicePath);
+    if (mPrivate->device_path != NULL) {
+        axl_free(mPrivate->device_path);
     }
     axl_free(mPrivate);
     mPrivate = NULL;
@@ -251,13 +251,13 @@ WebDavFsOpenVolume(
     EFI_FILE_PROTOCOL              **Root
 )
 {
-    WEBDAVFS_PRIVATE *Private = WEBDAVFS_PRIVATE_FROM_SIMPLE_FS(This);
+    WebDavFsPrivate *priv = WEBDAVFS_PRIVATE_FROM_SIMPLE_FS(This);
 
-    WEBDAVFS_FILE *RootFile = WebDavFsCreateFileHandle(
-        Private, Private->BasePath, true, 0);
-    if (RootFile == NULL) return EFI_OUT_OF_RESOURCES;
+    WebDavFsFileCtx *root_file = webdavfs_create_file_handle(
+        priv, priv->base_path, true, 0);
+    if (root_file == NULL) return EFI_OUT_OF_RESOURCES;
 
-    RootFile->IsRoot = true;
-    *Root = &RootFile->File;
+    root_file->is_root = true;
+    *Root = &root_file->file;
     return EFI_SUCCESS;
 }

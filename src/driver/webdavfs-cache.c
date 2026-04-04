@@ -22,81 +22,81 @@
 
 /// Find a cache slot by path. Returns NULL if not found or expired.
 static DirCacheSlot *
-DirCacheFind(
-    WEBDAVFS_PRIVATE *Private,
-    const char       *Path
+dir_cache_find(
+    WebDavFsPrivate *priv,
+    const char      *path
 )
 {
-    uint64_t Now = axl_time_get_ms();
+    uint64_t now = axl_time_get_ms();
 
     for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
-        DirCacheSlot *Slot = &Private->DirCache[i];
-        if (!Slot->Valid) continue;
-        if (!axl_streql(Slot->Path, Path)) continue;
+        DirCacheSlot *slot = &priv->dir_cache[i];
+        if (!slot->valid) continue;
+        if (!axl_streql(slot->path, path)) continue;
 
         // Check TTL
-        uint64_t Age = Now - Slot->TimestampMs;
-        if (Age > DIR_CACHE_TTL_MS) {
-            Slot->Valid = false;
+        uint64_t age = now - slot->timestamp_ms;
+        if (age > DIR_CACHE_TTL_MS) {
+            slot->valid = false;
             return NULL;
         }
-        return Slot;
+        return slot;
     }
     return NULL;
 }
 
 /// Store a directory listing in the cache (LRU eviction of oldest slot).
 static void
-DirCachePut(
-    WEBDAVFS_PRIVATE *Private,
-    const char       *Path,
-    DirEntry         *Entries,
-    size_t            EntryCount
+dir_cache_put(
+    WebDavFsPrivate *priv,
+    const char      *path,
+    DirEntry        *entries,
+    size_t           count
 )
 {
     // Find existing slot or oldest/empty slot
-    DirCacheSlot *Target = NULL;
-    uint64_t OldestTs = UINT64_MAX;
+    DirCacheSlot *target = NULL;
+    uint64_t oldest_ts = UINT64_MAX;
 
     for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
-        DirCacheSlot *Slot = &Private->DirCache[i];
+        DirCacheSlot *slot = &priv->dir_cache[i];
 
-        if (Slot->Valid && axl_streql(Slot->Path, Path)) {
-            Target = Slot;
+        if (slot->valid && axl_streql(slot->path, path)) {
+            target = slot;
             break;
         }
-        if (!Slot->Valid) {
-            if (Target == NULL) Target = Slot;
+        if (!slot->valid) {
+            if (target == NULL) target = slot;
             continue;
         }
-        if (Slot->TimestampMs < OldestTs) {
-            OldestTs = Slot->TimestampMs;
-            Target = Slot;
+        if (slot->timestamp_ms < oldest_ts) {
+            oldest_ts = slot->timestamp_ms;
+            target = slot;
         }
     }
 
-    if (Target == NULL) Target = &Private->DirCache[0];
+    if (target == NULL) target = &priv->dir_cache[0];
 
-    axl_strlcpy(Target->Path, Path, MAX_PATH_LEN);
-    if (EntryCount > DIR_CACHE_MAX_ENTRIES) {
-        EntryCount = DIR_CACHE_MAX_ENTRIES;
+    axl_strlcpy(target->path, path, MAX_PATH_LEN);
+    if (count > DIR_CACHE_MAX_ENTRIES) {
+        count = DIR_CACHE_MAX_ENTRIES;
     }
-    axl_memcpy(Target->Entries, Entries, EntryCount * sizeof(DirEntry));
-    Target->EntryCount = EntryCount;
-    Target->TimestampMs = axl_time_get_ms();
-    Target->Valid = true;
+    axl_memcpy(target->entries, entries, count * sizeof(DirEntry));
+    target->entry_count = count;
+    target->timestamp_ms = axl_time_get_ms();
+    target->valid = true;
 }
 
 void
-DirCacheInvalidate(
-    WEBDAVFS_PRIVATE *Private,
-    const char       *Path
+dir_cache_invalidate(
+    WebDavFsPrivate *priv,
+    const char      *path
 )
 {
     for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
-        if (Private->DirCache[i].Valid &&
-            axl_streql(Private->DirCache[i].Path, Path)) {
-            Private->DirCache[i].Valid = false;
+        if (priv->dir_cache[i].valid &&
+            axl_streql(priv->dir_cache[i].path, path)) {
+            priv->dir_cache[i].valid = false;
         }
     }
 }
@@ -106,23 +106,23 @@ DirCacheInvalidate(
 // ---------------------------------------------------------------------------
 
 int
-WebDavFsHttpRequest(
-    WEBDAVFS_PRIVATE       *Private,
-    const char             *Method,
-    const char             *Path,
-    AxlHashTable           *ExtraHeaders,
-    const void             *Body,
-    size_t                  BodyLen,
-    AxlHttpClientResponse **Response
+webdavfs_http_request(
+    WebDavFsPrivate        *priv,
+    const char             *method,
+    const char             *path,
+    AxlHashTable           *extra_headers,
+    const void             *body,
+    size_t                  body_len,
+    AxlHttpClientResponse **response
 )
 {
     // Build full URL from base + path
-    char Url[MAX_PATH_LEN + 280];
-    axl_snprintf(Url, sizeof(Url), "%s%s", Private->BaseUrl, Path);
+    char url[MAX_PATH_LEN + 280];
+    axl_snprintf(url, sizeof(url), "%s%s", priv->base_url, path);
 
     return axl_http_request(
-        Private->HttpClient, Method, Url, Body, BodyLen,
-        NULL, ExtraHeaders, Response);
+        priv->http_client, method, url, body, body_len,
+        NULL, extra_headers, response);
 }
 
 // ---------------------------------------------------------------------------
@@ -130,98 +130,98 @@ WebDavFsHttpRequest(
 // ---------------------------------------------------------------------------
 
 int
-DirCacheFetch(
-    WEBDAVFS_PRIVATE *Private,
-    const char       *Path,
-    DirEntry        **Entries,
-    size_t           *EntryCount
+dir_cache_fetch(
+    WebDavFsPrivate *priv,
+    const char      *path,
+    DirEntry       **entries,
+    size_t          *count
 )
 {
     // Check cache first
-    DirCacheSlot *Slot = DirCacheFind(Private, Path);
-    if (Slot != NULL) {
-        *Entries = Slot->Entries;
-        *EntryCount = Slot->EntryCount;
+    DirCacheSlot *slot = dir_cache_find(priv, path);
+    if (slot != NULL) {
+        *entries = slot->entries;
+        *count = slot->entry_count;
         return 0;
     }
 
     // Cache miss -- fetch from server
-    char ListPath[MAX_PATH_LEN];
-    axl_snprintf(ListPath, sizeof(ListPath), "/list%s", Path);
+    char list_path[MAX_PATH_LEN];
+    axl_snprintf(list_path, sizeof(list_path), "/list%s", path);
 
-    AxlHttpClientResponse *Response = NULL;
-    int Ret = WebDavFsHttpRequest(
-        Private, "GET", ListPath, NULL, NULL, 0, &Response);
-    if (Ret != 0 || Response == NULL) return -1;
+    AxlHttpClientResponse *response = NULL;
+    int ret = webdavfs_http_request(
+        priv, "GET", list_path, NULL, NULL, 0, &response);
+    if (ret != 0 || response == NULL) return -1;
 
-    if (Response->status_code == 404) {
-        axl_http_client_response_free(Response);
+    if (response->status_code == 404) {
+        axl_http_client_response_free(response);
         return -1;
     }
-    if (Response->status_code != 200) {
-        axl_http_client_response_free(Response);
+    if (response->status_code != 200) {
+        axl_http_client_response_free(response);
         return -1;
     }
 
     // NUL-terminate body for JSON parsing
-    size_t BodySize = Response->body_size;
-    if (BodySize >= HTTP_BODY_BUF_SIZE) BodySize = HTTP_BODY_BUF_SIZE - 1;
-    char *BodyBuf = axl_malloc(BodySize + 1);
-    if (BodyBuf == NULL) {
-        axl_http_client_response_free(Response);
+    size_t body_size = response->body_size;
+    if (body_size >= HTTP_BODY_BUF_SIZE) body_size = HTTP_BODY_BUF_SIZE - 1;
+    char *body_buf = axl_malloc(body_size + 1);
+    if (body_buf == NULL) {
+        axl_http_client_response_free(response);
         return -1;
     }
-    axl_memcpy(BodyBuf, Response->body, BodySize);
-    BodyBuf[BodySize] = '\0';
-    axl_http_client_response_free(Response);
+    axl_memcpy(body_buf, response->body, body_size);
+    body_buf[body_size] = '\0';
+    axl_http_client_response_free(response);
 
     // Parse JSON array
-    AxlJsonCtx Ctx;
-    if (!axl_json_parse(BodyBuf, BodySize, &Ctx)) {
-        axl_free(BodyBuf);
+    AxlJsonCtx ctx;
+    if (!axl_json_parse(body_buf, body_size, &ctx)) {
+        axl_free(body_buf);
         return -1;
     }
 
-    AxlJsonArrayIter Iter;
-    if (!axl_json_root_array_begin(&Ctx, &Iter)) {
-        axl_json_free(&Ctx);
-        axl_free(BodyBuf);
+    AxlJsonArrayIter iter;
+    if (!axl_json_root_array_begin(&ctx, &iter)) {
+        axl_json_free(&ctx);
+        axl_free(body_buf);
         return -1;
     }
 
-    DirEntry *TempEntries = axl_calloc(DIR_CACHE_MAX_ENTRIES, sizeof(DirEntry));
-    if (TempEntries == NULL) {
-        axl_json_free(&Ctx);
-        axl_free(BodyBuf);
+    DirEntry *temp_entries = axl_calloc(DIR_CACHE_MAX_ENTRIES, sizeof(DirEntry));
+    if (temp_entries == NULL) {
+        axl_json_free(&ctx);
+        axl_free(body_buf);
         return -1;
     }
-    size_t Count = 0;
+    size_t n = 0;
 
-    AxlJsonCtx Elem;
-    while (axl_json_array_next(&Iter, &Elem) &&
-           Count < DIR_CACHE_MAX_ENTRIES) {
-        DirEntry *E = &TempEntries[Count];
+    AxlJsonCtx elem;
+    while (axl_json_array_next(&iter, &elem) &&
+           n < DIR_CACHE_MAX_ENTRIES) {
+        DirEntry *e = &temp_entries[n];
 
-        axl_json_get_string(&Elem, "name", E->Name, sizeof(E->Name));
-        axl_json_get_uint(&Elem, "size", &E->Size);
-        axl_json_get_bool(&Elem, "dir", &E->IsDir);
-        axl_json_get_string(&Elem, "modified", E->Modified, sizeof(E->Modified));
+        axl_json_get_string(&elem, "name", e->name, sizeof(e->name));
+        axl_json_get_uint(&elem, "size", &e->size);
+        axl_json_get_bool(&elem, "dir", &e->is_dir);
+        axl_json_get_string(&elem, "modified", e->modified, sizeof(e->modified));
 
-        if (E->Name[0] != '\0') Count++;
+        if (e->name[0] != '\0') n++;
     }
 
-    axl_json_free(&Ctx);
-    axl_free(BodyBuf);
+    axl_json_free(&ctx);
+    axl_free(body_buf);
 
     // Store in cache
-    DirCachePut(Private, Path, TempEntries, Count);
-    axl_free(TempEntries);
+    dir_cache_put(priv, path, temp_entries, n);
+    axl_free(temp_entries);
 
     // Return from cache (stable pointers)
-    Slot = DirCacheFind(Private, Path);
-    if (Slot != NULL) {
-        *Entries = Slot->Entries;
-        *EntryCount = Slot->EntryCount;
+    slot = dir_cache_find(priv, path);
+    if (slot != NULL) {
+        *entries = slot->entries;
+        *count = slot->entry_count;
         return 0;
     }
 
@@ -229,22 +229,22 @@ DirCacheFetch(
 }
 
 int
-DirCacheLookupEntry(
-    WEBDAVFS_PRIVATE *Private,
-    const char       *DirPath,
-    const char       *Name,
-    DirEntry         *Entry
+dir_cache_lookup_entry(
+    WebDavFsPrivate *priv,
+    const char      *dir_path,
+    const char      *name,
+    DirEntry        *entry
 )
 {
-    DirEntry *Entries = NULL;
-    size_t Count = 0;
+    DirEntry *entries = NULL;
+    size_t count = 0;
 
-    int Ret = DirCacheFetch(Private, DirPath, &Entries, &Count);
-    if (Ret != 0) return -1;
+    int ret = dir_cache_fetch(priv, dir_path, &entries, &count);
+    if (ret != 0) return -1;
 
-    for (size_t i = 0; i < Count; i++) {
-        if (axl_strcasecmp(Entries[i].Name, Name) == 0) {
-            axl_memcpy(Entry, &Entries[i], sizeof(DirEntry));
+    for (size_t i = 0; i < count; i++) {
+        if (axl_strcasecmp(entries[i].name, name) == 0) {
+            axl_memcpy(entry, &entries[i], sizeof(DirEntry));
             return 0;
         }
     }

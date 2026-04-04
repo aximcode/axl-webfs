@@ -13,103 +13,102 @@
 
 
 // ---------------------------------------------------------------------------
-// Path helpers — thin wrappers around AXL SDK path functions
+// Path helpers -- thin wrappers around AXL SDK path functions
 // ---------------------------------------------------------------------------
 
-/// Copy dirname of Path into stack buffer Parent.
+/// Copy dirname of path into stack buffer parent.
 static void
-GetParentPath(const char *Path, char *Parent, size_t ParentSize)
+get_parent_path(const char *path, char *parent, size_t parent_size)
 {
-    char *dir = axl_path_get_dirname(Path);
+    char *dir = axl_path_get_dirname(path);
     if (dir != NULL) {
-        axl_strlcpy(Parent, dir, ParentSize);
+        axl_strlcpy(parent, dir, parent_size);
         axl_free(dir);
     } else {
-        axl_strlcpy(Parent, "/", ParentSize);
+        axl_strlcpy(parent, "/", parent_size);
     }
 }
 
-/// Return basename of Path (pointer into Path or allocated — caller must NOT free).
-/// For compatibility, returns pointer into the original string.
+/// Return basename of path (pointer into static buffer -- single-threaded UEFI).
 static const char *
-GetFileName(const char *Path)
+get_file_name(const char *path)
 {
-    char *base = axl_path_get_basename(Path);
+    char *base = axl_path_get_basename(path);
     /* axl_path_get_basename allocates, but callers expect a borrowed pointer.
        Use a static buffer for simplicity (single-threaded UEFI). */
-    static char sBaseName[256];
+    static char s_base_name[256];
     if (base != NULL) {
-        axl_strlcpy(sBaseName, base, sizeof(sBaseName));
+        axl_strlcpy(s_base_name, base, sizeof(s_base_name));
         axl_free(base);
     } else {
-        axl_strlcpy(sBaseName, Path, sizeof(sBaseName));
+        axl_strlcpy(s_base_name, path, sizeof(s_base_name));
     }
-    return sBaseName;
+    return s_base_name;
 }
 
 /// Resolve a CHAR16 filename relative to a base char path.
-static EFI_STATUS
-ResolvePath(
-    const char   *BasePath,
-    const CHAR16 *FileName,
-    char         *Resolved,
-    size_t        ResolvedSize
+static int
+resolve_path(
+    const char           *base_path,
+    const unsigned short *file_name,
+    char                 *resolved,
+    size_t                resolved_size
 )
 {
     // Convert CHAR16 filename to UTF-8
-    char *name_utf8 = axl_ucs2_to_utf8((const unsigned short *)FileName);
-    if (name_utf8 == NULL) return EFI_INVALID_PARAMETER;
+    char *name_utf8 = axl_ucs2_to_utf8(file_name);
+    if (name_utf8 == NULL) return -1;
 
     // Replace backslashes with forward slashes
     for (char *p = name_utf8; *p; p++) {
         if (*p == '\\') *p = '/';
     }
 
-    int rc = axl_path_resolve(BasePath, name_utf8, Resolved, ResolvedSize);
+    int rc = axl_path_resolve(base_path, name_utf8, resolved, resolved_size);
     axl_free(name_utf8);
-    return (rc == 0) ? EFI_SUCCESS : EFI_INVALID_PARAMETER;
+    return rc;
 }
 
 // ---------------------------------------------------------------------------
 // File handle creation
 // ---------------------------------------------------------------------------
 
-WEBDAVFS_FILE *
-WebDavFsCreateFileHandle(
-    WEBDAVFS_PRIVATE *Private,
-    const char       *Path,
-    bool              IsDir,
-    uint64_t          FileSize
+WebDavFsFileCtx *
+webdavfs_create_file_handle(
+    WebDavFsPrivate *priv,
+    const char      *path,
+    bool             is_dir,
+    uint64_t         file_size
 )
 {
-    WEBDAVFS_FILE *F = axl_calloc(1, sizeof(WEBDAVFS_FILE));
-    if (F == NULL) return NULL;
+    WebDavFsFileCtx *fh = axl_calloc(1, sizeof(WebDavFsFileCtx));
+    if (fh == NULL) return NULL;
 
-    F->Signature = WEBDAVFS_FILE_SIGNATURE;
-    F->Private = Private;
-    axl_strlcpy(F->Path, Path, MAX_PATH_LEN);
-    F->IsDir = IsDir;
-    F->FileSize = FileSize;
+    fh->signature = WEBDAVFS_FILE_SIGNATURE;
+    fh->private_data = priv;
+    axl_strlcpy(fh->path, path, MAX_PATH_LEN);
+    fh->is_dir = is_dir;
+    fh->file_size = file_size;
 
-    F->File.Revision = EFI_FILE_PROTOCOL_REVISION;
-    F->File.Open = WebDavFsOpen;
-    F->File.Close = WebDavFsClose;
-    F->File.Delete = WebDavFsDelete;
-    F->File.Read = WebDavFsRead;
-    F->File.Write = WebDavFsWrite;
-    F->File.GetPosition = WebDavFsGetPosition;
-    F->File.SetPosition = WebDavFsSetPosition;
-    F->File.GetInfo = WebDavFsGetInfo;
-    F->File.SetInfo = WebDavFsSetInfo;
-    F->File.Flush = WebDavFsFlush;
+    fh->file.Revision = EFI_FILE_PROTOCOL_REVISION;
+    fh->file.Open = WebDavFsOpen;
+    fh->file.Close = WebDavFsClose;
+    fh->file.Delete = WebDavFsDelete;
+    fh->file.Read = WebDavFsRead;
+    fh->file.Write = WebDavFsWrite;
+    fh->file.GetPosition = WebDavFsGetPosition;
+    fh->file.SetPosition = WebDavFsSetPosition;
+    fh->file.GetInfo = WebDavFsGetInfo;
+    fh->file.SetInfo = WebDavFsSetInfo;
+    fh->file.Flush = WebDavFsFlush;
 
     // Allocate read-ahead buffer for files
-    if (!IsDir) {
-        F->ReadAheadBuf = axl_malloc(READAHEAD_BUF_SIZE);
+    if (!is_dir) {
+        fh->read_ahead_buf = axl_malloc(READAHEAD_BUF_SIZE);
         // NULL is OK -- we'll just skip read-ahead
     }
 
-    return F;
+    return fh;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,33 +125,34 @@ WebDavFsOpen(
     UINT64              Attributes
 )
 {
-    WEBDAVFS_FILE *Self = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    WEBDAVFS_PRIVATE *Private = Self->Private;
+    WebDavFsFileCtx *self = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebDavFsPrivate *priv = self->private_data;
 
     // Handle opening "." -- return a new handle to the same path
     if (axl_wcseql(FileName, L".") || axl_wcseql(FileName, L"")) {
-        WEBDAVFS_FILE *New = WebDavFsCreateFileHandle(
-            Private, Self->Path, Self->IsDir, Self->FileSize);
-        if (New == NULL) return EFI_OUT_OF_RESOURCES;
-        New->IsRoot = Self->IsRoot;
-        *NewHandle = &New->File;
+        WebDavFsFileCtx *new_fh = webdavfs_create_file_handle(
+            priv, self->path, self->is_dir, self->file_size);
+        if (new_fh == NULL) return EFI_OUT_OF_RESOURCES;
+        new_fh->is_root = self->is_root;
+        *NewHandle = &new_fh->file;
         return EFI_SUCCESS;
     }
 
     // Resolve the target path
-    char Resolved[MAX_PATH_LEN];
-    EFI_STATUS Status = ResolvePath(Self->Path, FileName, Resolved, sizeof(Resolved));
-    if (EFI_ERROR(Status)) return Status;
+    char resolved[MAX_PATH_LEN];
+    int status = resolve_path(self->path, (const unsigned short *)FileName,
+                              resolved, sizeof(resolved));
+    if (status != 0) return EFI_INVALID_PARAMETER;
 
     // Look up the entry in the parent directory
-    char ParentDir[MAX_PATH_LEN];
-    GetParentPath(Resolved, ParentDir, sizeof(ParentDir));
-    const char *EntryName = GetFileName(Resolved);
+    char parent_dir[MAX_PATH_LEN];
+    get_parent_path(resolved, parent_dir, sizeof(parent_dir));
+    const char *entry_name = get_file_name(resolved);
 
-    DirEntry Entry;
-    int LookupRet = DirCacheLookupEntry(Private, ParentDir, EntryName, &Entry);
+    DirEntry entry;
+    int lookup_ret = dir_cache_lookup_entry(priv, parent_dir, entry_name, &entry);
 
-    if (LookupRet != 0) {
+    if (lookup_ret != 0) {
         // Not found -- check if CREATE mode
         if (!(OpenMode & EFI_FILE_MODE_CREATE)) {
             return EFI_NOT_FOUND;
@@ -161,46 +161,46 @@ WebDavFsOpen(
         // Create file or directory
         if (Attributes & EFI_FILE_DIRECTORY) {
             // POST /files/<path>?mkdir
-            char MkdirPath[MAX_PATH_LEN];
-            axl_snprintf(MkdirPath, sizeof(MkdirPath), "/files%s?mkdir", Resolved);
+            char mkdir_path[MAX_PATH_LEN];
+            axl_snprintf(mkdir_path, sizeof(mkdir_path), "/files%s?mkdir", resolved);
 
-            AxlHttpClientResponse *Resp = NULL;
-            int Ret = WebDavFsHttpRequest(
-                Private, "POST", MkdirPath, NULL, NULL, 0, &Resp);
-            if (Ret != 0 || Resp == NULL) return EFI_DEVICE_ERROR;
+            AxlHttpClientResponse *resp = NULL;
+            int ret = webdavfs_http_request(
+                priv, "POST", mkdir_path, NULL, NULL, 0, &resp);
+            if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
 
-            size_t MkdirStatus = Resp->status_code;
-            axl_http_client_response_free(Resp);
-            if (MkdirStatus != 201 && MkdirStatus != 200) {
+            size_t mkdir_status = resp->status_code;
+            axl_http_client_response_free(resp);
+            if (mkdir_status != 201 && mkdir_status != 200) {
                 return EFI_DEVICE_ERROR;
             }
 
-            DirCacheInvalidate(Private, ParentDir);
-            Entry.IsDir = true;
-            Entry.Size = 0;
+            dir_cache_invalidate(priv, parent_dir);
+            entry.is_dir = true;
+            entry.size = 0;
         } else {
             // PUT /files/<path> with empty body
-            char FilePath[MAX_PATH_LEN];
-            axl_snprintf(FilePath, sizeof(FilePath), "/files%s", Resolved);
+            char file_path[MAX_PATH_LEN];
+            axl_snprintf(file_path, sizeof(file_path), "/files%s", resolved);
 
-            AxlHttpClientResponse *Resp = NULL;
-            int Ret = WebDavFsHttpRequest(
-                Private, "PUT", FilePath, NULL, "", 0, &Resp);
-            if (Ret != 0 || Resp == NULL) return EFI_DEVICE_ERROR;
-            axl_http_client_response_free(Resp);
+            AxlHttpClientResponse *resp = NULL;
+            int ret = webdavfs_http_request(
+                priv, "PUT", file_path, NULL, "", 0, &resp);
+            if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
+            axl_http_client_response_free(resp);
 
-            DirCacheInvalidate(Private, ParentDir);
-            Entry.IsDir = false;
-            Entry.Size = 0;
+            dir_cache_invalidate(priv, parent_dir);
+            entry.is_dir = false;
+            entry.size = 0;
         }
     }
 
     // Create file handle
-    WEBDAVFS_FILE *New = WebDavFsCreateFileHandle(
-        Private, Resolved, Entry.IsDir, Entry.Size);
-    if (New == NULL) return EFI_OUT_OF_RESOURCES;
+    WebDavFsFileCtx *new_fh = webdavfs_create_file_handle(
+        priv, resolved, entry.is_dir, entry.size);
+    if (new_fh == NULL) return EFI_OUT_OF_RESOURCES;
 
-    *NewHandle = &New->File;
+    *NewHandle = &new_fh->file;
     return EFI_SUCCESS;
 }
 
@@ -214,15 +214,15 @@ WebDavFsClose(
     EFI_FILE_PROTOCOL *This
 )
 {
-    WEBDAVFS_FILE *F = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
 
-    if (F->ReadAheadBuf != NULL) {
-        axl_free(F->ReadAheadBuf);
+    if (fh->read_ahead_buf != NULL) {
+        axl_free(fh->read_ahead_buf);
     }
-    if (F->DirEntries != NULL) {
-        axl_free(F->DirEntries);
+    if (fh->dir_entries != NULL) {
+        axl_free(fh->dir_entries);
     }
-    axl_free(F);
+    axl_free(fh);
     return EFI_SUCCESS;
 }
 
@@ -232,167 +232,167 @@ WebDavFsClose(
 
 /// Read from a file (with read-ahead buffer).
 static EFI_STATUS
-ReadFile(
-    WEBDAVFS_FILE *F,
-    UINTN         *BufferSize,
-    VOID          *Buffer
+read_file(
+    WebDavFsFileCtx *fh,
+    UINTN           *BufferSize,
+    VOID            *Buffer
 )
 {
-    WEBDAVFS_PRIVATE *Private = F->Private;
+    WebDavFsPrivate *priv = fh->private_data;
 
-    if (F->Position >= F->FileSize) {
+    if (fh->position >= fh->file_size) {
         *BufferSize = 0;
         return EFI_SUCCESS;
     }
 
-    size_t Wanted = *BufferSize;
-    if (F->Position + Wanted > F->FileSize) {
-        Wanted = (size_t)(F->FileSize - F->Position);
+    size_t wanted = *BufferSize;
+    if (fh->position + wanted > fh->file_size) {
+        wanted = (size_t)(fh->file_size - fh->position);
     }
 
     // Check read-ahead buffer
-    if (F->ReadAheadBuf != NULL && F->ReadAheadLen > 0 &&
-        F->Position >= F->ReadAheadStart &&
-        F->Position < F->ReadAheadStart + F->ReadAheadLen) {
-        size_t Offset = (size_t)(F->Position - F->ReadAheadStart);
-        size_t Available = F->ReadAheadLen - Offset;
-        size_t ToCopy = (Wanted < Available) ? Wanted : Available;
-        axl_memcpy(Buffer, F->ReadAheadBuf + Offset, ToCopy);
-        F->Position += ToCopy;
-        *BufferSize = ToCopy;
+    if (fh->read_ahead_buf != NULL && fh->read_ahead_len > 0 &&
+        fh->position >= fh->read_ahead_start &&
+        fh->position < fh->read_ahead_start + fh->read_ahead_len) {
+        size_t offset = (size_t)(fh->position - fh->read_ahead_start);
+        size_t avail = fh->read_ahead_len - offset;
+        size_t to_copy = (wanted < avail) ? wanted : avail;
+        axl_memcpy(Buffer, fh->read_ahead_buf + offset, to_copy);
+        fh->position += to_copy;
+        *BufferSize = to_copy;
         return EFI_SUCCESS;
     }
 
     // Read-ahead miss -- fetch from server with read-ahead
-    size_t FetchSize = Wanted;
-    if (F->ReadAheadBuf != NULL && FetchSize < READAHEAD_BUF_SIZE) {
-        FetchSize = READAHEAD_BUF_SIZE;
+    size_t fetch_size = wanted;
+    if (fh->read_ahead_buf != NULL && fetch_size < READAHEAD_BUF_SIZE) {
+        fetch_size = READAHEAD_BUF_SIZE;
     }
-    if (F->Position + FetchSize > F->FileSize) {
-        FetchSize = (size_t)(F->FileSize - F->Position);
+    if (fh->position + fetch_size > fh->file_size) {
+        fetch_size = (size_t)(fh->file_size - fh->position);
     }
 
     // Build Range header
-    char RangeVal[64];
-    axl_snprintf(RangeVal, sizeof(RangeVal), "bytes=%llu-%llu",
-                 (unsigned long long)F->Position,
-                 (unsigned long long)(F->Position + FetchSize - 1));
-    AxlHashTable *RangeHdrs = axl_hash_table_new();
-    if (RangeHdrs == NULL) return EFI_OUT_OF_RESOURCES;
-    axl_hash_table_set(RangeHdrs, "range", axl_strdup(RangeVal));
+    char range_val[64];
+    axl_snprintf(range_val, sizeof(range_val), "bytes=%llu-%llu",
+                 (unsigned long long)fh->position,
+                 (unsigned long long)(fh->position + fetch_size - 1));
+    AxlHashTable *range_hdrs = axl_hash_table_new();
+    if (range_hdrs == NULL) return EFI_OUT_OF_RESOURCES;
+    axl_hash_table_set(range_hdrs, "range", axl_strdup(range_val));
 
-    char FilePath[MAX_PATH_LEN];
-    axl_snprintf(FilePath, sizeof(FilePath), "/files%s", F->Path);
+    char file_path[MAX_PATH_LEN];
+    axl_snprintf(file_path, sizeof(file_path), "/files%s", fh->path);
 
-    AxlHttpClientResponse *Resp = NULL;
-    int Ret = WebDavFsHttpRequest(
-        Private, "GET", FilePath, RangeHdrs, NULL, 0, &Resp);
-    axl_free(axl_hash_table_get(RangeHdrs, "range"));
-    axl_hash_table_free(RangeHdrs);
-    if (Ret != 0 || Resp == NULL) return EFI_DEVICE_ERROR;
-    if (Resp->status_code != 200 && Resp->status_code != 206) {
-        axl_http_client_response_free(Resp);
+    AxlHttpClientResponse *resp = NULL;
+    int ret = webdavfs_http_request(
+        priv, "GET", file_path, range_hdrs, NULL, 0, &resp);
+    axl_free(axl_hash_table_get(range_hdrs, "range"));
+    axl_hash_table_free(range_hdrs);
+    if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
+    if (resp->status_code != 200 && resp->status_code != 206) {
+        axl_http_client_response_free(resp);
         *BufferSize = 0;
         return EFI_DEVICE_ERROR;
     }
 
     // Copy response body into read-ahead buffer or directly into caller's buffer
-    size_t TotalRead = Resp->body_size;
-    if (TotalRead > FetchSize) TotalRead = FetchSize;
+    size_t total_read = resp->body_size;
+    if (total_read > fetch_size) total_read = fetch_size;
 
-    if (F->ReadAheadBuf != NULL) {
-        size_t ToCopy = (TotalRead < READAHEAD_BUF_SIZE) ? TotalRead : READAHEAD_BUF_SIZE;
-        axl_memcpy(F->ReadAheadBuf, Resp->body, ToCopy);
-        F->ReadAheadStart = F->Position;
-        F->ReadAheadLen = ToCopy;
-        size_t UserCopy = (Wanted < ToCopy) ? Wanted : ToCopy;
-        axl_memcpy(Buffer, F->ReadAheadBuf, UserCopy);
-        F->Position += UserCopy;
-        *BufferSize = UserCopy;
+    if (fh->read_ahead_buf != NULL) {
+        size_t to_copy = (total_read < READAHEAD_BUF_SIZE) ? total_read : READAHEAD_BUF_SIZE;
+        axl_memcpy(fh->read_ahead_buf, resp->body, to_copy);
+        fh->read_ahead_start = fh->position;
+        fh->read_ahead_len = to_copy;
+        size_t user_copy = (wanted < to_copy) ? wanted : to_copy;
+        axl_memcpy(Buffer, fh->read_ahead_buf, user_copy);
+        fh->position += user_copy;
+        *BufferSize = user_copy;
     } else {
-        size_t ToCopy = (Wanted < TotalRead) ? Wanted : TotalRead;
-        axl_memcpy(Buffer, Resp->body, ToCopy);
-        F->Position += ToCopy;
-        *BufferSize = ToCopy;
+        size_t to_copy = (wanted < total_read) ? wanted : total_read;
+        axl_memcpy(Buffer, resp->body, to_copy);
+        fh->position += to_copy;
+        *BufferSize = to_copy;
     }
-    axl_http_client_response_free(Resp);
+    axl_http_client_response_free(resp);
 
     return EFI_SUCCESS;
 }
 
 /// Build an EFI_FILE_INFO from a DirEntry, converting name to UCS-2.
 static size_t
-BuildFileInfo(
-    DirEntry       *Entry,
+build_file_info(
+    DirEntry       *entry,
     EFI_FILE_INFO  *Info,
-    size_t          BufSize
+    size_t          buf_size
 )
 {
     // Calculate needed size
-    size_t NameLen = axl_strlen(Entry->Name);
-    size_t NeededSize = SIZE_OF_EFI_FILE_INFO + (NameLen + 1) * sizeof(CHAR16);
+    size_t name_len = axl_strlen(entry->name);
+    size_t needed = SIZE_OF_EFI_FILE_INFO + (name_len + 1) * sizeof(CHAR16);
 
-    if (Info == NULL || BufSize < NeededSize) return NeededSize;
+    if (Info == NULL || buf_size < needed) return needed;
 
-    axl_memset(Info, 0, NeededSize);
-    Info->Size = NeededSize;
-    Info->FileSize = Entry->Size;
-    Info->PhysicalSize = Entry->Size;
-    if (Entry->IsDir) {
+    axl_memset(Info, 0, needed);
+    Info->Size = needed;
+    Info->FileSize = entry->size;
+    Info->PhysicalSize = entry->size;
+    if (entry->is_dir) {
         Info->Attribute = EFI_FILE_DIRECTORY;
     }
 
     // Convert name to UCS-2
-    for (size_t i = 0; i <= NameLen; i++) {
-        Info->FileName[i] = (CHAR16)(unsigned char)Entry->Name[i];
+    for (size_t i = 0; i <= name_len; i++) {
+        Info->FileName[i] = (CHAR16)(unsigned char)entry->name[i];
     }
 
-    return NeededSize;
+    return needed;
 }
 
 /// Read next directory entry.
 static EFI_STATUS
-ReadDir(
-    WEBDAVFS_FILE *F,
-    UINTN         *BufferSize,
-    VOID          *Buffer
+read_dir(
+    WebDavFsFileCtx *fh,
+    UINTN           *BufferSize,
+    VOID            *Buffer
 )
 {
-    WEBDAVFS_PRIVATE *Private = F->Private;
+    WebDavFsPrivate *priv = fh->private_data;
 
     // Lazy-load directory listing (copy from cache for stability)
-    if (!F->DirLoaded) {
+    if (!fh->dir_loaded) {
         DirEntry *cache_entries = NULL;
         size_t cache_count = 0;
-        int Ret = DirCacheFetch(
-            Private, F->Path, &cache_entries, &cache_count);
-        if (Ret != 0) return EFI_DEVICE_ERROR;
+        int ret = dir_cache_fetch(
+            priv, fh->path, &cache_entries, &cache_count);
+        if (ret != 0) return EFI_DEVICE_ERROR;
 
-        F->DirEntries = axl_calloc(cache_count, sizeof(DirEntry));
-        if (F->DirEntries == NULL) return EFI_OUT_OF_RESOURCES;
-        axl_memcpy(F->DirEntries, cache_entries, cache_count * sizeof(DirEntry));
-        F->DirEntryCount = cache_count;
-        F->DirLoaded = true;
-        F->DirReadIndex = 0;
+        fh->dir_entries = axl_calloc(cache_count, sizeof(DirEntry));
+        if (fh->dir_entries == NULL) return EFI_OUT_OF_RESOURCES;
+        axl_memcpy(fh->dir_entries, cache_entries, cache_count * sizeof(DirEntry));
+        fh->dir_entry_count = cache_count;
+        fh->dir_loaded = true;
+        fh->dir_read_index = 0;
     }
 
     // End of directory
-    if (F->DirReadIndex >= F->DirEntryCount) {
+    if (fh->dir_read_index >= fh->dir_entry_count) {
         *BufferSize = 0;
         return EFI_SUCCESS;
     }
 
-    DirEntry *Entry = &F->DirEntries[F->DirReadIndex];
-    size_t Needed = BuildFileInfo(Entry, NULL, 0);
+    DirEntry *entry = &fh->dir_entries[fh->dir_read_index];
+    size_t needed = build_file_info(entry, NULL, 0);
 
-    if (*BufferSize < Needed) {
-        *BufferSize = Needed;
+    if (*BufferSize < needed) {
+        *BufferSize = needed;
         return EFI_BUFFER_TOO_SMALL;
     }
 
-    BuildFileInfo(Entry, (EFI_FILE_INFO *)Buffer, *BufferSize);
-    *BufferSize = Needed;
-    F->DirReadIndex++;
+    build_file_info(entry, (EFI_FILE_INFO *)Buffer, *BufferSize);
+    *BufferSize = needed;
+    fh->dir_read_index++;
     return EFI_SUCCESS;
 }
 
@@ -404,12 +404,12 @@ WebDavFsRead(
     VOID              *Buffer
 )
 {
-    WEBDAVFS_FILE *F = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
 
-    if (F->IsDir) {
-        return ReadDir(F, BufferSize, Buffer);
+    if (fh->is_dir) {
+        return read_dir(fh, BufferSize, Buffer);
     } else {
-        return ReadFile(F, BufferSize, Buffer);
+        return read_file(fh, BufferSize, Buffer);
     }
 }
 
@@ -425,36 +425,36 @@ WebDavFsWrite(
     VOID              *Buffer
 )
 {
-    WEBDAVFS_FILE *F = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    WEBDAVFS_PRIVATE *Private = F->Private;
+    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebDavFsPrivate *priv = fh->private_data;
 
-    if (F->IsDir) return EFI_UNSUPPORTED;
-    if (Private->ReadOnly) return EFI_WRITE_PROTECTED;
+    if (fh->is_dir) return EFI_UNSUPPORTED;
+    if (priv->read_only) return EFI_WRITE_PROTECTED;
 
-    char FilePath[MAX_PATH_LEN];
-    axl_snprintf(FilePath, sizeof(FilePath), "/files%s", F->Path);
+    char file_path[MAX_PATH_LEN];
+    axl_snprintf(file_path, sizeof(file_path), "/files%s", fh->path);
 
-    AxlHttpClientResponse *Resp = NULL;
-    int Ret = WebDavFsHttpRequest(
-        Private, "PUT", FilePath, NULL, Buffer, *BufferSize, &Resp);
-    if (Ret != 0 || Resp == NULL) return EFI_DEVICE_ERROR;
+    AxlHttpClientResponse *resp = NULL;
+    int ret = webdavfs_http_request(
+        priv, "PUT", file_path, NULL, Buffer, *BufferSize, &resp);
+    if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
 
-    size_t WriteStatus = Resp->status_code;
-    axl_http_client_response_free(Resp);
-    if (WriteStatus != 201 && WriteStatus != 200) {
+    size_t write_status = resp->status_code;
+    axl_http_client_response_free(resp);
+    if (write_status != 201 && write_status != 200) {
         return EFI_DEVICE_ERROR;
     }
 
-    F->Position += *BufferSize;
-    if (F->Position > F->FileSize) {
-        F->FileSize = F->Position;
+    fh->position += *BufferSize;
+    if (fh->position > fh->file_size) {
+        fh->file_size = fh->position;
     }
 
     // Invalidate parent dir cache and read-ahead
-    char ParentDir[MAX_PATH_LEN];
-    GetParentPath(F->Path, ParentDir, sizeof(ParentDir));
-    DirCacheInvalidate(Private, ParentDir);
-    F->ReadAheadLen = 0;
+    char parent_dir[MAX_PATH_LEN];
+    get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
+    dir_cache_invalidate(priv, parent_dir);
+    fh->read_ahead_len = 0;
 
     return EFI_SUCCESS;
 }
@@ -469,32 +469,32 @@ WebDavFsDelete(
     EFI_FILE_PROTOCOL *This
 )
 {
-    WEBDAVFS_FILE *F = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    WEBDAVFS_PRIVATE *Private = F->Private;
+    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebDavFsPrivate *priv = fh->private_data;
 
-    if (Private->ReadOnly) {
+    if (priv->read_only) {
         WebDavFsClose(This);
         return EFI_WARN_DELETE_FAILURE;
     }
 
-    char FilePath[MAX_PATH_LEN];
-    axl_snprintf(FilePath, sizeof(FilePath), "/files%s", F->Path);
+    char file_path[MAX_PATH_LEN];
+    axl_snprintf(file_path, sizeof(file_path), "/files%s", fh->path);
 
-    AxlHttpClientResponse *Resp = NULL;
-    int Ret = WebDavFsHttpRequest(
-        Private, "DELETE", FilePath, NULL, NULL, 0, &Resp);
+    AxlHttpClientResponse *resp = NULL;
+    int ret = webdavfs_http_request(
+        priv, "DELETE", file_path, NULL, NULL, 0, &resp);
 
-    size_t DelStatus = (Resp != NULL) ? Resp->status_code : 0;
-    if (Resp != NULL) axl_http_client_response_free(Resp);
+    size_t del_status = (resp != NULL) ? resp->status_code : 0;
+    if (resp != NULL) axl_http_client_response_free(resp);
 
-    char ParentDir[MAX_PATH_LEN];
-    GetParentPath(F->Path, ParentDir, sizeof(ParentDir));
-    DirCacheInvalidate(Private, ParentDir);
+    char parent_dir[MAX_PATH_LEN];
+    get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
+    dir_cache_invalidate(priv, parent_dir);
 
     // Close (free) the file handle per spec
     WebDavFsClose(This);
 
-    if (Ret != 0 || (DelStatus != 200 && DelStatus != 404)) {
+    if (ret != 0 || (del_status != 200 && del_status != 404)) {
         return EFI_WARN_DELETE_FAILURE;
     }
 
@@ -514,76 +514,76 @@ WebDavFsGetInfo(
     VOID              *Buffer
 )
 {
-    WEBDAVFS_FILE *F = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    WEBDAVFS_PRIVATE *Private = F->Private;
+    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebDavFsPrivate *priv = fh->private_data;
 
     if (axl_guid_equal(InformationType, &gEfiFileInfoGuid)) {
-        DirEntry Entry;
-        axl_memset(&Entry, 0, sizeof(Entry));
+        DirEntry entry;
+        axl_memset(&entry, 0, sizeof(entry));
 
-        if (F->IsRoot) {
-            axl_strlcpy(Entry.Name, "", sizeof(Entry.Name));
-            Entry.IsDir = true;
+        if (fh->is_root) {
+            axl_strlcpy(entry.name, "", sizeof(entry.name));
+            entry.is_dir = true;
         } else {
             // Look up from parent dir cache
-            char ParentDir[MAX_PATH_LEN];
-            GetParentPath(F->Path, ParentDir, sizeof(ParentDir));
-            const char *Name = GetFileName(F->Path);
+            char parent_dir[MAX_PATH_LEN];
+            get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
+            const char *name = get_file_name(fh->path);
 
-            int Ret = DirCacheLookupEntry(Private, ParentDir, Name, &Entry);
-            if (Ret != 0) {
+            int ret = dir_cache_lookup_entry(priv, parent_dir, name, &entry);
+            if (ret != 0) {
                 // Fallback: use what we know
-                axl_strlcpy(Entry.Name, Name, sizeof(Entry.Name));
-                Entry.Size = F->FileSize;
-                Entry.IsDir = F->IsDir;
+                axl_strlcpy(entry.name, name, sizeof(entry.name));
+                entry.size = fh->file_size;
+                entry.is_dir = fh->is_dir;
             }
         }
 
-        size_t Needed = BuildFileInfo(&Entry, NULL, 0);
-        if (*BufferSize < Needed) {
-            *BufferSize = Needed;
+        size_t needed = build_file_info(&entry, NULL, 0);
+        if (*BufferSize < needed) {
+            *BufferSize = needed;
             return EFI_BUFFER_TOO_SMALL;
         }
 
-        BuildFileInfo(&Entry, (EFI_FILE_INFO *)Buffer, *BufferSize);
-        *BufferSize = Needed;
+        build_file_info(&entry, (EFI_FILE_INFO *)Buffer, *BufferSize);
+        *BufferSize = needed;
         return EFI_SUCCESS;
     }
 
     if (axl_guid_equal(InformationType, &gEfiFileSystemInfoGuid)) {
-        size_t LabelLen = axl_wcslen(VOLUME_LABEL);
-        size_t Needed = SIZE_OF_EFI_FILE_SYSTEM_INFO + (LabelLen + 1) * sizeof(CHAR16);
+        size_t label_len = axl_wcslen(VOLUME_LABEL);
+        size_t needed = SIZE_OF_EFI_FILE_SYSTEM_INFO + (label_len + 1) * sizeof(CHAR16);
 
-        if (*BufferSize < Needed) {
-            *BufferSize = Needed;
+        if (*BufferSize < needed) {
+            *BufferSize = needed;
             return EFI_BUFFER_TOO_SMALL;
         }
 
-        EFI_FILE_SYSTEM_INFO *FsInfo = (EFI_FILE_SYSTEM_INFO *)Buffer;
-        axl_memset(FsInfo, 0, Needed);
-        FsInfo->Size = Needed;
-        FsInfo->ReadOnly = Private->ReadOnly;
-        FsInfo->VolumeSize = 0;
-        FsInfo->FreeSpace = 0;
-        FsInfo->BlockSize = 512;
-        axl_wcscpy(FsInfo->VolumeLabel, VOLUME_LABEL, LabelLen + 1);
+        EFI_FILE_SYSTEM_INFO *fs_info = (EFI_FILE_SYSTEM_INFO *)Buffer;
+        axl_memset(fs_info, 0, needed);
+        fs_info->Size = needed;
+        fs_info->ReadOnly = priv->read_only;
+        fs_info->VolumeSize = 0;
+        fs_info->FreeSpace = 0;
+        fs_info->BlockSize = 512;
+        axl_wcscpy(fs_info->VolumeLabel, VOLUME_LABEL, label_len + 1);
 
-        *BufferSize = Needed;
+        *BufferSize = needed;
         return EFI_SUCCESS;
     }
 
     if (axl_guid_equal(InformationType, &gEfiFileSystemVolumeLabelInfoIdGuid)) {
-        size_t LabelLen = axl_wcslen(VOLUME_LABEL);
-        size_t Needed = sizeof(EFI_FILE_SYSTEM_VOLUME_LABEL) + (LabelLen + 1) * sizeof(CHAR16);
+        size_t label_len = axl_wcslen(VOLUME_LABEL);
+        size_t needed = sizeof(EFI_FILE_SYSTEM_VOLUME_LABEL) + (label_len + 1) * sizeof(CHAR16);
 
-        if (*BufferSize < Needed) {
-            *BufferSize = Needed;
+        if (*BufferSize < needed) {
+            *BufferSize = needed;
             return EFI_BUFFER_TOO_SMALL;
         }
 
-        EFI_FILE_SYSTEM_VOLUME_LABEL *Label = (EFI_FILE_SYSTEM_VOLUME_LABEL *)Buffer;
-        axl_wcscpy(Label->VolumeLabel, VOLUME_LABEL, LabelLen + 1);
-        *BufferSize = Needed;
+        EFI_FILE_SYSTEM_VOLUME_LABEL *label = (EFI_FILE_SYSTEM_VOLUME_LABEL *)Buffer;
+        axl_wcscpy(label->VolumeLabel, VOLUME_LABEL, label_len + 1);
+        *BufferSize = needed;
         return EFI_SUCCESS;
     }
 
@@ -599,55 +599,55 @@ WebDavFsSetInfo(
     VOID              *Buffer
 )
 {
-    WEBDAVFS_FILE *F = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    WEBDAVFS_PRIVATE *Private = F->Private;
+    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebDavFsPrivate *priv = fh->private_data;
 
     if (!axl_guid_equal(InformationType, &gEfiFileInfoGuid)) {
         return EFI_UNSUPPORTED;
     }
 
-    if (Private->ReadOnly) return EFI_WRITE_PROTECTED;
+    if (priv->read_only) return EFI_WRITE_PROTECTED;
     if (Buffer == NULL || BufferSize < SIZE_OF_EFI_FILE_INFO) {
         return EFI_INVALID_PARAMETER;
     }
 
-    EFI_FILE_INFO *NewInfo = (EFI_FILE_INFO *)Buffer;
+    EFI_FILE_INFO *new_info = (EFI_FILE_INFO *)Buffer;
 
     // Check if the filename changed (rename)
-    const char *OldName = GetFileName(F->Path);
-    char NewName8[256];
+    const char *old_name = get_file_name(fh->path);
+    char new_name8[256];
     size_t i = 0;
-    while (NewInfo->FileName[i] != L'\0' && i < sizeof(NewName8) - 1) {
-        NewName8[i] = (char)NewInfo->FileName[i];
+    while (new_info->FileName[i] != L'\0' && i < sizeof(new_name8) - 1) {
+        new_name8[i] = (char)new_info->FileName[i];
         i++;
     }
-    NewName8[i] = '\0';
+    new_name8[i] = '\0';
 
-    if (axl_streql(OldName, NewName8)) {
+    if (axl_streql(old_name, new_name8)) {
         return EFI_SUCCESS;  // No name change
     }
 
     // Build rename request: POST /files/<oldpath>?rename=<newname>
-    char RenamePath[MAX_PATH_LEN];
-    axl_snprintf(RenamePath, sizeof(RenamePath), "/files%s?rename=%s", F->Path, NewName8);
+    char rename_path[MAX_PATH_LEN];
+    axl_snprintf(rename_path, sizeof(rename_path), "/files%s?rename=%s", fh->path, new_name8);
 
-    AxlHttpClientResponse *Resp = NULL;
-    int Ret = WebDavFsHttpRequest(
-        Private, "POST", RenamePath, NULL, NULL, 0, &Resp);
+    AxlHttpClientResponse *resp = NULL;
+    int ret = webdavfs_http_request(
+        priv, "POST", rename_path, NULL, NULL, 0, &resp);
 
-    size_t RenameStatus = (Resp != NULL) ? Resp->status_code : 0;
-    if (Resp != NULL) axl_http_client_response_free(Resp);
+    size_t rename_status = (resp != NULL) ? resp->status_code : 0;
+    if (resp != NULL) axl_http_client_response_free(resp);
 
-    if (Ret != 0 || (RenameStatus != 200 && RenameStatus != 201)) {
+    if (ret != 0 || (rename_status != 200 && rename_status != 201)) {
         return EFI_DEVICE_ERROR;
     }
 
     // Update internal path to reflect new name
-    char ParentDir[MAX_PATH_LEN];
-    GetParentPath(F->Path, ParentDir, sizeof(ParentDir));
-    DirCacheInvalidate(Private, ParentDir);
+    char parent_dir[MAX_PATH_LEN];
+    get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
+    dir_cache_invalidate(priv, parent_dir);
 
-    axl_snprintf(F->Path, MAX_PATH_LEN, "%s%s", ParentDir, NewName8);
+    axl_snprintf(fh->path, MAX_PATH_LEN, "%s%s", parent_dir, new_name8);
 
     return EFI_SUCCESS;
 }
@@ -663,9 +663,9 @@ WebDavFsGetPosition(
     UINT64            *Position
 )
 {
-    WEBDAVFS_FILE *F = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    if (F->IsDir) return EFI_UNSUPPORTED;
-    *Position = F->Position;
+    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    if (fh->is_dir) return EFI_UNSUPPORTED;
+    *Position = fh->position;
     return EFI_SUCCESS;
 }
 
@@ -676,20 +676,20 @@ WebDavFsSetPosition(
     UINT64             Position
 )
 {
-    WEBDAVFS_FILE *F = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
 
-    if (F->IsDir) {
+    if (fh->is_dir) {
         if (Position == 0) {
-            F->DirReadIndex = 0;
+            fh->dir_read_index = 0;
             return EFI_SUCCESS;
         }
         return EFI_UNSUPPORTED;
     }
 
     if (Position == UINT64_MAX) {
-        F->Position = F->FileSize;
+        fh->position = fh->file_size;
     } else {
-        F->Position = Position;
+        fh->position = Position;
     }
 
     return EFI_SUCCESS;
