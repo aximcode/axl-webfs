@@ -14,38 +14,14 @@
 #include <axl.h>
 #include <axl/axl-driver.h>
 #include <axl/axl-sys.h>
-#include <uefi/axl-uefi.h>
 
 #define DRIVER_FILENAME  "WebDavFsDxe.efi"
 
-// It was previously supplied via extern EFI_GUID gHttpFsVendorGuid.
-static const EFI_GUID HttpFsVendorGuid = {
+static const AxlGuid HttpFsVendorGuid = AXL_GUID(
     0xf47c0fa2, 0xbf67, 0x4c0d,
-    {0xb0, 0x5e, 0x44, 0x9a, 0x1b, 0xf3, 0x44, 0xc7}
-};
+    0xb0, 0x5e, 0x44, 0x9a, 0x1b, 0xf3, 0x44, 0xc7);
 
 static AxlDriverHandle mDriverHandle;
-
-// ----------------------------------------------------------------------------
-// Helpers
-// ----------------------------------------------------------------------------
-
-/// Check if a device path contains a vendor node with the HttpFS GUID.
-static bool
-has_vendor_node(EFI_DEVICE_PATH_PROTOCOL *dp, const EFI_GUID *guid)
-{
-    if (dp == NULL) return false;
-
-    while (!EFI_DP_IS_END(dp)) {
-        if (EFI_DP_TYPE(dp) == HARDWARE_DEVICE_PATH &&
-            EFI_DP_SUBTYPE(dp) == HW_VENDOR_DP) {
-            VENDOR_DEVICE_PATH *v = (VENDOR_DEVICE_PATH *)dp;
-            if (axl_guid_equal(&v->Guid, guid)) return true;
-        }
-        dp = EFI_DP_NEXT(dp);
-    }
-    return false;
-}
 
 // ----------------------------------------------------------------------------
 // mount command
@@ -115,10 +91,10 @@ cmd_mount(int argc, char **argv)
     size_t fs_count = 0;
     if (axl_service_enumerate("simple-fs", &fs_handles, &fs_count) == 0) {
         for (size_t i = 0; i < fs_count; i++) {
-            EFI_DEVICE_PATH_PROTOCOL *devpath = NULL;
+            void *devpath = NULL;
             if (axl_handle_get_service(fs_handles[i], "device-path",
-                                       (void **)&devpath) == 0) {
-                if (has_vendor_node(devpath, &HttpFsVendorGuid)) {
+                                       &devpath) == 0) {
+                if (axl_device_path_has_vendor(devpath, &HttpFsVendorGuid)) {
                     axl_printf("Mounted as FS handle %p\n", fs_handles[i]);
                     axl_printf("Use 'map -r' to refresh Shell mappings.\n");
                     break;
@@ -164,14 +140,14 @@ cmd_umount(int argc, char **argv)
 
     bool found = false;
     for (size_t i = 0; i < fs_count; i++) {
-        EFI_DEVICE_PATH_PROTOCOL *devpath = NULL;
+        void *devpath = NULL;
         if (axl_handle_get_service(fs_handles[i], "device-path",
-                                   (void **)&devpath) != 0)
+                                   &devpath) != 0)
             continue;
-        if (!has_vendor_node(devpath, &HttpFsVendorGuid))
+        if (!axl_device_path_has_vendor(devpath, &HttpFsVendorGuid))
             continue;
 
-        /* Found the HttpFS volume — scan loaded images for the driver */
+        /* Found the HttpFS volume -- scan loaded images for the driver */
         void **img_handles = NULL;
         size_t img_count = 0;
         if (axl_service_enumerate("loaded-image", &img_handles, &img_count) != 0) {
