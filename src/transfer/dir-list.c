@@ -8,6 +8,7 @@
 #include "transfer/file-transfer.h"
 #include <axl.h>
 #include <axl/axl-json.h>
+#include <axl/axl-url.h>
 
 
 /* Safe snprintf accumulation: clamp pos to prevent size_t underflow */
@@ -220,23 +221,27 @@ int ft_list_dir(FtVolume *vol, const char *path, bool as_json,
             if (!first)
                 APPEND(pos, buf, buf_size, ",");
             first = false;
+            char esc_name[512];
+            axl_json_escape_string(entry.name, esc_name, sizeof(esc_name));
             APPEND(pos, buf, buf_size,
-                "{\"name\":\"%s\",\"size\":%llu,\"dir\":%s}",
-                entry.name, (unsigned long long)entry.size,
+                "{\"name\":%s,\"size\":%llu,\"dir\":%s}",
+                esc_name, (unsigned long long)entry.size,
                 entry.is_dir ? "true" : "false");
         } else {
+            char url_name[512];
+            axl_url_encode(entry.name, url_name, sizeof(url_name));
             if (entry.is_dir) {
                 APPEND(pos, buf, buf_size,
                     "<tr><td><a href=\"%s/\">%s/</a></td>"
                     "<td class=\"sz\">&mdash;</td>"
                     "<td class=\"ty\">dir</td></tr>",
-                    entry.name, entry.name);
+                    url_name, entry.name);
             } else {
                 APPEND(pos, buf, buf_size,
                     "<tr><td><a href=\"%s\">%s</a></td>"
                     "<td class=\"sz\">%llu</td>"
                     "<td class=\"ty\">file</td></tr>",
-                    entry.name, entry.name,
+                    url_name, entry.name,
                     (unsigned long long)entry.size);
             }
         }

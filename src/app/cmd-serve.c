@@ -12,6 +12,7 @@
 
 #include <axl.h>
 #include <axl/axl-net.h>
+#include <axl/axl-url.h>
 #include "net/network.h"
 #include "transfer/file-transfer.h"
 
@@ -35,11 +36,15 @@ typedef struct {
 // ----------------------------------------------------------------------------
 
 /// Parse "/<vol>/<path>" into volume name and sub-path.
+/// Decodes percent-encoded characters in the URL path.
 static int
 parse_volume_path(const char *url_path, FtVolume *volume,
                   char *sub_path, size_t sub_path_size)
 {
-    const char *p = url_path;
+    // Decode percent-encoded path (e.g. %20 -> space)
+    char decoded[512];
+    axl_url_decode(url_path, decoded, sizeof(decoded));
+    const char *p = decoded;
     char        vol_name[16];
     size_t      i;
 
