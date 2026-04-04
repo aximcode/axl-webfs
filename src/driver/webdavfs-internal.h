@@ -15,6 +15,7 @@
 #include <axl/axl-json.h>
 #include <axl/axl-net.h>
 #include <axl/axl-log.h>
+#include <axl/axl-url.h>
 #include <uefi/axl-uefi.h>
 
 

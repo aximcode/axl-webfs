@@ -30,21 +30,24 @@ static AxlDriverHandle mDriverHandle;
 int
 cmd_mount(int argc, char **argv)
 {
-    static const AxlOpt mount_opts[] = {
-        { 'r', NULL, AXL_OPT_FLAG, NULL, "Mount read-only" },
-        { 'h', NULL, AXL_OPT_FLAG, NULL, "Show help" },
-        { 0, NULL, 0, NULL, NULL }
+    static const AxlConfigDesc mount_descs[] = {
+        { "read-only", AXL_CFG_BOOL, "false", 'r', "Mount read-only", 0, 0 },
+        { "help",      AXL_CFG_BOOL, "false", 'h', "Show help",       0, 0 },
+        { 0 }
     };
 
-    AxlArgs *args = axl_args_parse(argc, argv, mount_opts);
-    if (args == NULL || axl_args_pos_count(args) < 1 || axl_args_flag(args, 'h')) {
-        axl_args_usage("HttpFS mount", "<URL> [OPTIONS]", mount_opts);
-        axl_args_free(args);
-        return (args == NULL || axl_args_pos_count(args) < 1) ? 1 : 0;
+    AxlConfig *cfg = axl_config_new(mount_descs, NULL, NULL);
+    if (cfg == NULL) return 1;
+    axl_config_parse_args(cfg, argc, argv);
+
+    if (axl_config_get_bool(cfg, "help") || axl_config_pos_count(cfg) < 1) {
+        axl_config_usage(cfg, "HttpFS mount", "<URL> [OPTIONS]");
+        axl_config_free(cfg);
+        return axl_config_pos_count(cfg) < 1 ? 1 : 0;
     }
 
-    const char *url = axl_args_pos(args, 0);
-    axl_args_free(args);
+    const char *url = axl_config_pos(cfg, 0);
+    axl_config_free(cfg);
 
     axl_printf("Loading %s...\n", DRIVER_FILENAME);
 

@@ -442,45 +442,36 @@ cmd_serve(int argc, char **argv)
     ServeOptions    opts;
     AxlHttpServer  *server;
 
-    static const AxlOpt serve_opts[] = {
-        { 'p', NULL,           AXL_OPT_VALUE, "PORT",    "Listen port (default: 8080)" },
-        { 'n', NULL,           AXL_OPT_VALUE, "INDEX",   "NIC index" },
-        { 't', NULL,           AXL_OPT_VALUE, "SECONDS", "Idle timeout" },
-        {  0,  "--read-only",  AXL_OPT_FLAG,  NULL,      "Block uploads/deletes" },
-        {  0,  "--write-only", AXL_OPT_FLAG,  NULL,      "Block downloads" },
-        { 'v', NULL,           AXL_OPT_FLAG,  NULL,      "Verbose logging" },
-        { 'h', NULL,           AXL_OPT_FLAG,  NULL,      "Show help" },
-        { 0, NULL, 0, NULL, NULL }
+    static const AxlConfigDesc serve_descs[] = {
+        { "port",       AXL_CFG_UINT, "8080",  'p', "Listen port",        0, 0 },
+        { "nic",        AXL_CFG_UINT, NULL,     'n', "NIC index",          0, 0 },
+        { "timeout",    AXL_CFG_UINT, "0",      't', "Idle timeout (sec)", 0, 0 },
+        { "read-only",  AXL_CFG_BOOL, "false",   0,  "Block uploads",     0, 0 },
+        { "write-only", AXL_CFG_BOOL, "false",   0,  "Block downloads",   0, 0 },
+        { "verbose",    AXL_CFG_BOOL, "false",  'v', "Verbose logging",   0, 0 },
+        { "help",       AXL_CFG_BOOL, "false",  'h', "Show help",         0, 0 },
+        { 0 }
     };
 
-    AxlArgs *args = axl_args_parse(argc, argv, serve_opts);
-    if (args == NULL) {
-        axl_args_usage("HttpFS serve", "[OPTIONS]", serve_opts);
-        return 1;
-    }
+    AxlConfig *cfg = axl_config_new(serve_descs, NULL, NULL);
+    if (cfg == NULL) return 1;
+    axl_config_parse_args(cfg, argc, argv);
 
-    if (axl_args_flag(args, 'h')) {
-        axl_args_usage("HttpFS serve", "[OPTIONS]", serve_opts);
-        axl_args_free(args);
+    if (axl_config_get_bool(cfg, "help")) {
+        axl_config_usage(cfg, "HttpFS serve", "[OPTIONS]");
+        axl_config_free(cfg);
         return 0;
     }
 
-    opts.port             = 8080;
-    opts.nic_index        = (size_t)-1;
-    opts.idle_timeout_sec = 0;
-    opts.read_only        = axl_args_flag_long(args, "--read-only");
-    opts.write_only       = axl_args_flag_long(args, "--write-only");
-    opts.verbose          = axl_args_flag(args, 'v');
+    opts.port             = (uint16_t)axl_config_get_uint(cfg, "port");
+    opts.nic_index        = axl_config_get(cfg, "nic") != NULL
+                          ? (size_t)axl_config_get_uint(cfg, "nic") : (size_t)-1;
+    opts.idle_timeout_sec = (size_t)axl_config_get_uint(cfg, "timeout");
+    opts.read_only        = axl_config_get_bool(cfg, "read-only");
+    opts.write_only       = axl_config_get_bool(cfg, "write-only");
+    opts.verbose          = axl_config_get_bool(cfg, "verbose");
 
-    const char *val;
-    if ((val = axl_args_value(args, 'p')) != NULL)
-        opts.port = (uint16_t)axl_strtou64(val);
-    if ((val = axl_args_value(args, 'n')) != NULL)
-        opts.nic_index = (size_t)axl_strtou64(val);
-    if ((val = axl_args_value(args, 't')) != NULL)
-        opts.idle_timeout_sec = (size_t)axl_strtou64(val);
-
-    axl_args_free(args);
+    axl_config_free(cfg);
 
     //
     // Initialize networking (driver loading, DHCP)

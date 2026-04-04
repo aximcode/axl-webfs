@@ -116,9 +116,25 @@ webdavfs_http_request(
     AxlHttpClientResponse **response
 )
 {
-    // Build full URL from base + path
-    char url[MAX_PATH_LEN + 280];
-    axl_snprintf(url, sizeof(url), "%s%s", priv->base_url, path);
+    // URL-encode the path portion (preserves /), keep query string raw
+    char encoded_path[MAX_PATH_LEN * 3];
+    const char *query = path;
+    while (*query && *query != '?') query++;
+    if (*query == '\0') query = NULL;
+    if (query != NULL) {
+        char path_only[MAX_PATH_LEN];
+        size_t plen = (size_t)(query - path);
+        if (plen >= sizeof(path_only)) plen = sizeof(path_only) - 1;
+        axl_memcpy(path_only, path, plen);
+        path_only[plen] = '\0';
+        char enc_part[MAX_PATH_LEN * 3];
+        axl_url_encode(path_only, enc_part, sizeof(enc_part));
+        axl_snprintf(encoded_path, sizeof(encoded_path), "%s%s", enc_part, query);
+    } else {
+        axl_url_encode(path, encoded_path, sizeof(encoded_path));
+    }
+    char url[MAX_PATH_LEN * 3 + 280];
+    axl_snprintf(url, sizeof(url), "%s%s", priv->base_url, encoded_path);
 
     return axl_http_request(
         priv->http_client, method, url, body, body_len,
