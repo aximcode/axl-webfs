@@ -82,7 +82,7 @@ parse_volume_path(const char *url_path, FtVolume *volume,
 static bool
 wants_json(AxlHttpRequest *req)
 {
-    const char *accept = (const char *)axl_hash_table_get(req->headers, "accept");
+    const char *accept = (const char *)axl_hash_table_lookup(req->headers, "accept");
 
     if (accept == NULL) {
         return false;
@@ -273,7 +273,7 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     //
     // Handle Range header — set_range slices the buffer, sets 206 + Content-Range
     //
-    const char *range_hdr = (const char *)axl_hash_table_get(req->headers, "range");
+    const char *range_hdr = (const char *)axl_hash_table_lookup(req->headers, "range");
     if (range_hdr != NULL) {
         AxlHttpRange range;
         if (axl_http_parse_range(range_hdr, file_size, &range)) {

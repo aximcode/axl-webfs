@@ -279,7 +279,7 @@ read_file(
                  (unsigned long long)(fh->position + fetch_size - 1));
     AxlHashTable *range_hdrs = axl_hash_table_new();
     if (range_hdrs == NULL) return EFI_OUT_OF_RESOURCES;
-    axl_hash_table_set(range_hdrs, "range", axl_strdup(range_val));
+    axl_hash_table_insert(range_hdrs, "range", axl_strdup(range_val));
 
     char file_path[MAX_PATH_LEN];
     axl_snprintf(file_path, sizeof(file_path), "/files%s", fh->path);
@@ -287,7 +287,7 @@ read_file(
     AxlHttpClientResponse *resp = NULL;
     int ret = webdavfs_http_request(
         priv, "GET", file_path, range_hdrs, NULL, 0, &resp);
-    axl_free(axl_hash_table_get(range_hdrs, "range"));
+    axl_free(axl_hash_table_lookup(range_hdrs, "range"));
     axl_hash_table_free(range_hdrs);
     if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
     if (resp->status_code != 200 && resp->status_code != 206) {
