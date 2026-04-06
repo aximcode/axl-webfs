@@ -277,7 +277,7 @@ read_file(
     axl_snprintf(range_val, sizeof(range_val), "bytes=%llu-%llu",
                  (unsigned long long)fh->position,
                  (unsigned long long)(fh->position + fetch_size - 1));
-    AxlHashTable *range_hdrs = axl_hash_table_new();
+    AxlHashTable *range_hdrs = axl_hash_table_new_str();
     if (range_hdrs == NULL) return EFI_OUT_OF_RESOURCES;
     axl_hash_table_insert(range_hdrs, "range", axl_strdup(range_val));
 
