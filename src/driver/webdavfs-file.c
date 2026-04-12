@@ -263,11 +263,12 @@ read_file(
         return EFI_SUCCESS;
     }
 
-    // Read-ahead miss -- fetch from server with read-ahead
-    size_t fetch_size = wanted;
-    if (fh->read_ahead_buf != NULL && fetch_size < READAHEAD_BUF_SIZE) {
-        fetch_size = READAHEAD_BUF_SIZE;
-    }
+    // Read-ahead miss -- fetch from server.
+    // Small reads use the 64KB read-ahead buffer; large reads (LoadImage
+    // pulling a whole PE in one shot) bypass it and go straight to the
+    // caller's buffer so we never under-deliver.
+    bool use_readahead = (fh->read_ahead_buf != NULL && wanted < READAHEAD_BUF_SIZE);
+    size_t fetch_size = use_readahead ? READAHEAD_BUF_SIZE : wanted;
     if (fh->position + fetch_size > fh->file_size) {
         fetch_size = (size_t)(fh->file_size - fh->position);
     }
@@ -296,24 +297,23 @@ read_file(
         return EFI_DEVICE_ERROR;
     }
 
-    // Copy response body into read-ahead buffer or directly into caller's buffer
     size_t total_read = resp->body_size;
     if (total_read > fetch_size) total_read = fetch_size;
 
-    if (fh->read_ahead_buf != NULL) {
-        size_t to_copy = (total_read < READAHEAD_BUF_SIZE) ? total_read : READAHEAD_BUF_SIZE;
-        axl_memcpy(fh->read_ahead_buf, resp->body, to_copy);
+    if (use_readahead) {
+        axl_memcpy(fh->read_ahead_buf, resp->body, total_read);
         fh->read_ahead_start = fh->position;
-        fh->read_ahead_len = to_copy;
-        size_t user_copy = (wanted < to_copy) ? wanted : to_copy;
+        fh->read_ahead_len = total_read;
+        size_t user_copy = (wanted < total_read) ? wanted : total_read;
         axl_memcpy(Buffer, fh->read_ahead_buf, user_copy);
         fh->position += user_copy;
         *BufferSize = user_copy;
     } else {
-        size_t to_copy = (wanted < total_read) ? wanted : total_read;
-        axl_memcpy(Buffer, resp->body, to_copy);
-        fh->position += to_copy;
-        *BufferSize = to_copy;
+        axl_memcpy(Buffer, resp->body, total_read);
+        fh->position += total_read;
+        *BufferSize = total_read;
+        // Invalidate read-ahead -- direct read may overlap stale region
+        fh->read_ahead_len = 0;
     }
     axl_http_client_response_free(resp);
 
