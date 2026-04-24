@@ -1,5 +1,5 @@
 /** @file
-  WebDavFsDxe -- Directory cache and HTTP request helper.
+  axl-webfs-dxe -- Directory cache and HTTP request helper.
 
   Caches GET /list/ responses for 2 seconds to avoid hammering the
   network on repeated ls/access patterns. Provides auto-reconnect
@@ -9,7 +9,7 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#include "webdavfs-internal.h"
+#include "webfs-internal.h"
 
 // ---------------------------------------------------------------------------
 // Timestamp helper
@@ -23,7 +23,7 @@
 /// Find a cache slot by path. Returns NULL if not found or expired.
 static DirCacheSlot *
 dir_cache_find(
-    WebDavFsPrivate *priv,
+    WebFsPrivate *priv,
     const char      *path
 )
 {
@@ -48,7 +48,7 @@ dir_cache_find(
 /// Store a directory listing in the cache (LRU eviction of oldest slot).
 static void
 dir_cache_put(
-    WebDavFsPrivate *priv,
+    WebFsPrivate *priv,
     const char      *path,
     DirEntry        *entries,
     size_t           count
@@ -89,7 +89,7 @@ dir_cache_put(
 
 void
 dir_cache_invalidate(
-    WebDavFsPrivate *priv,
+    WebFsPrivate *priv,
     const char      *path
 )
 {
@@ -106,8 +106,8 @@ dir_cache_invalidate(
 // ---------------------------------------------------------------------------
 
 int
-webdavfs_http_request(
-    WebDavFsPrivate        *priv,
+webfs_http_request(
+    WebFsPrivate        *priv,
     const char             *method,
     const char             *path,
     AxlHashTable           *extra_headers,
@@ -147,7 +147,7 @@ webdavfs_http_request(
 
 int
 dir_cache_fetch(
-    WebDavFsPrivate *priv,
+    WebFsPrivate *priv,
     const char      *path,
     DirEntry       **entries,
     size_t          *count
@@ -166,7 +166,7 @@ dir_cache_fetch(
     axl_snprintf(list_path, sizeof(list_path), "/list%s", path);
 
     AxlHttpClientResponse *response = NULL;
-    int ret = webdavfs_http_request(
+    int ret = webfs_http_request(
         priv, "GET", list_path, NULL, NULL, 0, &response);
     if (ret != 0 || response == NULL) return -1;
 
@@ -246,7 +246,7 @@ dir_cache_fetch(
 
 int
 dir_cache_lookup_entry(
-    WebDavFsPrivate *priv,
+    WebFsPrivate *priv,
     const char      *dir_path,
     const char      *name,
     DirEntry        *entry

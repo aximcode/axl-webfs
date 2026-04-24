@@ -1,4 +1,4 @@
-# HttpFS
+# axl-webfs
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
@@ -17,7 +17,7 @@ Plus `umount` and `list-nics`.
 
 ## Prerequisites
 
-HttpFS is built with [AximCode's AXL SDK](https://github.com/aximcode/axl-sdk-releases)
+axl-webfs is built with [AximCode's AXL SDK](https://github.com/aximcode/axl-sdk-releases)
 (no EDK2). Install a prebuilt SDK package — this gives you `axl-cc`,
 headers, and the UEFI target libs for x64 and aa64.
 
@@ -36,7 +36,7 @@ sudo dnf install ./axl-sdk.rpm
 ```
 
 Packages install under `/usr` (headers, `/usr/bin/axl-cc`, UEFI libs).
-HttpFS's `Makefile` picks them up with `AXL_SDK ?= /usr`. To build
+axl-webfs's `Makefile` picks them up with `AXL_SDK ?= /usr`. To build
 against a local SDK checkout instead:
 
 ```bash
@@ -46,7 +46,7 @@ AXL_SDK=~/src/axl-sdk-releases/out make
 ## Build
 
 ```bash
-make                 # Build HttpFS.efi and WebDavFsDxe.efi for x64
+make                 # Build axl-webfs.efi and axl-webfs-dxe.efi for x64
 make ARCH=aa64       # AArch64
 make clean
 ```
@@ -64,7 +64,7 @@ On your workstation, serve a directory:
 In the UEFI Shell, mount and use it:
 
 ```
-FS0:\> HttpFS.efi mount http://10.0.0.5:8080/
+FS0:\> axl-webfs.efi mount http://10.0.0.5:8080/
 FS0:\> ls fs1:
 FS0:\> fs1:\IpmiTool.efi
 ```
@@ -72,7 +72,7 @@ FS0:\> fs1:\IpmiTool.efi
 Or run the server from UEFI and pull files from your workstation:
 
 ```
-FS0:\> HttpFS.efi serve
+FS0:\> axl-webfs.efi serve
 ```
 
 ```bash
@@ -94,8 +94,8 @@ curl http://<uefi-ip>:8080/fs0/EFI/Boot/bootaa64.efi -o boot.efi
 
 | Component | Type | Description |
 |-----------|------|-------------|
-| `HttpFS.efi` | Application | CLI: `serve`, `mount`, `umount`, `list-nics` |
-| `WebDavFsDxe.efi` | DXE driver | Mounts a remote directory as a UEFI volume via `EFI_FILE_PROTOCOL` over HTTP |
+| `axl-webfs.efi` | Application | CLI: `serve`, `mount`, `umount`, `list-nics` |
+| `axl-webfs-dxe.efi` | DXE driver | Mounts a remote directory as a UEFI volume via `EFI_FILE_PROTOCOL` over HTTP |
 
 All HTTP, JSON, event loop, hash table, and network functionality comes
 from the AXL SDK. See [docs/Design.md](docs/Design.md) for the full
@@ -104,7 +104,7 @@ design.
 ## Serve Options
 
 ```
-HttpFS.efi serve [-p port] [-n nic] [-t timeout] [--read-only] [--write-only] [-v]
+axl-webfs.efi serve [-p port] [-n nic] [-t timeout] [--read-only] [--write-only] [-v]
 ```
 
 | Flag | Default | Description |
@@ -147,7 +147,7 @@ AXL_SDK_SRC=~/src/axl-sdk-releases scripts/test.sh --qemu
 ## Platform Notes
 
 On ARM64 hardware (e.g. some ARM64 servers), firmware may not
-auto-connect the network stack. HttpFS handles this by calling
+auto-connect the network stack. axl-webfs handles this by calling
 `ConnectController` on SNP handles before NIC discovery. Use
 `list-nics` to verify link status if networking isn't working.
 

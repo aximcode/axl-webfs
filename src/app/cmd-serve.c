@@ -1,5 +1,5 @@
 /** @file
-  HttpFS -- serve command handler.
+  axl-webfs -- serve command handler.
 
   HTTP file server using AxlNet's AxlHttpServer. Registers route
   handlers that map REST API endpoints to FileTransferLib operations.
@@ -8,7 +8,7 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#include "httpfs-internal.h"
+#include "webfs-internal.h"
 
 #include <axl.h>
 #include <axl/axl-net.h>
@@ -458,7 +458,7 @@ cmd_serve(int argc, char **argv)
     axl_config_parse_args(cfg, argc, argv);
 
     if (axl_config_get_bool(cfg, "help")) {
-        axl_config_usage(cfg, "HttpFS serve", "[OPTIONS]");
+        axl_config_usage(cfg, "axl-webfs serve", "[OPTIONS]");
         axl_config_free(cfg);
         return 0;
     }
@@ -529,7 +529,7 @@ cmd_serve(int argc, char **argv)
     //
     // Print banner
     //
-    axl_printf("\nHttpFS v0.1 -- UEFI HTTP File Server\n");
+    axl_printf("\naxl-webfs v0.1 -- UEFI HTTP File Server\n");
     axl_printf("Listening on %d.%d.%d.%d:%d\n",
         addr[0], addr[1], addr[2], addr[3], opts.port);
 

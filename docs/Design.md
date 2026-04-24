@@ -1,8 +1,8 @@
-# HttpFS Design Document
+# axl-webfs Design Document
 
 ## Overview
 
-HttpFS is a UEFI toolkit for bidirectional file transfer and remote
+axl-webfs is a UEFI toolkit for bidirectional file transfer and remote
 filesystem access between a workstation and a UEFI host. Built with
 the AXL SDK (no EDK2 build system). It provides two core capabilities:
 
@@ -48,7 +48,7 @@ Two binaries, two internal libraries, all using the AXL SDK:
 |  Application / Driver Layer                                    |
 |                                                                |
 |  +------------------------+  +------------------------------+ |
-|  | HttpFS.efi             |  | WebDavFsDxe.efi              | |
+|  | axl-webfs.efi          |  | axl-webfs-dxe.efi            | |
 |  |                        |  |                              | |
 |  | CLI: serve, mount,     |  | DXE driver (stays resident)  | |
 |  |      umount, list-nics |  | EFI_FILE_PROTOCOL over HTTP  | |
@@ -75,12 +75,12 @@ Two binaries, two internal libraries, all using the AXL SDK:
 
 ### Components
 
-1. **HttpFS.efi** (Application) — `int main()` entry via AXL_APP.
+1. **axl-webfs.efi** (Application) — `int main()` entry via AXL_APP.
    CLI parsing with `axl_args_parse`. Dispatches `serve`/`mount`/
    `umount`/`list-nics`. Serve uses AXL's `AxlHttpServer` with
    event loop. Mount uses `axl_driver_load`/`start`/`set_load_options`.
 
-2. **WebDavFsDxe.efi** (DXE Driver) — `DriverEntry` with
+2. **axl-webfs-dxe.efi** (DXE Driver) — `DriverEntry` with
    `axl_driver_init`. Implements `EFI_FILE_PROTOCOL` backed by
    AXL's HTTP client (`axl_http_request`). Uses `axl_json_parse`
    for directory listings, `axl_url_parse` for URL handling.
@@ -104,14 +104,14 @@ memory allocation, string utilities, logging.
 
 ### How It Works
 
-The `mount` command loads a companion DXE driver (`WebDavFsDxe.efi`)
+The `mount` command loads a companion DXE driver (`axl-webfs-dxe.efi`)
 that installs `EFI_FILE_PROTOCOL` on a new device handle. The UEFI
 Shell sees this as a new volume (FSn:).
 
 ```
 Workstation                              UEFI Host
 +------------------+                    +----------------------+
-| xfer-server.py   |  HTTP/JSON         | WebDavFsDxe.efi      |
+| xfer-server.py   |  HTTP/JSON         | axl-webfs-dxe.efi    |
 |                  |<------------------>|                      |
 | Serves files     |  GET/PUT/DELETE    | EFI_FILE_PROTOCOL    |
 | from a local dir |  + JSON dir list   |                      |
@@ -126,7 +126,7 @@ Workstation                              UEFI Host
 
 ### Protocol (Simple HTTP/JSON)
 
-The workstation runs `xfer-server.py` (provided with HttpFS). The
+The workstation runs `xfer-server.py` (provided with axl-webfs). The
 protocol is plain HTTP with JSON directory listings:
 
 ```
@@ -175,12 +175,12 @@ No write caching — writes go through immediately.
 ### CLI
 
 ```
-HttpFS mount <url> [-r]
-HttpFS umount
+axl-webfs mount <url> [-r]
+axl-webfs umount
 
 Examples:
-  HttpFS mount http://10.0.0.5:8080/
-  HttpFS umount
+  axl-webfs mount http://10.0.0.5:8080/
+  axl-webfs umount
 ```
 
 ### xfer-server.py (Workstation Side)
@@ -224,7 +224,7 @@ HTML with dark-theme directory browser.
 ### CLI
 
 ```
-HttpFS serve [options]
+axl-webfs serve [options]
 
 Options:
   -p <port>        Listen port (default: 8080)
@@ -257,12 +257,12 @@ src/
     main.c                     Entry point, subcommand dispatch
     cmd-serve.c                HTTP file server (AxlHttpServer + AxlLoop)
     cmd-mount.c                Mount/umount (axl_driver_load/start/unload)
-    httpfs-internal.h          Shared command declarations
+    webfs-internal.h          Shared command declarations
   driver/                      DXE driver
-    webdavfs.c                 Driver entry, URL parsing, protocol install
-    webdavfs-file.c            EFI_FILE_PROTOCOL (11 functions)
-    webdavfs-cache.c           Directory cache + HTTP request helper
-    webdavfs-internal.h        Private types
+    webfs.c                 Driver entry, URL parsing, protocol install
+    webfs-file.c            EFI_FILE_PROTOCOL (11 functions)
+    webfs-cache.c           Directory cache + HTTP request helper
+    webfs-internal.h        Private types
   net/                         Network initialization
     network.c                  Wrapper around axl_net_auto_init
     network.h                  Public API
@@ -301,16 +301,16 @@ run immediately in UEFI Shell.
 ### Simple HTTP/JSON Protocol
 The mount driver uses plain HTTP with JSON directory listings instead
 of full WebDAV XML. Avoids XML parsing on the UEFI side. We control
-both sides (xfer-server.py + WebDavFsDxe).
+both sides (xfer-server.py + axl-webfs-dxe).
 
-### Two Binaries (HttpFS.efi + WebDavFsDxe.efi)
+### Two Binaries (axl-webfs.efi + axl-webfs-dxe.efi)
 `mount` needs a persistent protocol that survives after the command
 returns. UEFI's mechanism is a DXE driver that stays resident. The
 app loads/unloads the driver.
 
 ### AXL SDK
 All HTTP, JSON, event loop, hash table, TCP, and network functionality
-comes from the AXL SDK. HttpFS has no local reimplementations of these.
+comes from the AXL SDK. axl-webfs has no local reimplementations of these.
 The project is ~3,000 lines (app + driver + libraries), down from
 ~4,800 lines in the EDK2 version.
 

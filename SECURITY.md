@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-If you believe you have found a security vulnerability in HttpFS,
+If you believe you have found a security vulnerability in axl-webfs,
 please report it privately rather than opening a public issue.
 
 Email: **noreply@aximcode.github.io**
@@ -18,7 +18,7 @@ We'll coordinate on a fix and disclosure timeline from there.
 
 ## Scope
 
-HttpFS is a diagnostic tool intended for isolated management networks.
+axl-webfs is a diagnostic tool intended for isolated management networks.
 By design it ships with no TLS and no authentication in the `serve`
 command — this is documented in [docs/Design.md](docs/Design.md) and
 is not a vulnerability on its own. Reports about TLS/auth should focus

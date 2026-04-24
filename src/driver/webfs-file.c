@@ -1,5 +1,5 @@
 /** @file
-  WebDavFsDxe -- EFI_FILE_PROTOCOL implementation.
+  axl-webfs-dxe -- EFI_FILE_PROTOCOL implementation.
 
   Every UEFI file operation translates to HTTP requests against
   xfer-server.py. Directory listings use GET /list/, file I/O uses
@@ -9,7 +9,7 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#include "webdavfs-internal.h"
+#include "webfs-internal.h"
 
 
 // ---------------------------------------------------------------------------
@@ -73,34 +73,34 @@ resolve_path(
 // File handle creation
 // ---------------------------------------------------------------------------
 
-WebDavFsFileCtx *
-webdavfs_create_file_handle(
-    WebDavFsPrivate *priv,
+WebFsFileCtx *
+webfs_create_file_handle(
+    WebFsPrivate *priv,
     const char      *path,
     bool             is_dir,
     uint64_t         file_size
 )
 {
-    WebDavFsFileCtx *fh = axl_calloc(1, sizeof(WebDavFsFileCtx));
+    WebFsFileCtx *fh = axl_calloc(1, sizeof(WebFsFileCtx));
     if (fh == NULL) return NULL;
 
-    fh->signature = WEBDAVFS_FILE_SIGNATURE;
+    fh->signature = WEBFS_FILE_SIGNATURE;
     fh->private_data = priv;
     axl_strlcpy(fh->path, path, MAX_PATH_LEN);
     fh->is_dir = is_dir;
     fh->file_size = file_size;
 
     fh->file.Revision = EFI_FILE_PROTOCOL_REVISION;
-    fh->file.Open = WebDavFsOpen;
-    fh->file.Close = WebDavFsClose;
-    fh->file.Delete = WebDavFsDelete;
-    fh->file.Read = WebDavFsRead;
-    fh->file.Write = WebDavFsWrite;
-    fh->file.GetPosition = WebDavFsGetPosition;
-    fh->file.SetPosition = WebDavFsSetPosition;
-    fh->file.GetInfo = WebDavFsGetInfo;
-    fh->file.SetInfo = WebDavFsSetInfo;
-    fh->file.Flush = WebDavFsFlush;
+    fh->file.Open = WebFsOpen;
+    fh->file.Close = WebFsClose;
+    fh->file.Delete = WebFsDelete;
+    fh->file.Read = WebFsRead;
+    fh->file.Write = WebFsWrite;
+    fh->file.GetPosition = WebFsGetPosition;
+    fh->file.SetPosition = WebFsSetPosition;
+    fh->file.GetInfo = WebFsGetInfo;
+    fh->file.SetInfo = WebFsSetInfo;
+    fh->file.Flush = WebFsFlush;
 
     // Allocate read-ahead buffer for files
     if (!is_dir) {
@@ -117,7 +117,7 @@ webdavfs_create_file_handle(
 
 EFI_STATUS
 EFIAPI
-WebDavFsOpen(
+WebFsOpen(
     EFI_FILE_PROTOCOL  *This,
     EFI_FILE_PROTOCOL **NewHandle,
     CHAR16             *FileName,
@@ -125,12 +125,12 @@ WebDavFsOpen(
     UINT64              Attributes
 )
 {
-    WebDavFsFileCtx *self = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    WebDavFsPrivate *priv = self->private_data;
+    WebFsFileCtx *self = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebFsPrivate *priv = self->private_data;
 
     // Handle opening "." -- return a new handle to the same path
     if (axl_wcseql(FileName, L".") || axl_wcseql(FileName, L"")) {
-        WebDavFsFileCtx *new_fh = webdavfs_create_file_handle(
+        WebFsFileCtx *new_fh = webfs_create_file_handle(
             priv, self->path, self->is_dir, self->file_size);
         if (new_fh == NULL) return EFI_OUT_OF_RESOURCES;
         new_fh->is_root = self->is_root;
@@ -165,7 +165,7 @@ WebDavFsOpen(
             axl_snprintf(mkdir_path, sizeof(mkdir_path), "/files%s?mkdir", resolved);
 
             AxlHttpClientResponse *resp = NULL;
-            int ret = webdavfs_http_request(
+            int ret = webfs_http_request(
                 priv, "POST", mkdir_path, NULL, NULL, 0, &resp);
             if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
 
@@ -184,7 +184,7 @@ WebDavFsOpen(
             axl_snprintf(file_path, sizeof(file_path), "/files%s", resolved);
 
             AxlHttpClientResponse *resp = NULL;
-            int ret = webdavfs_http_request(
+            int ret = webfs_http_request(
                 priv, "PUT", file_path, NULL, "", 0, &resp);
             if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
             axl_http_client_response_free(resp);
@@ -196,7 +196,7 @@ WebDavFsOpen(
     }
 
     // Create file handle
-    WebDavFsFileCtx *new_fh = webdavfs_create_file_handle(
+    WebFsFileCtx *new_fh = webfs_create_file_handle(
         priv, resolved, entry.is_dir, entry.size);
     if (new_fh == NULL) return EFI_OUT_OF_RESOURCES;
 
@@ -210,11 +210,11 @@ WebDavFsOpen(
 
 EFI_STATUS
 EFIAPI
-WebDavFsClose(
+WebFsClose(
     EFI_FILE_PROTOCOL *This
 )
 {
-    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
 
     if (fh->read_ahead_buf != NULL) {
         axl_free(fh->read_ahead_buf);
@@ -233,12 +233,12 @@ WebDavFsClose(
 /// Read from a file (with read-ahead buffer).
 static EFI_STATUS
 read_file(
-    WebDavFsFileCtx *fh,
+    WebFsFileCtx *fh,
     UINTN           *BufferSize,
     VOID            *Buffer
 )
 {
-    WebDavFsPrivate *priv = fh->private_data;
+    WebFsPrivate *priv = fh->private_data;
 
     if (fh->position >= fh->file_size) {
         *BufferSize = 0;
@@ -286,7 +286,7 @@ read_file(
     axl_snprintf(file_path, sizeof(file_path), "/files%s", fh->path);
 
     AxlHttpClientResponse *resp = NULL;
-    int ret = webdavfs_http_request(
+    int ret = webfs_http_request(
         priv, "GET", file_path, range_hdrs, NULL, 0, &resp);
     axl_free(axl_hash_table_lookup(range_hdrs, "range"));
     axl_hash_table_free(range_hdrs);
@@ -353,12 +353,12 @@ build_file_info(
 /// Read next directory entry.
 static EFI_STATUS
 read_dir(
-    WebDavFsFileCtx *fh,
+    WebFsFileCtx *fh,
     UINTN           *BufferSize,
     VOID            *Buffer
 )
 {
-    WebDavFsPrivate *priv = fh->private_data;
+    WebFsPrivate *priv = fh->private_data;
 
     // Lazy-load directory listing (copy from cache for stability)
     if (!fh->dir_loaded) {
@@ -398,13 +398,13 @@ read_dir(
 
 EFI_STATUS
 EFIAPI
-WebDavFsRead(
+WebFsRead(
     EFI_FILE_PROTOCOL *This,
     UINTN             *BufferSize,
     VOID              *Buffer
 )
 {
-    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
 
     if (fh->is_dir) {
         return read_dir(fh, BufferSize, Buffer);
@@ -419,14 +419,14 @@ WebDavFsRead(
 
 EFI_STATUS
 EFIAPI
-WebDavFsWrite(
+WebFsWrite(
     EFI_FILE_PROTOCOL *This,
     UINTN             *BufferSize,
     VOID              *Buffer
 )
 {
-    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    WebDavFsPrivate *priv = fh->private_data;
+    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebFsPrivate *priv = fh->private_data;
 
     if (fh->is_dir) return EFI_UNSUPPORTED;
     if (priv->read_only) return EFI_WRITE_PROTECTED;
@@ -435,7 +435,7 @@ WebDavFsWrite(
     axl_snprintf(file_path, sizeof(file_path), "/files%s", fh->path);
 
     AxlHttpClientResponse *resp = NULL;
-    int ret = webdavfs_http_request(
+    int ret = webfs_http_request(
         priv, "PUT", file_path, NULL, Buffer, *BufferSize, &resp);
     if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
 
@@ -465,15 +465,15 @@ WebDavFsWrite(
 
 EFI_STATUS
 EFIAPI
-WebDavFsDelete(
+WebFsDelete(
     EFI_FILE_PROTOCOL *This
 )
 {
-    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    WebDavFsPrivate *priv = fh->private_data;
+    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebFsPrivate *priv = fh->private_data;
 
     if (priv->read_only) {
-        WebDavFsClose(This);
+        WebFsClose(This);
         return EFI_WARN_DELETE_FAILURE;
     }
 
@@ -481,7 +481,7 @@ WebDavFsDelete(
     axl_snprintf(file_path, sizeof(file_path), "/files%s", fh->path);
 
     AxlHttpClientResponse *resp = NULL;
-    int ret = webdavfs_http_request(
+    int ret = webfs_http_request(
         priv, "DELETE", file_path, NULL, NULL, 0, &resp);
 
     size_t del_status = (resp != NULL) ? resp->status_code : 0;
@@ -492,7 +492,7 @@ WebDavFsDelete(
     dir_cache_invalidate(priv, parent_dir);
 
     // Close (free) the file handle per spec
-    WebDavFsClose(This);
+    WebFsClose(This);
 
     if (ret != 0 || (del_status != 200 && del_status != 404)) {
         return EFI_WARN_DELETE_FAILURE;
@@ -507,15 +507,15 @@ WebDavFsDelete(
 
 EFI_STATUS
 EFIAPI
-WebDavFsGetInfo(
+WebFsGetInfo(
     EFI_FILE_PROTOCOL *This,
     EFI_GUID          *InformationType,
     UINTN             *BufferSize,
     VOID              *Buffer
 )
 {
-    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    WebDavFsPrivate *priv = fh->private_data;
+    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebFsPrivate *priv = fh->private_data;
 
     if (axl_guid_equal(InformationType, &gEfiFileInfoGuid)) {
         DirEntry entry;
@@ -592,15 +592,15 @@ WebDavFsGetInfo(
 
 EFI_STATUS
 EFIAPI
-WebDavFsSetInfo(
+WebFsSetInfo(
     EFI_FILE_PROTOCOL *This,
     EFI_GUID          *InformationType,
     UINTN              BufferSize,
     VOID              *Buffer
 )
 {
-    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
-    WebDavFsPrivate *priv = fh->private_data;
+    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebFsPrivate *priv = fh->private_data;
 
     if (!axl_guid_equal(InformationType, &gEfiFileInfoGuid)) {
         return EFI_UNSUPPORTED;
@@ -632,7 +632,7 @@ WebDavFsSetInfo(
     axl_snprintf(rename_path, sizeof(rename_path), "/files%s?rename=%s", fh->path, new_name8);
 
     AxlHttpClientResponse *resp = NULL;
-    int ret = webdavfs_http_request(
+    int ret = webfs_http_request(
         priv, "POST", rename_path, NULL, NULL, 0, &resp);
 
     size_t rename_status = (resp != NULL) ? resp->status_code : 0;
@@ -658,12 +658,12 @@ WebDavFsSetInfo(
 
 EFI_STATUS
 EFIAPI
-WebDavFsGetPosition(
+WebFsGetPosition(
     EFI_FILE_PROTOCOL *This,
     UINT64            *Position
 )
 {
-    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
     if (fh->is_dir) return EFI_UNSUPPORTED;
     *Position = fh->position;
     return EFI_SUCCESS;
@@ -671,12 +671,12 @@ WebDavFsGetPosition(
 
 EFI_STATUS
 EFIAPI
-WebDavFsSetPosition(
+WebFsSetPosition(
     EFI_FILE_PROTOCOL *This,
     UINT64             Position
 )
 {
-    WebDavFsFileCtx *fh = WEBDAVFS_FILE_FROM_FILE_PROTOCOL(This);
+    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
 
     if (fh->is_dir) {
         if (Position == 0) {
@@ -697,7 +697,7 @@ WebDavFsSetPosition(
 
 EFI_STATUS
 EFIAPI
-WebDavFsFlush(
+WebFsFlush(
     EFI_FILE_PROTOCOL *This
 )
 {

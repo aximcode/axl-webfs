@@ -2,7 +2,7 @@
 # Copyright 2026 AximCode
 # SPDX-License-Identifier: Apache-2.0
 #
-# HttpFS Test Suite
+# axl-webfs Test Suite
 # Tests xfer-server.py endpoints and optionally runs QEMU integration tests.
 
 set -e
@@ -348,24 +348,24 @@ if [ "$RUN_QEMU" = true ]; then
 
         ARCH_DIR=$(echo "$QEMU_ARCH" | tr '[:upper:]' '[:lower:]')
         [ "$ARCH_DIR" = "aarch64" ] && ARCH_DIR="aa64"
-        APP_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/HttpFS.efi"
-        DRV_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/WebDavFsDxe.efi"
+        APP_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/axl-webfs.efi"
+        DRV_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/axl-webfs-dxe.efi"
 
         if [ ! -f "$APP_EFI" ] || [ ! -f "$DRV_EFI" ]; then
             skip "$QEMU_ARCH: binaries not built"
             continue
         fi
 
-        # Copy HttpFS as TestApp for exec-from-mount test
+        # Copy axl-webfs as TestApp for exec-from-mount test
         cp "$APP_EFI" "$QEMU_TEST_DIR/TestApp.efi"
 
         # Build custom startup.nsh for mount test
         MOUNT_NSH=$(mktemp --suffix=.nsh)
         cat > "$MOUNT_NSH" <<NSHEOF
 @echo -off
-echo === HttpFS Integration Test ===
+echo === axl-webfs Integration Test ===
 fs0:
-HttpFS.efi mount http://10.0.2.2:${SERVER_PORT}/
+axl-webfs.efi mount http://10.0.2.2:${SERVER_PORT}/
 map -r
 echo === TEST: ls mounted volume ===
 ls fs1:\\
@@ -381,7 +381,7 @@ fs1:\\TestApp.efi -h
 echo === TEST: large file read ===
 type fs1:\\large.txt
 echo === TEST: umount ===
-HttpFS.efi umount
+axl-webfs.efi umount
 echo === TESTS COMPLETE ===
 reset -s
 NSHEOF
@@ -404,10 +404,10 @@ NSHEOF
 
         info "QEMU" "$QEMU_ARCH: Checking results..."
 
-        if grep -q "HttpFS" "$SERIAL_LOG" 2>/dev/null; then
-            pass "$QEMU_ARCH: HttpFS.efi executed"
+        if grep -q "axl-webfs" "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: axl-webfs.efi executed"
         else
-            fail "$QEMU_ARCH: HttpFS.efi" "not found in serial output"
+            fail "$QEMU_ARCH: axl-webfs.efi" "not found in serial output"
             cat "$SERIAL_LOG" | strings | head -20
             rm -f "$SERIAL_LOG"
             continue
@@ -417,7 +417,7 @@ NSHEOF
             pass "$QEMU_ARCH: mount connected to xfer-server"
         else
             fail "$QEMU_ARCH: mount" "driver did not report success"
-            grep -i "error\|fail\|WebDavFs" "$SERIAL_LOG" 2>/dev/null | head -5 || true
+            grep -i "error\|fail\|axl-webfs-dxe" "$SERIAL_LOG" 2>/dev/null | head -5 || true
         fi
 
         grep -q "readme.txt" "$SERIAL_LOG" 2>/dev/null && \
@@ -436,9 +436,9 @@ NSHEOF
             pass "$QEMU_ARCH: ls subdir shows remote files" || \
             fail "$QEMU_ARCH: ls subdir" "sample.txt not found"
 
-        grep -q "HttpFS v0.1" "$SERIAL_LOG" 2>/dev/null && \
+        grep -q "axl-webfs v0.1" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: exec .efi from mounted volume" || \
-            fail "$QEMU_ARCH: exec from mount" "HttpFS v0.1 not found"
+            fail "$QEMU_ARCH: exec from mount" "axl-webfs v0.1 not found"
 
         grep -q "large file line" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: large file read (50KB)" || \
@@ -458,7 +458,7 @@ NSHEOF
     rm -rf "$QEMU_TEST_DIR"
 
     # ========================================================================
-    # Serve integration tests (QEMU runs HttpFS serve, host curls)
+    # Serve integration tests (QEMU runs axl-webfs serve, host curls)
     # ========================================================================
 
     SERVE_PORT=18090
@@ -468,10 +468,10 @@ NSHEOF
 
         ARCH_DIR=$(echo "$QEMU_ARCH" | tr '[:upper:]' '[:lower:]')
         [ "$ARCH_DIR" = "aarch64" ] && ARCH_DIR="aa64"
-        APP_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/HttpFS.efi"
+        APP_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/axl-webfs.efi"
 
         if [ ! -f "$APP_EFI" ]; then
-            skip "$QEMU_ARCH serve: HttpFS.efi not built"
+            skip "$QEMU_ARCH serve: axl-webfs.efi not built"
             continue
         fi
 
@@ -522,9 +522,9 @@ NSHEOF
             fail "$QEMU_ARCH serve: GET /" "no fs0 in response: $RESP"
 
         RESP=$(curl -sf -H "Accept: application/json" "$BASE/fs0/" 2>/dev/null)
-        echo "$RESP" | grep -q "HttpFS.efi" && \
+        echo "$RESP" | grep -q "axl-webfs.efi" && \
             pass "$QEMU_ARCH serve: GET /fs0/ lists files" || \
-            fail "$QEMU_ARCH serve: GET /fs0/" "HttpFS.efi not in listing"
+            fail "$QEMU_ARCH serve: GET /fs0/" "axl-webfs.efi not in listing"
 
         CONTENT=$(curl -sf "$BASE/fs0/serve_test.txt" 2>/dev/null)
         echo "$CONTENT" | grep -q "serve test file" && \
@@ -578,7 +578,7 @@ NSHEOF
 
     info "QEMU" "=== Serve read-only mode test: X64 ==="
 
-    APP_EFI="$PROJECT_ROOT/build/axl/x64/HttpFS.efi"
+    APP_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs.efi"
     RO_STAGE_DIR=$(mktemp -d)
     echo "readonly test" > "$RO_STAGE_DIR/ro_test.txt"
 
@@ -637,7 +637,7 @@ fi
 
 echo ""
 echo "=========================================="
-echo "       HttpFS Test Summary"
+echo "       axl-webfs Test Summary"
 echo "=========================================="
 TOTAL=$((PASS + FAIL + SKIP))
 echo -e "${GREEN}Passed:${NC}  $PASS"

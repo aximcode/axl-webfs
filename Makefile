@@ -13,21 +13,21 @@ APP_SRCS = src/app/main.c \
            src/transfer/file-transfer.c \
            src/transfer/dir-list.c
 
-DRV_SRCS = src/driver/webdavfs.c \
-           src/driver/webdavfs-file.c \
-           src/driver/webdavfs-cache.c \
+DRV_SRCS = src/driver/webfs.c \
+           src/driver/webfs-file.c \
+           src/driver/webfs-cache.c \
            src/net/network.c
 
 CFLAGS   = -Isrc
 
-all: HttpFS WebDavFsDxe
+all: axl-webfs axl-webfs-dxe
 
-HttpFS: $(OUTDIR)/HttpFS.efi
-$(OUTDIR)/HttpFS.efi: $(APP_SRCS) | $(OUTDIR)
+axl-webfs: $(OUTDIR)/axl-webfs.efi
+$(OUTDIR)/axl-webfs.efi: $(APP_SRCS) | $(OUTDIR)
 	$(AXL_CC) --arch $(ARCH) $(CFLAGS) $(APP_SRCS) -o $@
 
-WebDavFsDxe: $(OUTDIR)/WebDavFsDxe.efi
-$(OUTDIR)/WebDavFsDxe.efi: $(DRV_SRCS) | $(OUTDIR)
+axl-webfs-dxe: $(OUTDIR)/axl-webfs-dxe.efi
+$(OUTDIR)/axl-webfs-dxe.efi: $(DRV_SRCS) | $(OUTDIR)
 	$(AXL_CC) --arch $(ARCH) --type driver $(CFLAGS) $(DRV_SRCS) -o $@
 
 $(OUTDIR):

@@ -1,5 +1,5 @@
 /** @file
-  HttpFS -- AXL File Transfer Toolkit entry point.
+  axl-webfs -- AXL File Transfer Toolkit entry point.
 
   Parses command line parameters and dispatches to the
   appropriate command handler: serve, mount, or umount.
@@ -8,25 +8,25 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#include "httpfs-internal.h"
+#include "webfs-internal.h"
 
 #include <axl.h>
 #include <axl/axl-net.h>
 
-#define HTTPFS_VERSION  "0.1"
+#define AXL_WEBFS_VERSION  "0.1"
 
 static void print_usage(void)
 {
-    axl_printf("HttpFS v%s -- File Transfer Toolkit\n\n", HTTPFS_VERSION);
+    axl_printf("axl-webfs v%s -- UEFI File Transfer Toolkit\n\n", AXL_WEBFS_VERSION);
     axl_printf("Usage:\n");
-    axl_printf("  HttpFS mount <url> [-r]   Mount remote directory as volume\n");
-    axl_printf("  HttpFS umount             Unmount remote volume\n");
-    axl_printf("  HttpFS serve [options]    Run HTTP file server\n");
-    axl_printf("  HttpFS list-nics          List network interfaces\n");
-    axl_printf("  HttpFS -h                 Show this help\n");
+    axl_printf("  axl-webfs mount <url> [-r]   Mount remote directory as volume\n");
+    axl_printf("  axl-webfs umount             Unmount remote volume\n");
+    axl_printf("  axl-webfs serve [options]    Run HTTP file server\n");
+    axl_printf("  axl-webfs list-nics          List network interfaces\n");
+    axl_printf("  axl-webfs -h                 Show this help\n");
     axl_printf("\nExamples:\n");
-    axl_printf("  HttpFS mount http://10.0.0.5:8080/\n");
-    axl_printf("  HttpFS umount\n");
+    axl_printf("  axl-webfs mount http://10.0.0.5:8080/\n");
+    axl_printf("  axl-webfs umount\n");
 }
 
 static int cmd_list_nics(void)

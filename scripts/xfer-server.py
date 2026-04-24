@@ -2,7 +2,7 @@
 # Copyright 2026 AximCode
 # SPDX-License-Identifier: Apache-2.0
 """
-xfer-server — Workstation file server for HttpFS mount command.
+xfer-server — Workstation file server for axl-webfs mount command.
 
 Serves a local directory over HTTP with JSON directory listings.
 No external dependencies — Python 3 stdlib only.
@@ -41,7 +41,7 @@ class XferServer(HTTPServer):
 
 
 class XferHandler(BaseHTTPRequestHandler):
-    """HTTP request handler for HttpFS mount protocol."""
+    """HTTP request handler for axl-webfs mount protocol."""
 
     server_version = f"xfer-server/{VERSION}"
 
@@ -338,7 +338,7 @@ class XferHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="xfer-server — Workstation file server for HttpFS")
+        description="xfer-server — Workstation file server for axl-webfs")
     parser.add_argument("--root", default=".",
                         help="Directory to serve (default: current)")
     parser.add_argument("--port", type=int, default=8080,
@@ -360,7 +360,7 @@ def main() -> None:
     print(f"xfer-server v{VERSION}")
     print(f"Serving {root} on {args.bind}:{args.port}")
     print(f"Mode: {mode}")
-    print("Ready for HttpFS mount connections.")
+    print("Ready for axl-webfs mount connections.")
     print("Press Ctrl-C to stop.\n")
 
     try:

@@ -55,7 +55,7 @@ int ft_list_volumes(bool as_json, char *buf, size_t buf_size, size_t *written)
     } else {
         APPEND(pos, buf, buf_size,
             "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
-            "<title>HttpFS &mdash; Volumes</title>"
+            "<title>axl-webfs &mdash; Volumes</title>"
             "<style>"
             "body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,"
             "BlinkMacSystemFont,\"Segoe UI\",Roboto,monospace;margin:0;padding:2em}"
@@ -70,7 +70,7 @@ int ft_list_volumes(bool as_json, char *buf, size_t buf_size, size_t *written)
             "td{padding:8px 12px;border-bottom:1px solid #0f3460}"
             "tr:hover{background:#1a4a80}"
             "</style></head><body>"
-            "<h2>HttpFS</h2>"
+            "<h2>axl-webfs</h2>"
             "<div class=\"crumb\">Volumes</div>"
             "<div class=\"card\"><table>"
             "<tr><th>Volume</th></tr>");
@@ -130,7 +130,7 @@ int ft_list_dir(FtVolume *vol, const char *path, bool as_json,
             ".sz{text-align:right;color:#8888aa;white-space:nowrap}"
             ".ty{color:#8888aa}"
             "</style></head><body>"
-            "<h2>HttpFS</h2>",
+            "<h2>axl-webfs</h2>",
             vol->name, path);
 
         /* Breadcrumb: Volumes / fs0: / path / subdir */

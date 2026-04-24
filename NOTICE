@@ -1,4 +1,4 @@
-HttpFS
+axl-webfs
 Copyright 2026 AximCode
 
 AximCode is the trade name used by the sole author and sole copyright
@@ -9,6 +9,6 @@ contact noreply@aximcode.github.io.
 This product is licensed under the Apache License, Version 2.0 (see
 LICENSE).
 
-HttpFS is built against the AXL SDK
+axl-webfs is built against the AXL SDK
 (https://github.com/aximcode/axl-sdk-releases), which is also licensed
 under the Apache License, Version 2.0.

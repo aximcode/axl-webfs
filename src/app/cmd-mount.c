@@ -1,7 +1,7 @@
 /** @file
-  HttpFS -- mount and umount command handlers.
+  axl-webfs -- mount and umount command handlers.
 
-  mount: Loads WebDavFsDxe.efi via axl_driver_load, passes the server
+  mount: Loads axl-webfs-dxe.efi via axl_driver_load, passes the server
   URL as UCS-2 load options, and starts the driver.
   umount: Unloads the previously loaded driver handle.
 
@@ -9,13 +9,13 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#include "httpfs-internal.h"
+#include "webfs-internal.h"
 
 #include <axl.h>
 #include <axl/axl-driver.h>
 #include <axl/axl-sys.h>
 
-#define DRIVER_FILENAME  "WebDavFsDxe.efi"
+#define DRIVER_FILENAME  "axl-webfs-dxe.efi"
 
 static const AxlGuid HttpFsVendorGuid = AXL_GUID(
     0xf47c0fa2, 0xbf67, 0x4c0d,
@@ -41,7 +41,7 @@ cmd_mount(int argc, char **argv)
     axl_config_parse_args(cfg, argc, argv);
 
     if (axl_config_get_bool(cfg, "help") || axl_config_pos_count(cfg) < 1) {
-        axl_config_usage(cfg, "HttpFS mount", "<URL> [OPTIONS]");
+        axl_config_usage(cfg, "axl-webfs mount", "<URL> [OPTIONS]");
         axl_config_free(cfg);
         return axl_config_pos_count(cfg) < 1 ? 1 : 0;
     }
@@ -137,7 +137,7 @@ cmd_umount(int argc, char **argv)
     if (axl_service_enumerate("simple-fs", &fs_handles, &fs_count) != 0 ||
         fs_count == 0) {
         axl_free(fs_handles);
-        axl_printf("ERROR: No mounted HttpFS volumes found\n");
+        axl_printf("ERROR: No mounted axl-webfs volumes found\n");
         return 1;
     }
 
@@ -150,7 +150,7 @@ cmd_umount(int argc, char **argv)
         if (!axl_device_path_has_vendor(devpath, &HttpFsVendorGuid))
             continue;
 
-        /* Found the HttpFS volume -- scan loaded images for the driver */
+        /* Found the axl-webfs volume -- scan loaded images for the driver */
         void **img_handles = NULL;
         size_t img_count = 0;
         if (axl_service_enumerate("loaded-image", &img_handles, &img_count) != 0) {
@@ -174,7 +174,7 @@ cmd_umount(int argc, char **argv)
     axl_free(fs_handles);
 
     if (!found) {
-        axl_printf("ERROR: No mounted HttpFS volumes found\n");
+        axl_printf("ERROR: No mounted axl-webfs volumes found\n");
         return 1;
     }
 

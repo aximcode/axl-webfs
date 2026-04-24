@@ -1,4 +1,4 @@
-# Contributing to HttpFS
+# Contributing to axl-webfs
 
 Thanks for your interest in contributing. Please read this short
 document before opening a pull request.
@@ -6,7 +6,7 @@ document before opening a pull request.
 ## How to contribute
 
 - File issues and pull requests on the public repository:
-  https://github.com/aximcode/httpfs
+  https://github.com/aximcode/axl-webfs
 - Keep pull requests focused — one concern per PR.
 - Follow the style rules from the AXL SDK's `docs/AXL-Coding-Style.md`
   (snake_case functions, PascalCase types, 4-space indent, K&R braces).
