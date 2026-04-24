@@ -55,7 +55,7 @@ i=0
 for url in "${URLS[@]}"; do
     echo "[demo-serve]   $(printf '%02d' $i)  $url"
     google-chrome --headless=new --disable-gpu --no-sandbox \
-        --hide-scrollbars --window-size=1200,420 \
+        --hide-scrollbars --window-size=1200,520 \
         --screenshot="$FRAMES_DIR/$(printf %02d $i).png" "$url" 2>/dev/null
     i=$((i + 1))
 done
