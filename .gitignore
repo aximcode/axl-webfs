@@ -2,3 +2,5 @@ Build/
 Conf/
 build/
 *.code-workspace
+CLAUDE.md
+.claude/settings.local.json
