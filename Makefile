@@ -35,3 +35,9 @@ $(OUTDIR):
 
 clean:
 	rm -rf build/axl
+
+# Regenerate the README demo GIF. Requires vhs, ttyd, tmux, ffmpeg on PATH.
+demo:
+	vhs docs/assets/demo-mount.tape
+
+.PHONY: all axl-webfs axl-webfs-dxe clean demo
