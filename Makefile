@@ -36,8 +36,14 @@ $(OUTDIR):
 clean:
 	rm -rf build/axl
 
-# Regenerate the README demo GIF. Requires vhs, ttyd, tmux, ffmpeg on PATH.
-demo:
+# Regenerate the README demo GIFs.
+#  demo-mount: vhs + tmux narrative of the mount command.
+#  demo-serve: real axl-webfs.efi serve in QEMU, screenshot with
+#              headless Chrome. Requires AXL_SDK_SRC for run-qemu.sh.
+demo: demo-mount demo-serve
+demo-mount:
 	vhs docs/assets/demo-mount.tape
+demo-serve:
+	scripts/demo-serve.sh
 
-.PHONY: all axl-webfs axl-webfs-dxe clean demo
+.PHONY: all axl-webfs axl-webfs-dxe clean demo demo-mount demo-serve

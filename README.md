@@ -10,6 +10,14 @@
 
 <img src="docs/assets/demo-mount.gif" alt="Mount a workstation directory over HTTP and run an .efi directly from the UEFI Shell." width="100%" />
 
+<sub><b><code>mount</code></b> — workstation folder appears as <code>FSn:</code> in the UEFI Shell.</sub>
+
+<br/><br/>
+
+<img src="docs/assets/demo-serve.gif" alt="Browse UEFI volumes from any browser via the built-in HTTP server." width="100%" />
+
+<sub><b><code>serve</code></b> — UEFI volumes browsable from any browser or <code>curl</code>.</sub>
+
 </div>
 
 ## What it does
@@ -185,17 +193,23 @@ auto-connect the network stack. axl-webfs handles this by calling
 `ConnectController` on SNP handles before NIC discovery. Use
 `list-nics` to verify link status if networking isn't working.
 
-## Regenerating the demo GIF
+## Regenerating the demo GIFs
 
-The GIF above is produced from [docs/assets/demo-mount.tape](docs/assets/demo-mount.tape)
-using [vhs](https://github.com/charmbracelet/vhs). To rebuild it after
-editing the narrative scripts:
+Both GIFs are checked in and regenerable:
+
+- `demo-mount.gif` — rendered by [vhs](https://github.com/charmbracelet/vhs)
+  from [docs/assets/demo-mount.tape](docs/assets/demo-mount.tape), using
+  the narrative scripts under [scripts/demo-pane-*.sh](scripts/).
+- `demo-serve.gif` — real `axl-webfs.efi serve` booted in QEMU; pages
+  captured with headless Chrome and stitched by ffmpeg. See
+  [scripts/demo-serve.sh](scripts/demo-serve.sh).
 
 ```bash
-make demo
+make demo              # regenerate both
+make demo-mount        # just the mount GIF   (vhs, ttyd, tmux, ffmpeg)
+AXL_SDK_SRC=~/src/axl-sdk-releases make demo-serve
+                       # just the serve GIF   (QEMU, google-chrome, ffmpeg)
 ```
-
-Requires `vhs`, `ttyd`, `tmux`, and `ffmpeg` on `PATH`.
 
 ## Contributing and security
 
