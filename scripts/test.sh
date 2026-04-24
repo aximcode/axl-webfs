@@ -310,14 +310,15 @@ fi
 # ============================================================================
 # QEMU integration tests (optional)
 # Uses AXL SDK's run-qemu.sh for QEMU/firmware/disk-image management.
+# run-qemu.sh ships with the axl-sdk source tree (not the .deb/.rpm).
+# Point AXL_SDK_SRC at an axl-sdk checkout to run QEMU tests.
 # ============================================================================
 
 if [ "$RUN_QEMU" = true ]; then
-    AXL_SDK="${AXL_SDK:-$HOME/projects/aximcode/axl-sdk/out}"
-    RUN_QEMU_SH="$AXL_SDK/../scripts/run-qemu.sh"
+    RUN_QEMU_SH="${AXL_SDK_SRC:+$AXL_SDK_SRC/scripts/run-qemu.sh}"
 
-    if [ ! -f "$RUN_QEMU_SH" ]; then
-        skip "QEMU tests: run-qemu.sh not found at $RUN_QEMU_SH"
+    if [ -z "$RUN_QEMU_SH" ] || [ ! -f "$RUN_QEMU_SH" ]; then
+        skip "QEMU tests: set AXL_SDK_SRC to an axl-sdk source checkout (run-qemu.sh not packaged in .deb/.rpm)"
     else
 
     QEMU_ARCHS=(X64)
