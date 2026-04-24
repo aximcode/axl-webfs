@@ -188,10 +188,10 @@ AXL_SDK_SRC=~/src/axl-sdk-releases scripts/test.sh --qemu
 
 ## Platform notes
 
-On ARM64 hardware (e.g. some ARM64 servers) firmware may not
-auto-connect the network stack. axl-webfs handles this by calling
-`ConnectController` on SNP handles before NIC discovery. Use
-`list-nics` to verify link status if networking isn't working.
+Some ARM64 server firmware doesn't auto-connect the network stack.
+axl-webfs handles this by calling `ConnectController` on SNP handles
+before NIC discovery. Use `list-nics` to verify link status if
+networking isn't working.
 
 ## Regenerating the demo GIFs
 
