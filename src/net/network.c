@@ -12,6 +12,7 @@
 
 #include <axl.h>
 #include <axl/axl-net.h>
+#include <axl/axl-wait.h>
 
 /* ------------------------------------------------------------------ */
 /* Module state                                                       */
@@ -45,7 +46,7 @@ network_init(size_t nic_index, const uint8_t *static_ip, size_t timeout_sec)
             axl_printf("ERROR: Failed to set static IP\n");
             return -1;
         }
-        axl_stall(500000);
+        axl_msleep(500);
     }
 
     AxlIPv4Address ip;
