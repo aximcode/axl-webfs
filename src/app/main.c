@@ -13,8 +13,6 @@
 #include <axl.h>
 #include <axl/axl-net.h>
 
-#define AXL_WEBFS_VERSION  "0.1"
-
 static void print_usage(void)
 {
     axl_printf("axl-webfs v%s -- UEFI File Transfer Toolkit\n\n", AXL_WEBFS_VERSION);

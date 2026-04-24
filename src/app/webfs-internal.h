@@ -10,6 +10,8 @@
 
 #include <axl.h>
 
+#define AXL_WEBFS_VERSION  "0.2"
+
 int cmd_mount(int argc, char **argv);
 int cmd_umount(int argc, char **argv);
 int cmd_serve(int argc, char **argv);

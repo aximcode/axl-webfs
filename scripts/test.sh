@@ -436,9 +436,9 @@ NSHEOF
             pass "$QEMU_ARCH: ls subdir shows remote files" || \
             fail "$QEMU_ARCH: ls subdir" "sample.txt not found"
 
-        grep -q "axl-webfs v0.1" "$SERIAL_LOG" 2>/dev/null && \
+        grep -qE "axl-webfs v[0-9]+\.[0-9]+" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: exec .efi from mounted volume" || \
-            fail "$QEMU_ARCH: exec from mount" "axl-webfs v0.1 not found"
+            fail "$QEMU_ARCH: exec from mount" "axl-webfs version banner not found"
 
         grep -q "large file line" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: large file read (50KB)" || \

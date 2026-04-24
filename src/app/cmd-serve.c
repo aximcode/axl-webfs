@@ -529,7 +529,7 @@ cmd_serve(int argc, char **argv)
     //
     // Print banner
     //
-    axl_printf("\naxl-webfs v0.1 -- UEFI HTTP File Server\n");
+    axl_printf("\naxl-webfs v%s -- UEFI HTTP File Server\n", AXL_WEBFS_VERSION);
     axl_printf("Listening on %d.%d.%d.%d:%d\n",
         addr[0], addr[1], addr[2], addr[3], opts.port);
 
