@@ -5,7 +5,7 @@
   static IP. No direct UEFI protocol calls.
 
   Copyright (c) 2026, AximCode. All rights reserved.
-  SPDX-License-Identifier: BSD-2-Clause-Patent
+  SPDX-License-Identifier: Apache-2.0
 **/
 
 #include "net/network.h"

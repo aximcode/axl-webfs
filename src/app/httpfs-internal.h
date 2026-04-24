@@ -2,7 +2,7 @@
   HttpFS -- Internal declarations shared between Main.c and command files.
 
   Copyright (c) 2026, AximCode. All rights reserved.
-  SPDX-License-Identifier: BSD-2-Clause-Patent
+  SPDX-License-Identifier: Apache-2.0
 **/
 
 #ifndef HTTPFS_INTERNAL_H_

@@ -2,7 +2,7 @@
   FileTransferLib -- Volume enumeration, streaming file I/O, directory listing.
 
   Copyright (c) 2026, AximCode. All rights reserved.
-  SPDX-License-Identifier: BSD-2-Clause-Patent
+  SPDX-License-Identifier: Apache-2.0
 **/
 
 #ifndef FILE_TRANSFER_LIB_H_

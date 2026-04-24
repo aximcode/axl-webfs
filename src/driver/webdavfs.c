@@ -6,7 +6,7 @@
   on a new device handle so the UEFI Shell sees it as FSn:.
 
   Copyright (c) 2026, AximCode. All rights reserved.
-  SPDX-License-Identifier: BSD-2-Clause-Patent
+  SPDX-License-Identifier: Apache-2.0
 **/
 
 #include "webdavfs-internal.h"

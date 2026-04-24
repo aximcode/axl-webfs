@@ -5,7 +5,7 @@
   Uses SIGNATURE_32 + CR macros for container derivation.
 
   Copyright (c) 2026, AximCode. All rights reserved.
-  SPDX-License-Identifier: BSD-2-Clause-Patent
+  SPDX-License-Identifier: Apache-2.0
 **/
 
 #ifndef WEBDAVFS_INTERNAL_H_

@@ -1,0 +1,14 @@
+HttpFS
+Copyright 2026 AximCode
+
+AximCode is the trade name used by the sole author and sole copyright
+holder of this project. Copyright is held personally by the author, not
+by any registered legal entity. For commercial-licensing inquiries,
+contact noreply@aximcode.github.io.
+
+This product is licensed under the Apache License, Version 2.0 (see
+LICENSE).
+
+HttpFS is built against the AXL SDK
+(https://github.com/aximcode/axl-sdk-releases), which is also licensed
+under the Apache License, Version 2.0.

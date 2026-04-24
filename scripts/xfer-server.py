@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 AximCode
+# SPDX-License-Identifier: Apache-2.0
 """
 xfer-server — Workstation file server for HttpFS mount command.
 

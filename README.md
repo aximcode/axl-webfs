@@ -112,4 +112,4 @@ for details.
 
 ## License
 
-BSD-2-Clause-Patent
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

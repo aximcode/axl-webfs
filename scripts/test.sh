@@ -1,5 +1,7 @@
 #!/bin/bash
-
+# Copyright 2026 AximCode
+# SPDX-License-Identifier: Apache-2.0
+#
 # HttpFS Test Suite
 # Tests xfer-server.py endpoints and optionally runs QEMU integration tests.
 

@@ -2,7 +2,7 @@
   NetworkLib -- NIC discovery, DHCP configuration, and static IP setup.
 
   Copyright (c) 2026, AximCode. All rights reserved.
-  SPDX-License-Identifier: BSD-2-Clause-Patent
+  SPDX-License-Identifier: Apache-2.0
 **/
 
 #ifndef NETWORK_LIB_H_

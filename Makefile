@@ -1,3 +1,6 @@
+# Copyright 2026 AximCode
+# SPDX-License-Identifier: Apache-2.0
+
 AXL_SDK  ?= $(HOME)/projects/aximcode/axl-sdk/out
 AXL_CC   = $(AXL_SDK)/bin/axl-cc
 ARCH     ?= x64

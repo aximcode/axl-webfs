@@ -5,7 +5,7 @@
   appropriate command handler: serve, mount, or umount.
 
   Copyright (c) 2026, AximCode. All rights reserved.
-  SPDX-License-Identifier: BSD-2-Clause-Patent
+  SPDX-License-Identifier: Apache-2.0
 **/
 
 #include "httpfs-internal.h"
