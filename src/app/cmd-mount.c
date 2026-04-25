@@ -49,12 +49,26 @@ cmd_mount(int argc, char **argv)
     const char *url = axl_config_pos(cfg, 0);
     axl_config_free(cfg);
 
-    axl_printf("Loading %s...\n", DRIVER_FILENAME);
+    // Find the driver — search image's drivers/<arch>/, image's own
+    // directory, image's drivers/, then other volumes' drivers/<arch>/.
+    // axl_driver_load(DRIVER_FILENAME, ...) by itself would be CWD-
+    // relative and fail when the user invoked us from a different
+    // volume than where the binaries live (the Dell case).
+    char drv_path[256];
+    if (axl_driver_locate(DRIVER_FILENAME, drv_path, sizeof(drv_path)) != 0) {
+        axl_printf("ERROR: %s not found on any mounted volume.\n",
+                   DRIVER_FILENAME);
+        axl_printf("       Place it next to axl-webfs.efi or under "
+                   "drivers/<arch>/ on the boot disk.\n");
+        return 1;
+    }
+
+    axl_printf("Loading %s...\n", drv_path);
 
     // Load the driver image
     AxlDriverHandle handle = NULL;
-    if (axl_driver_load(DRIVER_FILENAME, &handle) != 0) {
-        axl_printf("ERROR: Cannot load %s\n", DRIVER_FILENAME);
+    if (axl_driver_load(drv_path, &handle) != 0) {
+        axl_printf("ERROR: Cannot load %s\n", drv_path);
         return 1;
     }
 
