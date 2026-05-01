@@ -27,27 +27,22 @@ static AxlDriverHandle mDriverHandle;
 // mount command
 // ----------------------------------------------------------------------------
 
-int
-cmd_mount(int argc, char **argv)
+static const AxlArgDesc kMountFlags[] = {
+    { .name = "read-only", .short_name = 'r', .type = AXL_ARG_BOOL,
+      .help = "Mount read-only" },
+    {0}
+};
+
+static const AxlArgDesc kMountPos[] = {
+    { .name = "url", .type = AXL_ARG_STRING, .required = true,
+      .help = "URL of the axl-webfs server to mount" },
+    {0}
+};
+
+static int
+mount_handler(AxlArgs *a)
 {
-    static const AxlConfigDesc mount_descs[] = {
-        { "read-only", AXL_CFG_BOOL, "false", 'r', "Mount read-only", 0, 0 },
-        { "help",      AXL_CFG_BOOL, "false", 'h', "Show help",       0, 0 },
-        { 0 }
-    };
-
-    AxlConfig *cfg = axl_config_new(mount_descs, NULL, NULL);
-    if (cfg == NULL) return 1;
-    axl_config_parse_args(cfg, argc, argv);
-
-    if (axl_config_get_bool(cfg, "help") || axl_config_pos_count(cfg) < 1) {
-        axl_config_usage(cfg, "axl-webfs mount", "<URL> [OPTIONS]");
-        axl_config_free(cfg);
-        return axl_config_pos_count(cfg) < 1 ? 1 : 0;
-    }
-
-    const char *url = axl_config_pos(cfg, 0);
-    axl_config_free(cfg);
+    const char *url = axl_args_get_string(a, "url");
 
     // Find the driver — search image's drivers/<arch>/, image's own
     // directory, image's drivers/, then other volumes' drivers/<arch>/.
@@ -122,6 +117,18 @@ cmd_mount(int argc, char **argv)
     }
 
     return 0;
+}
+
+int
+cmd_mount(int argc, char **argv)
+{
+    return axl_args_run(argc, argv, &(AxlArgsApp){
+        .name         = "axl-webfs mount",
+        .help         = "Mount an axl-webfs server URL as a UEFI filesystem",
+        .global_flags = kMountFlags,
+        .positionals  = kMountPos,
+        .handler      = mount_handler,
+    });
 }
 
 // ----------------------------------------------------------------------------

@@ -436,42 +436,35 @@ esc_key_handler(AxlInputKey key, void *data)
 // Main serve command
 // ----------------------------------------------------------------------------
 
-int
-cmd_serve(int argc, char **argv)
+static const AxlArgDesc kServeFlags[] = {
+    { .name = "port",       .short_name = 'p', .type = AXL_ARG_U16,
+      .default_value = "8080", .help = "Listen port" },
+    { .name = "nic",        .short_name = 'n', .type = AXL_ARG_U32,
+      .help = "NIC index (default: auto)" },
+    { .name = "timeout",    .short_name = 't', .type = AXL_ARG_U32,
+      .help = "Idle timeout in seconds (default: 0 = none)" },
+    { .name = "read-only",                     .type = AXL_ARG_BOOL,
+      .help = "Block uploads (PUT/POST/DELETE)" },
+    { .name = "write-only",                    .type = AXL_ARG_BOOL,
+      .help = "Block downloads (GET)" },
+    { .name = "verbose",    .short_name = 'v', .type = AXL_ARG_BOOL,
+      .help = "Verbose logging" },
+    {0}
+};
+
+static int
+serve_handler(AxlArgs *a)
 {
     ServeOptions    opts;
     AxlHttpServer  *server;
 
-    static const AxlConfigDesc serve_descs[] = {
-        { "port",       AXL_CFG_UINT, "8080",  'p', "Listen port",        0, 0 },
-        { "nic",        AXL_CFG_UINT, NULL,     'n', "NIC index",          0, 0 },
-        { "timeout",    AXL_CFG_UINT, "0",      't', "Idle timeout (sec)", 0, 0 },
-        { "read-only",  AXL_CFG_BOOL, "false",   0,  "Block uploads",     0, 0 },
-        { "write-only", AXL_CFG_BOOL, "false",   0,  "Block downloads",   0, 0 },
-        { "verbose",    AXL_CFG_BOOL, "false",  'v', "Verbose logging",   0, 0 },
-        { "help",       AXL_CFG_BOOL, "false",  'h', "Show help",         0, 0 },
-        { 0 }
-    };
-
-    AxlConfig *cfg = axl_config_new(serve_descs, NULL, NULL);
-    if (cfg == NULL) return 1;
-    axl_config_parse_args(cfg, argc, argv);
-
-    if (axl_config_get_bool(cfg, "help")) {
-        axl_config_usage(cfg, "axl-webfs serve", "[OPTIONS]");
-        axl_config_free(cfg);
-        return 0;
-    }
-
-    opts.port             = (uint16_t)axl_config_get_uint(cfg, "port");
-    opts.nic_index        = axl_config_get(cfg, "nic") != NULL
-                          ? (size_t)axl_config_get_uint(cfg, "nic") : (size_t)-1;
-    opts.idle_timeout_sec = (size_t)axl_config_get_uint(cfg, "timeout");
-    opts.read_only        = axl_config_get_bool(cfg, "read-only");
-    opts.write_only       = axl_config_get_bool(cfg, "write-only");
-    opts.verbose          = axl_config_get_bool(cfg, "verbose");
-
-    axl_config_free(cfg);
+    opts.port             = (uint16_t)axl_args_get_uint(a, "port");
+    opts.nic_index        = axl_args_get_string(a, "nic") != NULL
+                          ? (size_t)axl_args_get_uint(a, "nic") : (size_t)-1;
+    opts.idle_timeout_sec = (size_t)axl_args_get_uint(a, "timeout");
+    opts.read_only        = axl_args_get_bool(a, "read-only");
+    opts.write_only       = axl_args_get_bool(a, "write-only");
+    opts.verbose          = axl_args_get_bool(a, "verbose");
 
     //
     // Initialize networking (driver loading, DHCP)
@@ -582,4 +575,15 @@ cmd_serve(int argc, char **argv)
     axl_http_server_free(server);
     network_cleanup();
     return status;
+}
+
+int
+cmd_serve(int argc, char **argv)
+{
+    return axl_args_run(argc, argv, &(AxlArgsApp){
+        .name         = "axl-webfs serve",
+        .help         = "Serve mounted volumes over HTTP",
+        .global_flags = kServeFlags,
+        .handler      = serve_handler,
+    });
 }
