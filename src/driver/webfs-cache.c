@@ -192,7 +192,7 @@ dir_cache_fetch(
     axl_http_client_response_free(response);
 
     // Parse JSON array
-    AxlJsonCtx ctx;
+    AxlJsonReader ctx;
     if (!axl_json_parse(body_buf, body_size, &ctx)) {
         axl_free(body_buf);
         return -1;
@@ -213,7 +213,7 @@ dir_cache_fetch(
     }
     size_t n = 0;
 
-    AxlJsonCtx elem;
+    AxlJsonReader elem;
     while (axl_json_array_next(&iter, &elem) &&
            n < DIR_CACHE_MAX_ENTRIES) {
         DirEntry *e = &temp_entries[n];
