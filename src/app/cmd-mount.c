@@ -122,10 +122,10 @@ mount_handler(AxlArgs *a)
 int
 cmd_mount(int argc, char **argv)
 {
-    return axl_args_run(argc, argv, &(AxlArgsApp){
+    return axl_args_run(argc, argv, &(AxlArgsNode){
         .name         = "axl-webfs mount",
         .help         = "Mount an axl-webfs server URL as a UEFI filesystem",
-        .global_flags = kMountFlags,
+        .flags        = kMountFlags,
         .positionals  = kMountPos,
         .handler      = mount_handler,
     });

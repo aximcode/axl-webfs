@@ -580,10 +580,10 @@ serve_handler(AxlArgs *a)
 int
 cmd_serve(int argc, char **argv)
 {
-    return axl_args_run(argc, argv, &(AxlArgsApp){
+    return axl_args_run(argc, argv, &(AxlArgsNode){
         .name         = "axl-webfs serve",
         .help         = "Serve mounted volumes over HTTP",
-        .global_flags = kServeFlags,
+        .flags        = kServeFlags,
         .handler      = serve_handler,
     });
 }
