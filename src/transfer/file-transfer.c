@@ -20,8 +20,7 @@ int ft_init(void)
 {
     mVolumeCount = 0;
     /* AxlVolume and FtVolume have identical layout */
-    return axl_volume_enumerate((AxlVolume *)mVolumes, FT_MAX_VOLUMES, &mVolumeCount)
-           ? 0 : -1;
+    return axl_volume_enumerate((AxlVolume *)mVolumes, FT_MAX_VOLUMES, &mVolumeCount);
 }
 
 size_t ft_get_volume_count(void)
@@ -79,7 +78,7 @@ int ft_open_read(FtVolume *vol, const char *path, uint64_t offset,
 
     /* Get file size via axl_file_info */
     AxlFileInfo fi;
-    if (!axl_file_info(full, &fi)) {
+    if (axl_file_info(full, &fi) != 0) {
         axl_fclose(s);
         return -1;
     }
@@ -179,14 +178,14 @@ int ft_delete(FtVolume *vol, const char *path)
 {
     char full[512];
     build_path(vol, path, full, sizeof(full));
-    return axl_file_delete(full) ? 0 : -1;
+    return axl_file_delete(full);
 }
 
 int ft_mkdir(FtVolume *vol, const char *path)
 {
     char full[512];
     build_path(vol, path, full, sizeof(full));
-    return axl_dir_mkdir(full) ? 0 : -1;
+    return axl_dir_mkdir(full);
 }
 
 int ft_get_file_size(FtVolume *vol, const char *path, uint64_t *size)
@@ -194,7 +193,7 @@ int ft_get_file_size(FtVolume *vol, const char *path, uint64_t *size)
     char full[512];
     build_path(vol, path, full, sizeof(full));
     AxlFileInfo fi;
-    if (!axl_file_info(full, &fi))
+    if (axl_file_info(full, &fi) != 0)
         return -1;
     *size = fi.size;
     return 0;
@@ -205,7 +204,7 @@ int ft_is_dir(FtVolume *vol, const char *path, bool *is_dir)
     char full[512];
     build_path(vol, path, full, sizeof(full));
     AxlFileInfo fi;
-    if (!axl_file_info(full, &fi))
+    if (axl_file_info(full, &fi) != 0)
         return -1;
     *is_dir = fi.is_dir;
     return 0;
