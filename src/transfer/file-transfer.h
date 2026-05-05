@@ -11,14 +11,18 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <axl/axl-fs.h>
 
 #define FT_CHUNK_SIZE    (8 * 1024)
 #define FT_MAX_VOLUMES   8
 
-typedef struct {
-    void  *handle;   /* opaque filesystem handle */
-    char   name[16]; /* volume name, e.g. "fs0" */
-} FtVolume;
+/* FtVolume is intentionally an alias for AxlVolume — the layout MUST
+   match because file-transfer.c casts mVolumes directly to AxlVolume*
+   for axl_volume_enumerate. Keeping a hand-rolled struct here led to
+   silent corruption when axl-sdk added the device_path field (entries
+   1+ in the listing got shifted bytes). Use the SDK type directly so
+   future field additions stay in sync. */
+typedef AxlVolume FtVolume;
 
 typedef void (*FtProgressCb)(size_t bytes_transferred, size_t total_bytes, void *ctx);
 
