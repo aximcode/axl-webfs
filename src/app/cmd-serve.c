@@ -562,8 +562,8 @@ serve_handler(AxlArgs *a)
 
     if (axl_http_server_attach(server, loop) != 0) {
         axl_printf("ERROR: Server attach failed\n");
-        axl_loop_free(loop);
         axl_http_server_free(server);
+        axl_loop_free(loop);
         network_cleanup();
         return 1;
     }
@@ -571,8 +571,13 @@ serve_handler(AxlArgs *a)
     int status = axl_loop_run(loop);
 
     mServeLoop = NULL;
-    axl_loop_free(loop);
+    /* Free the server FIRST — its detach path removes TCP listener
+       event sources from the loop. Reversing this order leaves
+       caller-owned event sources active when axl_loop_free walks the
+       table and triggers a use-after-free warning (and a real crash
+       on the next loop ops). */
     axl_http_server_free(server);
+    axl_loop_free(loop);
     network_cleanup();
     return status;
 }
