@@ -449,6 +449,8 @@ static const AxlArgDesc kServeFlags[] = {
       .help = "Block downloads (GET)" },
     { .name = "verbose",    .short_name = 'v', .type = AXL_ARG_BOOL,
       .help = "Verbose logging" },
+    { .name = "source",                            .type = AXL_ARG_STRING,
+      .help = "Bind listener to interface with this station IPv4 (auto if unset)" },
     {0}
 };
 
@@ -494,6 +496,14 @@ serve_handler(AxlArgs *a)
         axl_printf("ERROR: HTTP server creation failed\n");
         network_cleanup();
         return 1;
+    }
+
+    /* Optional --source <ipv4>: pin the listener to a specific local
+       interface. Empty / unset = auto-pick. The HTTP server validates
+       and returns an error if the value is malformed. */
+    const char *source = axl_args_get_string(a, "source");
+    if (source != NULL && source[0] != '\0') {
+        axl_http_server_set(server, "listen.ip", source);
     }
 
     axl_http_server_set_body_limit(server, 128 * 1024 * 1024);  // 128 MB
