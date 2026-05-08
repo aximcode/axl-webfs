@@ -11,12 +11,14 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#include "webfs-internal.h"
-
 #include <axl.h>
+#include <axl/axl-driver.h>
 #include "net/network.h"
 #include "serve/serve-core.h"
 #include "transfer/file-transfer.h"
+#include "webfs-version.h"
+
+#define SERVE_DRIVER_FILENAME  "axl-webfs-serve-dxe.efi"
 
 
 // ----------------------------------------------------------------------------
@@ -63,8 +65,73 @@ const AxlArgDesc webfs_serve_flags[] = {
       .help = "Verbose logging" },
     { .name = "source",                            .type = AXL_ARG_STRING,
       .help = "Bind listener to interface with this station IPv4 (auto if unset)" },
+    { .name = "detach",     .short_name = 'd', .type = AXL_ARG_BOOL,
+      .help = "Run as a resident DXE driver and return to the shell" },
     {0}
 };
+
+// ----------------------------------------------------------------------------
+// Detached path -- load axl-webfs-serve-dxe.efi with packed load options
+// and return to the shell. The driver image walks down through
+// serve_core_setup; from then on UEFI's timer-driven dispatch keeps the
+// HTTP server alive until `serve-stop` (or `unload -n`) tears it back
+// down.
+// ----------------------------------------------------------------------------
+
+static int
+serve_detach(const ServeCoreOpts *opts)
+{
+    char drv_path[256];
+    if (axl_driver_locate(SERVE_DRIVER_FILENAME, drv_path,
+                          sizeof(drv_path)) != 0)
+    {
+        axl_printf("ERROR: %s not found on any mounted volume.\n",
+                   SERVE_DRIVER_FILENAME);
+        axl_printf("       Place it next to axl-webfs.efi or under "
+                   "drivers/<arch>/ on the boot disk.\n");
+        return 1;
+    }
+
+    char load_opts[256];
+    if (serve_opts_serialize(opts, load_opts, sizeof(load_opts)) != AXL_OK) {
+        axl_printf("ERROR: load-options serialisation overflow\n");
+        return 1;
+    }
+
+    /* UEFI load options are UCS-2; convert before handing to the driver. */
+    unsigned short *opts_w = axl_utf8_to_ucs2(load_opts);
+    if (opts_w == NULL) {
+        axl_printf("ERROR: UTF-8 to UCS-2 conversion failed\n");
+        return 1;
+    }
+
+    size_t wlen = 0;
+    while (opts_w[wlen] != 0) wlen++;
+    size_t opts_w_size = (wlen + 1) * sizeof(unsigned short);
+
+    AxlDriverHandle handle = NULL;
+    if (axl_driver_load(drv_path, &handle) != 0) {
+        axl_free(opts_w);
+        axl_printf("ERROR: cannot load %s\n", drv_path);
+        return 1;
+    }
+
+    if (axl_driver_set_load_options(handle, opts_w, opts_w_size) != 0) {
+        axl_free(opts_w);
+        axl_driver_unload(handle);
+        axl_printf("ERROR: cannot set driver load options\n");
+        return 1;
+    }
+    axl_free(opts_w);
+
+    if (axl_driver_start(handle) != 0) {
+        axl_driver_unload(handle);
+        axl_printf("ERROR: driver start failed -- check serial log\n");
+        return 1;
+    }
+
+    return 0;
+}
 
 int
 webfs_serve_handler(AxlArgs *a)
@@ -81,6 +148,10 @@ webfs_serve_handler(AxlArgs *a)
         .verbose          = axl_args_get_bool(a, "verbose"),
         .source           = axl_args_get_string(a, "source"),
     };
+
+    if (axl_args_get_bool(a, "detach")) {
+        return serve_detach(&opts);
+    }
 
     ServeCore core;
     if (serve_core_setup(&opts, &core) != AXL_OK) {

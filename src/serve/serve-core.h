@@ -57,4 +57,35 @@ int  serve_core_setup(const ServeCoreOpts *opts, ServeCore *core);
 /// loop), then frees the loop, then runs network_cleanup.
 void serve_core_teardown(ServeCore *core);
 
+// ----------------------------------------------------------------------------
+// Load-options serialisation
+//
+// The foreground `serve --detach` verb packs ServeCoreOpts into a UTF-8
+// `key=value;key=value;...` string and ships it to the driver image as
+// LoadOptions (UCS-2). The driver's DriverEntry parses the string back
+// into a ServeCoreOpts. Both sides MUST agree on the encoding -- having
+// it here keeps them in sync.
+// ----------------------------------------------------------------------------
+
+/// Serialise @p opts into @p out (UTF-8). @p source_buf must outlive the
+/// resulting ServeCoreOpts on the driver side; pass NULL to skip the
+/// source field.
+///
+/// @return AXL_OK on success, AXL_ERR if @p out_size is too small.
+int  serve_opts_serialize(const ServeCoreOpts *opts,
+                          char *out, size_t out_size);
+
+/// Parse a UTF-8 key=value;... string into @p opts. @p source_buf is a
+/// caller-owned buffer of at least @p source_buf_size bytes; if the
+/// load-options string contains a `source=` key its value is copied
+/// there and @p opts->source is pointed at the buffer. If absent
+/// @p opts->source is NULL.
+///
+/// Unknown keys are silently ignored to keep this forward-compatible
+/// with future foreground-app additions.
+///
+/// @return AXL_OK on success, AXL_ERR on a malformed input.
+int  serve_opts_parse(const char *in, ServeCoreOpts *opts,
+                      char *source_buf, size_t source_buf_size);
+
 #endif /* AXL_WEBFS_SERVE_CORE_H_ */

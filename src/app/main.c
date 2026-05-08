@@ -10,11 +10,11 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#include "webfs-internal.h"
-
 #include <axl.h>
 #include <axl/axl-args.h>
 #include <axl/axl-net.h>
+
+#include "webfs-version.h"
 
 /* Verb handlers and flag tables defined in cmd-serve.c / cmd-mount.c. */
 extern const AxlArgDesc webfs_serve_flags[];

@@ -503,3 +503,141 @@ serve_core_teardown(ServeCore *core)
 
     network_cleanup();
 }
+
+// ----------------------------------------------------------------------------
+// Load-options serialise / parse
+// ----------------------------------------------------------------------------
+
+int
+serve_opts_serialize(const ServeCoreOpts *opts, char *out, size_t out_size)
+{
+    const char *mode = opts->read_only  ? "read-only"
+                     : opts->write_only ? "write-only"
+                     :                    "read-write";
+
+    int n;
+    if (opts->source != NULL && opts->source[0] != '\0') {
+        n = axl_snprintf(out, out_size,
+            "port=%u;nic=%zu;mode=%s;source=%s;verbose=%u;timeout=%zu",
+            (unsigned)opts->port,
+            opts->nic_index,
+            mode,
+            opts->source,
+            (unsigned)(opts->verbose ? 1 : 0),
+            opts->idle_timeout_sec);
+    } else {
+        n = axl_snprintf(out, out_size,
+            "port=%u;nic=%zu;mode=%s;verbose=%u;timeout=%zu",
+            (unsigned)opts->port,
+            opts->nic_index,
+            mode,
+            (unsigned)(opts->verbose ? 1 : 0),
+            opts->idle_timeout_sec);
+    }
+
+    return (n > 0 && (size_t)n < out_size) ? AXL_OK : AXL_ERR;
+}
+
+/// Find the value of @p key in a "k=v;k=v;..." string. Returns a pointer
+/// into @p in (NULL if not found), and writes the value's length to
+/// @p value_len. The pointer is NOT NUL-terminated -- caller must use
+/// @p value_len.
+static const char *
+opts_find(const char *in, const char *key, size_t *value_len)
+{
+    size_t key_len = 0;
+    while (key[key_len] != '\0') key_len++;
+
+    const char *p = in;
+    while (*p != '\0') {
+        /* Skip leading separators */
+        while (*p == ';' || *p == ' ') p++;
+        if (*p == '\0') break;
+
+        const char *kbeg = p;
+        while (*p != '=' && *p != ';' && *p != '\0') p++;
+
+        if (*p == '=' && (size_t)(p - kbeg) == key_len &&
+            axl_strncmp(kbeg, key, key_len) == 0)
+        {
+            const char *vbeg = ++p;
+            while (*p != ';' && *p != '\0') p++;
+            *value_len = (size_t)(p - vbeg);
+            return vbeg;
+        }
+
+        /* Skip past this pair */
+        while (*p != ';' && *p != '\0') p++;
+    }
+
+    *value_len = 0;
+    return NULL;
+}
+
+/// Convert a leading-decimal-digit substring to an unsigned 64-bit value.
+/// Stops at the first non-digit. Returns 0 on empty input.
+static uint64_t
+opts_parse_uint(const char *s, size_t len)
+{
+    uint64_t v = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] < '0' || s[i] > '9') break;
+        v = v * 10 + (uint64_t)(s[i] - '0');
+    }
+    return v;
+}
+
+int
+serve_opts_parse(const char *in, ServeCoreOpts *opts,
+                 char *source_buf, size_t source_buf_size)
+{
+    if (in == NULL || opts == NULL) {
+        return AXL_ERR;
+    }
+
+    axl_memset(opts, 0, sizeof(*opts));
+    opts->nic_index = (size_t)-1;
+    if (source_buf != NULL && source_buf_size > 0) {
+        source_buf[0] = '\0';
+    }
+
+    size_t      vlen;
+    const char *v;
+
+    if ((v = opts_find(in, "port", &vlen)) != NULL) {
+        opts->port = (uint16_t)opts_parse_uint(v, vlen);
+    }
+
+    if ((v = opts_find(in, "nic", &vlen)) != NULL) {
+        opts->nic_index = (size_t)opts_parse_uint(v, vlen);
+    }
+
+    if ((v = opts_find(in, "mode", &vlen)) != NULL) {
+        if (vlen == 9 && axl_strncmp(v, "read-only", 9) == 0) {
+            opts->read_only = true;
+        } else if (vlen == 10 && axl_strncmp(v, "write-only", 10) == 0) {
+            opts->write_only = true;
+        }
+        /* read-write is the default; no flag bits set. */
+    }
+
+    if ((v = opts_find(in, "source", &vlen)) != NULL &&
+        source_buf != NULL && vlen + 1 <= source_buf_size)
+    {
+        for (size_t i = 0; i < vlen; i++) {
+            source_buf[i] = v[i];
+        }
+        source_buf[vlen] = '\0';
+        opts->source = source_buf;
+    }
+
+    if ((v = opts_find(in, "verbose", &vlen)) != NULL) {
+        opts->verbose = (vlen > 0 && v[0] != '0');
+    }
+
+    if ((v = opts_find(in, "timeout", &vlen)) != NULL) {
+        opts->idle_timeout_sec = (size_t)opts_parse_uint(v, vlen);
+    }
+
+    return AXL_OK;
+}

@@ -20,9 +20,16 @@ DRV_SRCS = src/driver/webfs.c \
            src/driver/webfs-cache.c \
            src/net/network.c
 
+SERVE_DRV_SRCS = src/driver/serve-dxe.c \
+                 src/net/network.c \
+                 src/serve/serve-core.c \
+                 src/serve/upload-asset.c \
+                 src/transfer/file-transfer.c \
+                 src/transfer/dir-list.c
+
 CFLAGS   = -Isrc
 
-all: axl-webfs axl-webfs-dxe
+all: axl-webfs axl-webfs-dxe axl-webfs-serve-dxe
 
 axl-webfs: $(OUTDIR)/axl-webfs.efi
 $(OUTDIR)/axl-webfs.efi: $(APP_SRCS) | $(OUTDIR)
@@ -31,6 +38,10 @@ $(OUTDIR)/axl-webfs.efi: $(APP_SRCS) | $(OUTDIR)
 axl-webfs-dxe: $(OUTDIR)/axl-webfs-dxe.efi
 $(OUTDIR)/axl-webfs-dxe.efi: $(DRV_SRCS) | $(OUTDIR)
 	$(AXL_CC) --arch $(ARCH) --type driver $(CFLAGS) $(DRV_SRCS) -o $@
+
+axl-webfs-serve-dxe: $(OUTDIR)/axl-webfs-serve-dxe.efi
+$(OUTDIR)/axl-webfs-serve-dxe.efi: $(SERVE_DRV_SRCS) | $(OUTDIR)
+	$(AXL_CC) --arch $(ARCH) --type driver $(CFLAGS) $(SERVE_DRV_SRCS) -o $@
 
 $(OUTDIR):
 	mkdir -p $@
@@ -48,4 +59,4 @@ demo-mount:
 demo-serve:
 	scripts/demo-serve.sh
 
-.PHONY: all axl-webfs axl-webfs-dxe clean demo demo-mount demo-serve
+.PHONY: all axl-webfs axl-webfs-dxe axl-webfs-serve-dxe clean demo demo-mount demo-serve

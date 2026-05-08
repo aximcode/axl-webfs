@@ -9,8 +9,6 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#include "webfs-internal.h"
-
 #include <axl.h>
 #include <axl/axl-driver.h>
 #include <axl/axl-sys.h>

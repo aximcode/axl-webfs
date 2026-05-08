@@ -98,7 +98,7 @@ DriverEntry(
 )
 {
     // Initialize AXL runtime (sets gST/gBS/gRT, enables axl_printf)
-    axl_driver_init(ImageHandle, SystemTable);
+    axl_driver_init((AxlHandle)ImageHandle, (AxlSystemTable *)SystemTable);
 
     // Get URL from load options (UTF-8, allocated by SDK)
     char *url_utf8 = axl_driver_get_load_options();

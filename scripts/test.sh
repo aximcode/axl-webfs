@@ -758,6 +758,88 @@ NSHEOF
         fail "serve --mode write-only: QEMU start" "failed to launch"
     fi
 
+    # ========================================================================
+    # Serve --detach test (X64 only): driver image runs the HTTP server,
+    # the shell returns immediately, host curls validate the driver is alive.
+    # ========================================================================
+
+    info "QEMU" "=== Serve --detach test: X64 ==="
+
+    APP_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs.efi"
+    SERVE_DRV_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs-serve-dxe.efi"
+    DETACH_PORT=18091
+
+    if [ ! -f "$SERVE_DRV_EFI" ]; then
+        skip "serve --detach: axl-webfs-serve-dxe.efi not built"
+    elif [ "${RUN_DETACH_TEST:-}" != "1" ]; then
+        skip "serve --detach: blocked on axl-sdk attach_driver close path; set RUN_DETACH_TEST=1 to attempt"
+    else
+        DETACH_STAGE=$(mktemp -d)
+        echo "detach test" > "$DETACH_STAGE/detach_test.txt"
+
+        DETACH_NSH=$(mktemp --suffix=.nsh)
+        cat > "$DETACH_NSH" <<'NSHEOF'
+@echo -off
+fs0:
+axl-webfs.efi serve -p 8080 --detach
+echo === DETACHED ===
+NSHEOF
+
+        eval "$("$RUN_QEMU_SH" --arch X64 --timeout 60 \
+            --net --hostfwd "${DETACH_PORT}:8080" \
+            --extra "$DETACH_STAGE/detach_test.txt" \
+            --extra "$SERVE_DRV_EFI" \
+            --nsh "$DETACH_NSH" \
+            --background \
+            "$APP_EFI")"
+
+        rm -f "$DETACH_NSH"
+        rm -rf "$DETACH_STAGE"
+
+        if [ -z "${QEMU_PID:-}" ]; then
+            fail "serve --detach: QEMU failed to start"
+        else
+            READY=false
+            for WAIT in $(seq 1 30); do
+                sleep 1
+                if ! kill -0 "$QEMU_PID" 2>/dev/null; then break; fi
+                HTTP_CHECK=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${DETACH_PORT}/" 2>/dev/null || true)
+                if [ "$HTTP_CHECK" = "200" ]; then
+                    READY=true; break
+                fi
+            done
+
+            BASE="http://127.0.0.1:${DETACH_PORT}"
+
+            if $READY; then
+                pass "serve --detach: driver came up (HTTP responding)"
+
+                grep -q "DETACHED" "$SERIAL_LOG" 2>/dev/null && \
+                    pass "serve --detach: shell returned after detach" || \
+                    fail "serve --detach: shell return" "no DETACHED marker in serial log"
+
+                grep -q "HTTP file server (background)" "$SERIAL_LOG" 2>/dev/null && \
+                    pass "serve --detach: driver banner printed" || \
+                    fail "serve --detach: banner" "no background banner in serial log"
+
+                CONTENT=$(curl -sf "$BASE/fs0/detach_test.txt" 2>/dev/null)
+                echo "$CONTENT" | grep -q "detach test" && \
+                    pass "serve --detach: GET works against driver" || \
+                    fail "serve --detach: GET" "unexpected: $CONTENT"
+
+                HTTP_CODE=$(echo -n "uploaded" | curl -s -o /dev/null -w "%{http_code}" -T - "$BASE/fs0/detach_upload.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && \
+                    pass "serve --detach: PUT works against driver" || \
+                    fail "serve --detach: PUT" "expected 201, got $HTTP_CODE"
+            else
+                fail "serve --detach: driver did not start within 30s"
+            fi
+
+            kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+            rm -rf "$TMPDIR"
+        fi
+    fi
+
     fi  # run-qemu.sh exists
 fi
 
