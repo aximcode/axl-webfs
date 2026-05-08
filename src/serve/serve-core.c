@@ -467,7 +467,7 @@ serve_core_setup(const ServeCoreOpts *opts, ServeCore *core)
         return AXL_ERR;
     }
 
-    if (axl_http_server_attach(core->server, core->loop) != 0) {
+    if (axl_http_server_start(core->server, core->loop) != 0) {
         axl_loop_free(core->loop);
         core->loop = NULL;
         axl_http_server_free(core->server);
