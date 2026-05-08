@@ -308,6 +308,44 @@ else
 fi
 
 # ============================================================================
+# Embedded asset: validate that upload-asset.c's kUploadJs[] parses as
+# valid JavaScript. The QEMU tests verify the asset is served and that
+# its body contains expected hooks, but a syntax error inside the
+# string literal would only manifest in a real browser; this catches
+# it on the host before we ship a broken .efi.
+# ============================================================================
+
+info "ASSET" "Validate embedded upload.js"
+
+ASSET_C="$PROJECT_ROOT/src/app/upload-asset.c"
+if [ ! -f "$ASSET_C" ]; then
+    fail "asset source missing" "$ASSET_C not found"
+elif ! command -v node >/dev/null 2>&1; then
+    skip "node not installed (cannot run --check on embedded JS)"
+else
+    EXTRACTED_JS=$(mktemp --suffix=.js)
+    python3 - "$ASSET_C" "$EXTRACTED_JS" <<'PYEOF'
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r'kUploadJs\[\]\s*=\s*([\s\S]+?);\s*$', src, re.M)
+if not m:
+    sys.exit('kUploadJs declaration not found')
+body = m.group(1)
+# Match each "..." literal, honoring escaped quotes.
+parts = re.findall(r'"((?:[^"\\]|\\.)*)"', body)
+js = ''.join(parts).encode().decode('unicode_escape')
+open(sys.argv[2], 'w').write(js)
+PYEOF
+    if [ -s "$EXTRACTED_JS" ] && node --check "$EXTRACTED_JS" 2>/dev/null; then
+        pass "embedded upload.js parses as valid JavaScript"
+    else
+        SYNTAX_ERR=$(node --check "$EXTRACTED_JS" 2>&1 | head -2)
+        fail "embedded upload.js" "node --check failed: $SYNTAX_ERR"
+    fi
+    rm -f "$EXTRACTED_JS"
+fi
+
+# ============================================================================
 # QEMU integration tests (optional)
 # Uses AXL SDK's run-qemu.sh for QEMU/firmware/disk-image management.
 # run-qemu.sh ships with the axl-sdk source tree (not the .deb/.rpm).
@@ -563,6 +601,36 @@ NSHEOF
             pass "$QEMU_ARCH serve: bad volume returns 404" || \
             fail "$QEMU_ARCH serve: bad volume" "expected 404, got $HTTP_CODE"
 
+        # Upload UI smoke tests: asset endpoint + HTML wiring.
+        # Use GET (-D - dumps headers); HEAD isn't registered for this route.
+        ASSET_HEADERS=$(curl -s -D - -o /dev/null "$BASE/_axl-webfs/upload.js" 2>/dev/null)
+        echo "$ASSET_HEADERS" | grep -qE "^HTTP/[0-9.]+ 200" && \
+        echo "$ASSET_HEADERS" | grep -qiE "^content-type:.*application/javascript" && \
+            pass "$QEMU_ARCH serve: upload.js asset returns 200 + JS content-type" || \
+            fail "$QEMU_ARCH serve: upload.js asset" "$(echo "$ASSET_HEADERS" | head -2)"
+
+        ASSET_BODY=$(curl -sf "$BASE/_axl-webfs/upload.js" 2>/dev/null)
+        echo "$ASSET_BODY" | grep -q "location.pathname" && \
+        echo "$ASSET_BODY" | grep -q "XMLHttpRequest" && \
+        echo "$ASSET_BODY" | grep -q "dropzone-active" && \
+            pass "$QEMU_ARCH serve: upload.js body has expected hooks" || \
+            fail "$QEMU_ARCH serve: upload.js body" "missing pathname/XHR/dropzone tokens"
+
+        DIR_HTML=$(curl -sf "$BASE/fs0/" 2>/dev/null)
+        echo "$DIR_HTML" | grep -q 'id="axl-upload-btn"' && \
+        echo "$DIR_HTML" | grep -q '<title>fs0:/</title>' && \
+        echo "$DIR_HTML" | grep -q 'src="/_axl-webfs/upload.js"' && \
+            pass "$QEMU_ARCH serve: dir HTML wires upload button + title + script" || \
+            fail "$QEMU_ARCH serve: dir HTML wiring" "missing button/title/script tags"
+
+        # Nested-path title: catches a future format-string-arg reorder
+        # bug (vol_esc, path_esc -> typo). The testdir/ subdir was
+        # created by the POST ?mkdir test above.
+        NESTED_HTML=$(curl -sf "$BASE/fs0/testdir/" 2>/dev/null)
+        echo "$NESTED_HTML" | grep -q '<title>fs0:/testdir/</title>' && \
+            pass "$QEMU_ARCH serve: nested-path title correct" || \
+            fail "$QEMU_ARCH serve: nested title" "missing /testdir/ in title"
+
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fs0/nonexistent.xyz" 2>/dev/null || true)
         [ "$HTTP_CODE" = "404" ] && \
             pass "$QEMU_ARCH serve: nonexistent file returns 404" || \
@@ -618,6 +686,15 @@ NSHEOF
             [ "$HTTP_CODE" = "403" ] && \
                 pass "serve --read-only: DELETE blocked (403)" || \
                 fail "serve --read-only: DELETE" "expected 403, got $HTTP_CODE"
+
+            # In read-only mode the upload UI must be omitted from the
+            # listing (no button, no script tag, no upload-related CSS).
+            RO_HTML=$(curl -sf "$BASE/fs0/" 2>/dev/null)
+            ! echo "$RO_HTML" | grep -q 'id="axl-upload-btn"' && \
+            ! echo "$RO_HTML" | grep -q 'src="/_axl-webfs/upload.js"' && \
+            ! echo "$RO_HTML" | grep -q 'dropzone-active' && \
+                pass "serve --read-only: upload UI omitted from HTML" || \
+                fail "serve --read-only: upload UI" "button/script/dropzone leaked into read-only listing"
         else
             fail "serve --read-only: server start" "did not start within 20s"
         fi

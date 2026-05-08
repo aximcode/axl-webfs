@@ -50,7 +50,7 @@ int    ft_get_volume(size_t index, FtVolume *vol);
 int    ft_find_volume(const char *name, FtVolume *vol);
 
 int    ft_list_volumes(bool as_json, char *buf, size_t buf_size, size_t *written);
-int    ft_list_dir(FtVolume *vol, const char *path, bool as_json, char *buf, size_t buf_size, size_t *written);
+int    ft_list_dir(FtVolume *vol, const char *path, bool as_json, bool read_only, char *buf, size_t buf_size, size_t *written);
 
 int    ft_open_read(FtVolume *vol, const char *path, uint64_t offset, FtProgressCb cb, void *ctx, FtReadCtx *rctx);
 int    ft_read_chunk(FtReadCtx *rctx, void *buf, size_t buf_size, size_t *bytes_read);

@@ -9,6 +9,7 @@ OUTDIR   = build/axl/$(ARCH)
 APP_SRCS = src/app/main.c \
            src/app/cmd-serve.c \
            src/app/cmd-mount.c \
+           src/app/upload-asset.c \
            src/net/network.c \
            src/transfer/file-transfer.c \
            src/transfer/dir-list.c

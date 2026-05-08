@@ -9,11 +9,16 @@
 #define AXL_WEBFS_INTERNAL_H_
 
 #include <axl.h>
+#include <stddef.h>
 
 #define AXL_WEBFS_VERSION  "0.2"
 
 int cmd_mount(int argc, char **argv);
 int cmd_umount(int argc, char **argv);
 int cmd_serve(int argc, char **argv);
+
+/* Embedded upload.js asset (defined in upload-asset.c). */
+extern const char   kUploadJs[];
+extern const size_t kUploadJsLen;
 
 #endif // AXL_WEBFS_INTERNAL_H_

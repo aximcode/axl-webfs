@@ -132,6 +132,18 @@ permission_middleware(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 // Route handlers
 // ----------------------------------------------------------------------------
 
+/// GET /_axl-webfs/upload.js -- embedded upload UI script.
+static int
+handle_get_upload_js(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
+{
+    (void)req;
+    (void)data;
+
+    axl_http_response_set_static(resp, kUploadJs, kUploadJsLen,
+                                 "application/javascript");
+    return 0;
+}
+
 /// GET / -- list all volumes.
 static int
 handle_get_root(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
@@ -166,12 +178,11 @@ handle_get_root(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 static int
 handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-    FtVolume  volume;
-    char       sub_path[512];
-    int        status;
-    bool       is_dir;
-
-    (void)data;
+    ServeOptions *opts = (ServeOptions *)data;
+    FtVolume      volume;
+    char          sub_path[512];
+    int           status;
+    bool          is_dir;
 
     status = parse_volume_path(req->path, &volume, sub_path, 512);
     if (status != 0) {
@@ -189,17 +200,19 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     }
 
     if (is_dir) {
-        size_t buf_size = 8192;
+        size_t buf_size = 16384;
         char  *buf = axl_malloc(buf_size);
         size_t written = 0;
-        bool   as_json = wants_json(req);
+        bool   as_json   = wants_json(req);
+        bool   read_only = opts->read_only;
 
         if (buf == NULL) {
             axl_http_response_set_status(resp, 500);
             return 0;
         }
 
-        status = ft_list_dir(&volume, sub_path, as_json, buf, buf_size, &written);
+        status = ft_list_dir(&volume, sub_path, as_json, read_only,
+                             buf, buf_size, &written);
         if (status != 0) {
             axl_free(buf);
             axl_http_response_set_text(resp, "Directory listing failed\n");
@@ -521,10 +534,16 @@ serve_handler(AxlArgs *a)
     }
 
     //
-    // Register routes (exact root match first, then prefix matches)
+    // Register routes. The SDK dispatcher tries exact matches before
+    // prefix patterns, so /_axl-webfs/upload.js shadows GET /* regardless
+    // of registration order. The /_axl-webfs/ namespace is reserved for
+    // embedded UI assets so they don't collide with parse_volume_path's
+    // first-segment volume lookup.
     //
+    axl_http_server_add_route(server, "GET",    "/_axl-webfs/upload.js",
+                              handle_get_upload_js, NULL);
     axl_http_server_add_route(server, "GET",    "/",  handle_get_root,    NULL);
-    axl_http_server_add_route(server, "GET",    "/*", handle_get_path,    NULL);
+    axl_http_server_add_route(server, "GET",    "/*", handle_get_path,    &opts);
     axl_http_server_add_route(server, "PUT",    "/*", handle_put_path,    NULL);
     axl_http_server_add_route(server, "DELETE", "/*", handle_delete_path, NULL);
     axl_http_server_add_route(server, "POST",   "/*", handle_post_path,   NULL);
