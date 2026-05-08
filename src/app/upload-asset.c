@@ -12,7 +12,7 @@
 
 #include <stddef.h>
 
-const char kUploadJs[] =
+const char upload_js[] =
     "(function(){\n"
     /* Use the current page URL as the upload target so the script
        sees the same path the browser is on -- no separate meta tag
@@ -91,4 +91,4 @@ const char kUploadJs[] =
     "});\n"
     "})();\n";
 
-const size_t kUploadJsLen = sizeof(kUploadJs) - 1;
+const size_t upload_js_len = sizeof(upload_js) - 1;

@@ -139,7 +139,7 @@ handle_get_upload_js(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     (void)req;
     (void)data;
 
-    axl_http_response_set_static(resp, kUploadJs, kUploadJsLen,
+    axl_http_response_set_static(resp, upload_js, upload_js_len,
                                  "application/javascript");
     return 0;
 }
@@ -449,7 +449,7 @@ esc_key_handler(AxlInputKey key, void *data)
 // Main serve command
 // ----------------------------------------------------------------------------
 
-static const AxlArgDesc kServeFlags[] = {
+const AxlArgDesc webfs_serve_flags[] = {
     { .name = "port",       .short_name = 'p', .type = AXL_ARG_U16,
       .default_value = "8080", .help = "Listen port" },
     { .name = "nic",        .short_name = 'n', .type = AXL_ARG_U32,
@@ -467,8 +467,8 @@ static const AxlArgDesc kServeFlags[] = {
     {0}
 };
 
-static int
-serve_handler(AxlArgs *a)
+int
+webfs_serve_handler(AxlArgs *a)
 {
     ServeOptions    opts;
     AxlHttpServer  *server;
@@ -611,13 +611,3 @@ serve_handler(AxlArgs *a)
     return status;
 }
 
-int
-cmd_serve(int argc, char **argv)
-{
-    return axl_args_run(argc, argv, &(AxlArgsNode){
-        .name         = "axl-webfs serve",
-        .help         = "Serve mounted volumes over HTTP",
-        .flags        = kServeFlags,
-        .handler      = serve_handler,
-    });
-}

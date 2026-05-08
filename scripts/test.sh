@@ -308,7 +308,7 @@ else
 fi
 
 # ============================================================================
-# Embedded asset: validate that upload-asset.c's kUploadJs[] parses as
+# Embedded asset: validate that upload-asset.c's upload_js[] parses as
 # valid JavaScript. The QEMU tests verify the asset is served and that
 # its body contains expected hooks, but a syntax error inside the
 # string literal would only manifest in a real browser; this catches
@@ -327,9 +327,9 @@ else
     python3 - "$ASSET_C" "$EXTRACTED_JS" <<'PYEOF'
 import re, sys
 src = open(sys.argv[1]).read()
-m = re.search(r'kUploadJs\[\]\s*=\s*([\s\S]+?);\s*$', src, re.M)
+m = re.search(r'upload_js\[\]\s*=\s*([\s\S]+?);\s*$', src, re.M)
 if not m:
-    sys.exit('kUploadJs declaration not found')
+    sys.exit('upload_js declaration not found')
 body = m.group(1)
 # Match each "..." literal, honoring escaped quotes.
 parts = re.findall(r'"((?:[^"\\]|\\.)*)"', body)
@@ -474,7 +474,7 @@ NSHEOF
             pass "$QEMU_ARCH: ls subdir shows remote files" || \
             fail "$QEMU_ARCH: ls subdir" "sample.txt not found"
 
-        grep -qE "axl-webfs v[0-9]+\.[0-9]+" "$SERIAL_LOG" 2>/dev/null && \
+        grep -qE "axl-webfs.*v[0-9]+\.[0-9]+" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: exec .efi from mounted volume" || \
             fail "$QEMU_ARCH: exec from mount" "axl-webfs version banner not found"
 

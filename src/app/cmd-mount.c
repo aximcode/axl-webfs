@@ -27,20 +27,20 @@ static AxlDriverHandle mDriverHandle;
 // mount command
 // ----------------------------------------------------------------------------
 
-static const AxlArgDesc kMountFlags[] = {
+const AxlArgDesc webfs_mount_flags[] = {
     { .name = "read-only", .short_name = 'r', .type = AXL_ARG_BOOL,
       .help = "Mount read-only" },
     {0}
 };
 
-static const AxlArgDesc kMountPos[] = {
+const AxlArgDesc webfs_mount_pos[] = {
     { .name = "url", .type = AXL_ARG_STRING, .required = true,
       .help = "URL of the axl-webfs server to mount" },
     {0}
 };
 
-static int
-mount_handler(AxlArgs *a)
+int
+webfs_mount_handler(AxlArgs *a)
 {
     const char *url = axl_args_get_string(a, "url");
 
@@ -119,27 +119,14 @@ mount_handler(AxlArgs *a)
     return 0;
 }
 
-int
-cmd_mount(int argc, char **argv)
-{
-    return axl_args_run(argc, argv, &(AxlArgsNode){
-        .name         = "axl-webfs mount",
-        .help         = "Mount an axl-webfs server URL as a UEFI filesystem",
-        .flags        = kMountFlags,
-        .positionals  = kMountPos,
-        .handler      = mount_handler,
-    });
-}
-
 // ----------------------------------------------------------------------------
 // umount command
 // ----------------------------------------------------------------------------
 
 int
-cmd_umount(int argc, char **argv)
+webfs_umount_handler(AxlArgs *a)
 {
-    (void)argc;
-    (void)argv;
+    (void)a;
 
     /* Try stored handle from this process first */
     if (mDriverHandle != NULL) {
