@@ -136,7 +136,7 @@ axl-webfs.efi umount [handle]
 
 ```
 axl-webfs.efi serve [-p port] [-n nic] [-t timeout]
-                    [--read-only] [--write-only] [-v]
+                    [--mode <read-write|read-only|write-only>] [-v]
 ```
 
 <details>
@@ -147,8 +147,7 @@ axl-webfs.efi serve [-p port] [-n nic] [-t timeout]
 | `-p` | 8080 | Listen port |
 | `-n` | auto | NIC index (use `list-nics` to find) |
 | `-t` | 0 | Idle timeout in seconds (0 = never) |
-| `--read-only` | off | Block uploads and deletes |
-| `--write-only` | off | Block downloads |
+| `--mode` | `read-write` | Permission mode: `read-only` blocks PUT/POST/DELETE, `write-only` blocks GET |
 | `-v` | off | Verbose logging |
 
 </details>

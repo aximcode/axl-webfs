@@ -456,10 +456,12 @@ const AxlArgDesc webfs_serve_flags[] = {
       .help = "NIC index (default: auto)" },
     { .name = "timeout",    .short_name = 't', .type = AXL_ARG_U32,
       .help = "Idle timeout in seconds (default: 0 = none)" },
-    { .name = "read-only",                     .type = AXL_ARG_BOOL,
-      .help = "Block uploads (PUT/POST/DELETE)" },
-    { .name = "write-only",                    .type = AXL_ARG_BOOL,
-      .help = "Block downloads (GET)" },
+    { .name = "mode",       .short_name = 'm', .type = AXL_ARG_CHOICE,
+      .choices = (const char *const []){"read-write", "read-only",
+                                        "write-only", NULL},
+      .default_value = "read-write",
+      .help = "Permission mode: read-write (default), read-only "
+              "(block PUT/POST/DELETE), or write-only (block GET)" },
     { .name = "verbose",    .short_name = 'v', .type = AXL_ARG_BOOL,
       .help = "Verbose logging" },
     { .name = "source",                            .type = AXL_ARG_STRING,
@@ -473,12 +475,14 @@ webfs_serve_handler(AxlArgs *a)
     ServeOptions    opts;
     AxlHttpServer  *server;
 
+    const char *mode = axl_args_get_string(a, "mode");
+
     opts.port             = (uint16_t)axl_args_get_uint(a, "port");
     opts.nic_index        = axl_args_get_string(a, "nic") != NULL
                           ? (size_t)axl_args_get_uint(a, "nic") : (size_t)-1;
     opts.idle_timeout_sec = (size_t)axl_args_get_uint(a, "timeout");
-    opts.read_only        = axl_args_get_bool(a, "read-only");
-    opts.write_only       = axl_args_get_bool(a, "write-only");
+    opts.read_only        = axl_streql(mode, "read-only");
+    opts.write_only       = axl_streql(mode, "write-only");
     opts.verbose          = axl_args_get_bool(a, "verbose");
 
     //
@@ -554,16 +558,6 @@ webfs_serve_handler(AxlArgs *a)
     axl_printf("\naxl-webfs v%s -- UEFI HTTP File Server\n", AXL_WEBFS_VERSION);
     axl_printf("Listening on %d.%d.%d.%d:%d\n",
         addr[0], addr[1], addr[2], addr[3], opts.port);
-
-    const char *mode = "read-write";
-    if (opts.read_only) {
-        mode = "read-only";
-    }
-
-    if (opts.write_only) {
-        mode = "write-only";
-    }
-
     axl_printf("Mode: %s\n", mode);
 
     axl_printf("Volumes:\n");

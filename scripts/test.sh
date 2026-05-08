@@ -654,7 +654,7 @@ NSHEOF
         --net --hostfwd "${SERVE_PORT}:8080" \
         --extra "$RO_STAGE_DIR/ro_test.txt" \
         --background \
-        "$APP_EFI" serve -p 8080 --read-only)"
+        "$APP_EFI" serve -p 8080 --mode read-only)"
 
     rm -rf "$RO_STAGE_DIR"
 
@@ -703,6 +703,59 @@ NSHEOF
         rm -rf "$TMPDIR"
     else
         fail "serve --read-only: QEMU start" "failed to launch"
+    fi
+
+    # ========================================================================
+    # Serve write-only mode test (X64 only)
+    # ========================================================================
+
+    info "QEMU" "=== Serve write-only mode test: X64 ==="
+
+    APP_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs.efi"
+
+    eval "$("$RUN_QEMU_SH" --arch X64 --timeout 30 \
+        --net --hostfwd "${SERVE_PORT}:8080" \
+        --background \
+        "$APP_EFI" serve -p 8080 --mode write-only)"
+
+    if [ -n "${QEMU_PID:-}" ]; then
+        # In write-only mode GETs return 403, so the readiness probe waits
+        # for any HTTP response from the listener (403 means server is up).
+        READY=false
+        for WAIT in $(seq 1 20); do
+            sleep 1
+            if ! kill -0 "$QEMU_PID" 2>/dev/null; then break; fi
+            HTTP_CHECK=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/" 2>/dev/null || true)
+            if [ "$HTTP_CHECK" = "403" ]; then
+                READY=true; break
+            fi
+        done
+
+        BASE="http://127.0.0.1:${SERVE_PORT}"
+
+        if $READY; then
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fs0/" 2>/dev/null || true)
+            [ "$HTTP_CODE" = "403" ] && \
+                pass "serve --mode write-only: GET blocked (403)" || \
+                fail "serve --mode write-only: GET" "expected 403, got $HTTP_CODE"
+
+            HTTP_CODE=$(echo -n "wo upload" | curl -s -o /dev/null -w "%{http_code}" -T - "$BASE/fs0/wo_test.txt" 2>/dev/null || true)
+            [ "$HTTP_CODE" = "201" ] && \
+                pass "serve --mode write-only: PUT works (201)" || \
+                fail "serve --mode write-only: PUT" "expected 201, got $HTTP_CODE"
+
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/fs0/wodir/?mkdir" 2>/dev/null || true)
+            [ "$HTTP_CODE" = "201" ] && \
+                pass "serve --mode write-only: POST ?mkdir works (201)" || \
+                fail "serve --mode write-only: mkdir" "expected 201, got $HTTP_CODE"
+        else
+            fail "serve --mode write-only: server start" "did not start within 20s"
+        fi
+
+        kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+        rm -rf "$TMPDIR"
+    else
+        fail "serve --mode write-only: QEMU start" "failed to launch"
     fi
 
     fi  # run-qemu.sh exists

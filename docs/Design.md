@@ -230,8 +230,9 @@ Options:
   -p <port>        Listen port (default: 8080)
   -n <index>       NIC index
   -t <seconds>     Idle timeout
-  --read-only      Block uploads/deletes
-  --write-only     Block downloads
+  --mode <m>       Permission mode: read-write (default),
+                   read-only (block PUT/POST/DELETE),
+                   write-only (block GET)
   -v               Verbose logging
   -h               Show help
 
