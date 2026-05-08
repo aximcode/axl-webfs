@@ -317,7 +317,7 @@ fi
 
 info "ASSET" "Validate embedded upload.js"
 
-ASSET_C="$PROJECT_ROOT/src/app/upload-asset.c"
+ASSET_C="$PROJECT_ROOT/src/serve/upload-asset.c"
 if [ ! -f "$ASSET_C" ]; then
     fail "asset source missing" "$ASSET_C not found"
 elif ! command -v node >/dev/null 2>&1; then

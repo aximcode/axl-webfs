@@ -9,12 +9,7 @@
 #define AXL_WEBFS_INTERNAL_H_
 
 #include <axl.h>
-#include <stddef.h>
 
 #define AXL_WEBFS_VERSION  "0.2"
-
-/* Embedded upload.js asset (defined in upload-asset.c). */
-extern const char   upload_js[];
-extern const size_t upload_js_len;
 
 #endif // AXL_WEBFS_INTERNAL_H_
