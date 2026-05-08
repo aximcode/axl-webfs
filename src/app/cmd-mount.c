@@ -101,10 +101,10 @@ webfs_mount_handler(AxlArgs *a)
     // Find the new FS handle by looking for our vendor GUID in device paths
     void **fs_handles = NULL;
     size_t fs_count = 0;
-    if (axl_service_enumerate("simple-fs", &fs_handles, &fs_count) == 0) {
+    if (axl_protocol_enumerate("simple-fs", &fs_handles, &fs_count) == 0) {
         for (size_t i = 0; i < fs_count; i++) {
             void *devpath = NULL;
-            if (axl_handle_get_service(fs_handles[i], "device-path",
+            if (axl_handle_get_protocol(fs_handles[i], "device-path",
                                        &devpath) == 0) {
                 if (axl_device_path_has_vendor(devpath, &HttpFsVendorGuid)) {
                     axl_printf("Mounted as FS handle %p\n", fs_handles[i]);
@@ -142,7 +142,7 @@ webfs_umount_handler(AxlArgs *a)
     /* Scan FS handles for our vendor GUID device path */
     void **fs_handles = NULL;
     size_t fs_count = 0;
-    if (axl_service_enumerate("simple-fs", &fs_handles, &fs_count) != 0 ||
+    if (axl_protocol_enumerate("simple-fs", &fs_handles, &fs_count) != 0 ||
         fs_count == 0) {
         axl_free(fs_handles);
         axl_printf("ERROR: No mounted axl-webfs volumes found\n");
@@ -152,7 +152,7 @@ webfs_umount_handler(AxlArgs *a)
     bool found = false;
     for (size_t i = 0; i < fs_count; i++) {
         void *devpath = NULL;
-        if (axl_handle_get_service(fs_handles[i], "device-path",
+        if (axl_handle_get_protocol(fs_handles[i], "device-path",
                                    &devpath) != 0)
             continue;
         if (!axl_device_path_has_vendor(devpath, &HttpFsVendorGuid))
@@ -161,7 +161,7 @@ webfs_umount_handler(AxlArgs *a)
         /* Found the axl-webfs volume -- scan loaded images for the driver */
         void **img_handles = NULL;
         size_t img_count = 0;
-        if (axl_service_enumerate("loaded-image", &img_handles, &img_count) != 0) {
+        if (axl_protocol_enumerate("loaded-image", &img_handles, &img_count) != 0) {
             axl_free(img_handles);
             continue;
         }

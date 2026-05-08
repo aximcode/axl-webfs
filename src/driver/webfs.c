@@ -188,7 +188,7 @@ DriverEntry(
 
     // Install protocols on a new handle
     priv->fs_handle = NULL;
-    if (axl_service_register_multiple(&priv->fs_handle,
+    if (axl_protocol_register_multiple(&priv->fs_handle,
             "simple-fs", &priv->simple_fs,
             "device-path", priv->device_path,
             NULL) != 0) {
@@ -220,8 +220,8 @@ WebFsDriverUnload(
     if (mPrivate == NULL) return EFI_SUCCESS;
 
     // Uninstall protocols
-    axl_service_unregister(mPrivate->fs_handle, "simple-fs", &mPrivate->simple_fs);
-    axl_service_unregister(mPrivate->fs_handle, "device-path", mPrivate->device_path);
+    axl_protocol_unregister(mPrivate->fs_handle, "simple-fs", &mPrivate->simple_fs);
+    axl_protocol_unregister(mPrivate->fs_handle, "device-path", mPrivate->device_path);
 
     // Close HTTP client
     axl_http_client_free(mPrivate->http_client);
