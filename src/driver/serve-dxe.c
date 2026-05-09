@@ -89,16 +89,20 @@ serve_main(AxlHandle image, AxlSystemTable *st)
     axl_info("loading");
 
     /* --- Parse load options ---------------------------------------- */
-    const char *load_opts = axl_driver_get_load_options();
+    /* axl_driver_get_load_options returns a heap copy the caller owns
+       (per axl-driver.h doxygen) -- free it before we leave this
+       function on every path. */
+    char *load_opts = axl_driver_get_load_options();
     if (load_opts == NULL) {
         axl_printf("ERROR: axl-webfs-serve-dxe: missing load options\n");
         return AXL_ERR;
     }
 
     ServeCoreOpts opts;
-    if (serve_opts_parse(load_opts, &opts,
-                         m_source_buf, sizeof(m_source_buf)) != AXL_OK)
-    {
+    int parse_rc = serve_opts_parse(load_opts, &opts,
+                                    m_source_buf, sizeof(m_source_buf));
+    axl_free(load_opts);
+    if (parse_rc != AXL_OK) {
         axl_printf("ERROR: axl-webfs-serve-dxe: malformed load options\n");
         return AXL_ERR;
     }
@@ -122,18 +126,8 @@ serve_main(AxlHandle image, AxlSystemTable *st)
     const char *mode_str = opts.read_only  ? "read-only"
                          : opts.write_only ? "write-only"
                          :                   "read-write";
-    m_protocol.mode[0] = '\0';
-    for (size_t i = 0;
-         i < sizeof(m_protocol.mode) - 1 && mode_str[i] != '\0';
-         i++)
-    {
-        m_protocol.mode[i]     = mode_str[i];
-        m_protocol.mode[i + 1] = '\0';
-    }
-    m_protocol.addr[0] = m_core.addr[0];
-    m_protocol.addr[1] = m_core.addr[1];
-    m_protocol.addr[2] = m_core.addr[2];
-    m_protocol.addr[3] = m_core.addr[3];
+    axl_strlcpy(m_protocol.mode, mode_str, sizeof(m_protocol.mode));
+    axl_memcpy(m_protocol.addr, m_core.addr, sizeof(m_protocol.addr));
 
     if (axl_protocol_register(WEBFS_SERVER_PROTOCOL_NAME,
                               &m_protocol, &m_protocol_handle) != AXL_OK

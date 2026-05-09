@@ -771,8 +771,6 @@ NSHEOF
 
     if [ ! -f "$SERVE_DRV_EFI" ]; then
         skip "serve --detach: axl-webfs-serve-dxe.efi not built"
-    elif [ "${RUN_DETACH_TEST:-}" != "1" ]; then
-        skip "serve --detach: blocked on axl-sdk attach_driver close path; set RUN_DETACH_TEST=1 to attempt"
     else
         DETACH_STAGE=$(mktemp -d)
         echo "detach test" > "$DETACH_STAGE/detach_test.txt"

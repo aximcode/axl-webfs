@@ -515,27 +515,33 @@ serve_opts_serialize(const ServeCoreOpts *opts, char *out, size_t out_size)
                      : opts->write_only ? "write-only"
                      :                    "read-write";
 
-    int n;
-    if (opts->source != NULL && opts->source[0] != '\0') {
-        n = axl_snprintf(out, out_size,
-            "port=%u;nic=%zu;mode=%s;source=%s;verbose=%u;timeout=%zu",
-            (unsigned)opts->port,
-            opts->nic_index,
-            mode,
-            opts->source,
-            (unsigned)(opts->verbose ? 1 : 0),
-            opts->idle_timeout_sec);
-    } else {
-        n = axl_snprintf(out, out_size,
-            "port=%u;nic=%zu;mode=%s;verbose=%u;timeout=%zu",
-            (unsigned)opts->port,
-            opts->nic_index,
-            mode,
-            (unsigned)(opts->verbose ? 1 : 0),
-            opts->idle_timeout_sec);
-    }
+    /* Build the string in pieces so optional fields stay omitted instead
+       of carrying a sentinel. nic_index = (size_t)-1 means "auto" and
+       must not be serialised -- otherwise the wire string carries the
+       unsigned wrap value (~24 bytes of noise). */
+    size_t pos = 0;
+    int    n;
 
-    return (n > 0 && (size_t)n < out_size) ? AXL_OK : AXL_ERR;
+#define APPEND(...) do {                                              \
+        n = axl_snprintf(out + pos, out_size - pos, __VA_ARGS__);     \
+        if (n <= 0 || (size_t)n >= out_size - pos) return AXL_ERR;    \
+        pos += (size_t)n;                                             \
+    } while (0)
+
+    APPEND("port=%u", (unsigned)opts->port);
+    if (opts->nic_index != (size_t)-1) {
+        APPEND(";nic=%zu", opts->nic_index);
+    }
+    APPEND(";mode=%s", mode);
+    if (opts->source != NULL && opts->source[0] != '\0') {
+        APPEND(";source=%s", opts->source);
+    }
+    APPEND(";verbose=%u", (unsigned)(opts->verbose ? 1 : 0));
+    APPEND(";timeout=%zu", opts->idle_timeout_sec);
+
+#undef APPEND
+
+    return AXL_OK;
 }
 
 /// Find the value of @p key in a "k=v;k=v;..." string. Returns a pointer
@@ -617,8 +623,11 @@ serve_opts_parse(const char *in, ServeCoreOpts *opts,
             opts->read_only = true;
         } else if (vlen == 10 && axl_strncmp(v, "write-only", 10) == 0) {
             opts->write_only = true;
+        } else if (vlen == 10 && axl_strncmp(v, "read-write", 10) == 0) {
+            /* default; no flag bits set */
+        } else {
+            return AXL_ERR;
         }
-        /* read-write is the default; no flag bits set. */
     }
 
     if ((v = opts_find(in, "source", &vlen)) != NULL &&
