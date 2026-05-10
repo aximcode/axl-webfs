@@ -65,6 +65,8 @@ const AxlConfigDesc serve_descs[] = {
       offsetof(ServeOpts, mode),             sizeof(const char *) },
     { "source",   AXL_CFG_STRING, "",           "Bind to interface with this IPv4 (auto if empty)",
       offsetof(ServeOpts, source),           sizeof(const char *) },
+    { "log",      AXL_CFG_STRING, "",           "Log file path (empty = console only)",
+      offsetof(ServeOpts, log_path),         sizeof(const char *) },
     { 0 }
 };
 
@@ -497,6 +499,23 @@ serve_setup(AxlLoop *loop, void *user)
 {
     ServeOpts *o = (ServeOpts *)user;
 
+    /* Open the log file FIRST so subsequent setup output (banner,
+       volume list, errors) lands in it. On failure, surface a clear
+       console error and continue -- a missing log destination
+       shouldn't bring down the server. axl_fopen "a" appends, so
+       repeated start/stop cycles preserve history. */
+    if (o->log_path != NULL && o->log_path[0] != '\0') {
+        o->log_stream = axl_fopen(o->log_path, "a");
+        if (o->log_stream == NULL) {
+            axl_printf("ERROR: serve: cannot open log file '%s' "
+                       "(read-only volume? bad path?) -- continuing "
+                       "with console output only\n", o->log_path);
+        } else {
+            axl_stream_set_stdout_tee(o->log_stream);
+            axl_stream_set_stderr_tee(o->log_stream);
+        }
+    }
+
     /* Derive permission bools from the parsed mode string. */
     o->read_only  = axl_streql(o->mode, "read-only");
     o->write_only = axl_streql(o->mode, "write-only");
@@ -599,6 +618,16 @@ serve_teardown(void *user)
         o->server = NULL;
     }
     network_cleanup();
+
+    /* Close the log file last so any output from the steps above
+       lands in it. Clear the tees first to avoid writing through a
+       freed stream. */
+    if (o->log_stream != NULL) {
+        axl_stream_set_stdout_tee(NULL);
+        axl_stream_set_stderr_tee(NULL);
+        axl_fclose(o->log_stream);
+        o->log_stream = NULL;
+    }
     return AXL_OK;
 }
 

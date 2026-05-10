@@ -44,6 +44,7 @@ typedef struct {
     bool        verbose;
     const char *mode;                  /* "read-write" | "read-only" | "write-only" */
     const char *source;                /* bind IPv4, NULL/empty = auto */
+    const char *log_path;              /* file path, empty = console only */
 
     /* Derived / runtime, set by serve_setup */
     bool             read_only;
@@ -51,6 +52,7 @@ typedef struct {
     AxlHttpServer   *server;
     AxlLoop         *loop;             /* needed by route handlers to publish */
     uint32_t         request_sub_id;   /* axl_pubsub_subscribe handle */
+    AxlStream       *log_stream;       /* tee target for stdout/stderr; NULL = no log file */
     uint8_t          addr[4];
 } ServeOpts;
 

@@ -868,7 +868,7 @@ NSHEOF
         cat > "$STOP_NSH" <<'NSHEOF'
 @echo -off
 fs0:
-axl-webfs.efi serve -p 8080
+axl-webfs.efi serve -p 8080 --log fs99:\nope.log
 echo === DETACHED ===
 axl-webfs.efi serve-stop
 echo === STOPPED ===
@@ -899,6 +899,14 @@ NSHEOF
             grep -q "axl-webfs serve: listening" "$SERIAL_LOG" 2>/dev/null && \
                 pass "serve-stop: detach launched the driver" || \
                 fail "serve-stop: detach" "no listening banner"
+
+            # The bogus --log path (fs99:\nope.log) should fail to open
+            # but the service must still start and the failure must be
+            # surfaced clearly to the console.
+            grep -qE "ERROR: serve: cannot open log file 'fs99:" \
+                "$SERIAL_LOG" 2>/dev/null && \
+                pass "serve --log: bogus path surfaces console error" || \
+                fail "serve --log: bogus path" "no console error for unopenable log"
 
             grep -q "axl-webfs: stopping serve\.\.\." "$SERIAL_LOG" 2>/dev/null && \
             grep -q "axl-webfs: serve stopped" "$SERIAL_LOG" 2>/dev/null && \
