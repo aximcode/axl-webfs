@@ -28,27 +28,27 @@ endif
 
 AXL_CC   = $(AXL_SDK)/bin/axl-cc
 
-# axl-webfs.efi sources. The serve driver image is spliced into
-# .rodata via `axl-cc --embed` (see the link rule below) so
-# `serve --detach` can load it without a sidecar file; the build
-# rule has a build-time dep on the driver image.
+# Launcher (axl-webfs.efi) sources. webfs-serve.c is dual-compiled:
+# without -DAXL_SERVICE_BUILD_DRIVER it emits only the descriptor +
+# opts_descs that axl_service_start_embedded reads to serialize
+# LoadOptions, so the launcher doesn't drag in serve-core impl,
+# upload-asset, file-transfer, or dir-list.
 APP_SRCS = src/app/main.c \
            src/app/cmd-serve.c \
            src/app/cmd-mount.c \
            src/net/network.c \
-           src/serve/serve-core.c \
-           src/serve/upload-asset.c \
-           src/transfer/file-transfer.c \
-           src/transfer/dir-list.c
+           src/serve/webfs-serve.c
 
 DRV_SRCS = src/driver/webfs.c \
            src/driver/webfs-file.c \
            src/driver/webfs-cache.c \
            src/net/network.c
 
-SERVE_DRV_SRCS = src/driver/serve-dxe.c \
+# Serve driver image. -DAXL_SERVICE_BUILD_DRIVER pulls in setup,
+# teardown, route handlers, and the AXL_SERVICE_DRIVER entry point
+# from webfs-serve.c.
+SERVE_DRV_SRCS = src/serve/webfs-serve.c \
                  src/net/network.c \
-                 src/serve/serve-core.c \
                  src/serve/upload-asset.c \
                  src/transfer/file-transfer.c \
                  src/transfer/dir-list.c
@@ -78,7 +78,9 @@ $(OUTDIR)/axl-webfs-dxe.efi: $(DRV_SRCS) | $(OUTDIR) $(SDK_SYNC_DEP)
 
 axl-webfs-serve-dxe: $(OUTDIR)/axl-webfs-serve-dxe.efi
 $(OUTDIR)/axl-webfs-serve-dxe.efi: $(SERVE_DRV_SRCS) | $(OUTDIR) $(SDK_SYNC_DEP)
-	$(AXL_CC) --arch $(ARCH) --type driver $(CFLAGS) $(SERVE_DRV_SRCS) -o $@
+	$(AXL_CC) --arch $(ARCH) --type driver $(CFLAGS) \
+	    -DAXL_SERVICE_BUILD_DRIVER \
+	    $(SERVE_DRV_SRCS) -o $@
 
 $(OUTDIR):
 	mkdir -p $@

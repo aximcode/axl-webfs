@@ -1,35 +1,39 @@
 /** @file
-  axl-webfs -- serve service implementation (linked into both binaries).
+  axl-webfs -- serve service.
 
-  Owns the URL parser, JSON-Accept sniffer, permission middleware, all
-  six route handlers, the AxlConfigDesc table, the AxlService setup /
-  teardown callbacks, and the const AxlService descriptor that
-  axl_service_run (foreground) and AXL_SERVICE_DRIVER (driver) both
-  consume.
+  Single-source-file dual-compile. With -DAXL_SERVICE_BUILD_DRIVER
+  this builds into webfs-serve-dxe.efi and includes setup/teardown,
+  the route handlers, and AXL_SERVICE_DRIVER's DriverEntry. Without
+  the define only the unconditional bits compile (g_serve_opts,
+  serve_descs, the webfs_serve descriptor stub), which is what the
+  launcher needs for axl_service_start_embedded's LoadOptions
+  serialization.
 
-  Compiled into axl-webfs.efi and axl-webfs-serve-dxe.efi alike. The
-  cross-binary ABI rule (same source, same flags) is what makes the
-  AxlConfig auto-apply contract safe across the LoadOptions handoff.
+  Cross-binary ABI rule: same source, same flags except for the
+  AXL_SERVICE_BUILD_DRIVER toggle. AxlConfig auto-apply over
+  LoadOptions is safe under that rule.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#include "serve/serve-shared.h"
+#include "serve/webfs-serve.h"
 
 #include <axl.h>
-#include <axl/axl-net.h>
-#include <axl/axl-pubsub.h>
-#include <axl/axl-url.h>
-#include "net/network.h"
-#include "serve/upload-asset.h"
-#include "transfer/file-transfer.h"
+
+#ifdef AXL_SERVICE_BUILD_DRIVER
+#  include <axl/axl-net.h>
+#  include <axl/axl-pubsub.h>
+#  include <axl/axl-url.h>
+#  include "net/network.h"
+#  include "serve/upload-asset.h"
+#  include "transfer/file-transfer.h"
 
 /* Pub/sub topic for non-GET request notifications. The default
    subscriber is the in-process console printer registered in
    serve_setup; external consumers can subscribe to the same topic
    for telemetry / audit. */
-#define WEBFS_REQUEST_TOPIC "webfs.request"
+#  define WEBFS_REQUEST_TOPIC "webfs.request"
 
 /* Single-buffer event payload reused across requests. Safe because
    UEFI is single-threaded and pubsub deferred dispatch drains before
@@ -43,6 +47,7 @@ typedef struct {
 } WebfsRequestEvent;
 
 static WebfsRequestEvent m_req_event;
+#endif /* AXL_SERVICE_BUILD_DRIVER */
 
 ServeOpts g_serve_opts;
 
@@ -62,6 +67,8 @@ const AxlConfigDesc serve_descs[] = {
       offsetof(ServeOpts, source),           sizeof(const char *) },
     { 0 }
 };
+
+#ifdef AXL_SERVICE_BUILD_DRIVER
 
 // ----------------------------------------------------------------------------
 // URL parsing helpers
@@ -595,11 +602,20 @@ serve_teardown(void *user)
     return AXL_OK;
 }
 
+#endif /* AXL_SERVICE_BUILD_DRIVER */
+
 const AxlService webfs_serve = {
     .name           = "axl-webfs-serve",
     .opts_descs     = serve_descs,
+#ifdef AXL_SERVICE_BUILD_DRIVER
     .setup          = serve_setup,
     .teardown       = serve_teardown,
+#endif
     .user           = &g_serve_opts,
     .driver_tick_ms = 50,
 };
+
+#ifdef AXL_SERVICE_BUILD_DRIVER
+AXL_LOG_DOMAIN("webfs-serve-drv");
+AXL_SERVICE_DRIVER(webfs_serve);
+#endif

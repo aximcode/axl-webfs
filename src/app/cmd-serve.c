@@ -22,7 +22,7 @@
 #include <axl/axl-embed.h>
 #include <axl/axl-service.h>
 
-#include "serve/serve-shared.h"
+#include "serve/webfs-serve.h"
 #include "webfs-version.h"
 
 /* Embedded axl-webfs-serve-dxe.efi blob -- spliced in by

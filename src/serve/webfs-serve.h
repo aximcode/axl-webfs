@@ -1,21 +1,24 @@
 /** @file
-  axl-webfs -- shared serve descriptors (linked into both binaries).
+  axl-webfs -- serve service descriptor (linked into both binaries).
 
-  Both axl-webfs.efi (foreground launcher) and axl-webfs-serve-dxe.efi
-  (resident driver) link this header so they agree on the ServeOpts
-  layout, the AxlConfigDesc table, and the AxlService descriptor that
-  drives both axl_service_run (foreground) and AXL_SERVICE_DRIVER
-  (driver) shapes.
+  webfs-serve.c defines the descriptor + ServeOpts unconditionally,
+  but the impl (setup, teardown, route handlers, helpers) is gated
+  on AXL_SERVICE_BUILD_DRIVER so the launcher build only carries the
+  descriptor stub. The launcher reads svc->opts_descs / svc->user
+  for axl_service_start_embedded's LoadOptions serialization; it
+  never invokes setup/teardown (those run on the driver side).
 
-  Cross-binary ABI rule: build both binaries from the same source tree
-  with identical compile flags. Per axl-sdk's AxlService contract.
+  Cross-binary ABI rule: build both binaries from the same source
+  tree with identical compile flags except for the
+  -DAXL_SERVICE_BUILD_DRIVER toggle. Per axl-sdk's AxlService
+  contract.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#ifndef AXL_WEBFS_SERVE_SHARED_H_
-#define AXL_WEBFS_SERVE_SHARED_H_
+#ifndef AXL_WEBFS_SERVE_H_
+#define AXL_WEBFS_SERVE_H_
 
 #include <axl.h>
 #include <stddef.h>
@@ -58,9 +61,9 @@ typedef struct {
    instance — both binaries pick out the same derived GUID by
    sharing this descriptor. */
 
-/* Defined in serve-core.c, linked into both binaries. */
+/* Defined in webfs-serve.c, linked into both binaries. */
 extern ServeOpts          g_serve_opts;
 extern const AxlConfigDesc serve_descs[];
 extern const AxlService    webfs_serve;
 
-#endif /* AXL_WEBFS_SERVE_SHARED_H_ */
+#endif /* AXL_WEBFS_SERVE_H_ */
