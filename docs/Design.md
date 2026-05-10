@@ -419,14 +419,19 @@ Progress tracking hooks into streaming callbacks.
 ```bash
 make                           # X64
 make ARCH=aa64                 # AARCH64
-scripts/test.sh                # Host-side tests (25)
-scripts/test.sh --qemu         # Full suite with QEMU (66 tests)
+scripts/test.sh                # Host-side tests (xfer-server.py)
+scripts/test.sh --qemu         # Full suite with QEMU integration
+scripts/test.sh --aarch64      # Same, also runs the AARCH64 mount test
 ```
 
 ## Future Enhancements
 
+- **Streaming large-file transfers (multi-GB ISO support)** — the
+  current GET handler `axl_malloc`s the full file before responding;
+  the PUT handler is gated by a 128 MB body limit. Both need true
+  streaming (response-body callback + request-body callback) before
+  ISO-sized payloads work. Likely needs SDK API additions.
 - WebDAV serve mode (PROPFIND, MKCOL, MOVE, COPY for network drive mount)
 - WebDAV client for mount (mount standard WebDAV servers without xfer-server.py)
 - TLS support (SDK has `axl_http_client_set("tls.verify", ...)`)
-- AARCH64 QEMU test automation (`--aarch64` flag)
 - IPv6 support
