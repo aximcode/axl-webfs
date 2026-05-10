@@ -72,11 +72,19 @@ curl -LO https://github.com/aximcode/axl-sdk-releases/releases/latest/download/a
 sudo dnf install ./axl-sdk.rpm
 ```
 
-Packages install under `/usr`. To build against a local SDK checkout
-instead:
+Packages install under `/usr`. To build against a local SDK checkout,
+either point at a pre-installed `out/`:
 
 ```bash
-AXL_SDK=~/src/axl-sdk-releases/out make
+AXL_SDK=~/src/axl-sdk/out make
+```
+
+…or point at the source tree and let the build pick up SDK changes
+automatically (runs `axl-sdk/scripts/install.sh` as a prereq; the
+SDK's own incremental make keeps it cheap):
+
+```bash
+AXL_SDK_SRC=~/src/axl-sdk make
 ```
 
 ## Build
