@@ -366,11 +366,14 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     }
 
     /* Range support: open at the requested start offset and bound
-       the streamer to the slice length. The 206-status comes from
-       us; the SDK doesn't synthesize Content-Range (existing
-       behavior, separate concern). */
+       the streamer to the slice length. The 206-status + the
+       Content-Range header come from us; the SDK's
+       axl_http_response_set_content_range formats and inserts the
+       header for the streaming case (the buffered set_range
+       auto-emits it itself). */
     uint64_t start_offset = 0;
     uint64_t slice_len    = file_size;
+    uint64_t range_end    = 0;  /* inclusive, only valid when is_range */
     bool     is_range     = false;
 
     const char *range_hdr =
@@ -379,6 +382,7 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         AxlHttpRange range;
         if (axl_http_parse_range(range_hdr, file_size, &range)) {
             start_offset = range.start;
+            range_end    = range.end;
             slice_len    = range.end - range.start + 1;
             is_range     = true;
         }
@@ -404,7 +408,13 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
                                    get_streamer_close,
                                    (size_t)slice_len,
                                    "application/octet-stream");
-    axl_http_response_set_status(resp, is_range ? 206 : 200);
+    if (is_range) {
+        axl_http_response_set_content_range(resp, start_offset,
+                                            range_end, file_size);
+        axl_http_response_set_status(resp, 206);
+    } else {
+        axl_http_response_set_status(resp, 200);
+    }
     return 0;
 }
 

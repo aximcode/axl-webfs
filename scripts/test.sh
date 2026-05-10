@@ -879,7 +879,9 @@ NSHEOF
                     # slice from inside the 1 MB upload) and verify
                     # status=206 + content matches.
                     SLICE=$(mktemp)
-                    HTTP_CODE=$(curl -s -o "$SLICE" -w "%{http_code}" \
+                    HEADERS=$(mktemp)
+                    HTTP_CODE=$(curl -s -o "$SLICE" -D "$HEADERS" \
+                        -w "%{http_code}" \
                         -H "Range: bytes=100000-101023" \
                         "$BASE/fs0/multichunk.bin" 2>/dev/null || true)
                     if [ "$HTTP_CODE" = "206" ]; then
@@ -893,11 +895,24 @@ NSHEOF
                                  "slice content mismatch"
                         fi
                         rm -f "$EXPECT"
+
+                        # RFC 9110 §15.3.7: 206 responses MUST carry
+                        # Content-Range. axl-sdk landed
+                        # axl_http_response_set_content_range; the
+                        # serve handler invokes it on the Range
+                        # branch.
+                        if grep -qiE '^Content-Range: bytes 100000-101023/1048576' \
+                               "$HEADERS"; then
+                            pass "serve: streaming Range GET emits Content-Range"
+                        else
+                            fail "serve: streaming Range GET" \
+                                 "Content-Range header missing or malformed"
+                        fi
                     else
                         fail "serve: streaming Range GET" \
                              "expected 206, got $HTTP_CODE"
                     fi
-                    rm -f "$SLICE"
+                    rm -f "$SLICE" "$HEADERS"
                 else
                     fail "serve: multi-chunk PUT" \
                          "expected 201, got $HTTP_CODE"
