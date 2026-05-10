@@ -72,6 +72,38 @@ const AxlArgDesc webfs_serve_flags[] = {
     {0}
 };
 
+// ----------------------------------------------------------------------------
+// serve-stop verb -- symmetric counterpart to serve --detach.
+// ----------------------------------------------------------------------------
+
+int
+webfs_serve_stop_handler(AxlArgs *a)
+{
+    (void)a;
+
+    /* axl_service_stop only reads deploy->service->protocol_guid;
+       driver_blob / driver_name aren't needed (no relaunch path).
+       Same shape as sdk/examples/service-demo-stop.c. */
+    AxlServiceDeploy deploy = {
+        .service = &webfs_serve,
+    };
+
+    if (!axl_service_is_running(&deploy)) {
+        axl_printf("axl-webfs: no serve running\n");
+        return 0;
+    }
+
+    axl_printf("axl-webfs: stopping serve...\n");
+    int rc = axl_service_stop(&deploy);
+    if (rc != AXL_OK) {
+        axl_printf("ERROR: serve-stop failed (rc=%d)\n", rc);
+        return 1;
+    }
+
+    axl_printf("axl-webfs: serve stopped\n");
+    return 0;
+}
+
 int
 webfs_serve_handler(AxlArgs *a)
 {

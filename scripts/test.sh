@@ -848,6 +848,75 @@ NSHEOF
         fi
     fi
 
+    # ========================================================================
+    # serve-stop verb (X64 only): launch via --detach, stop, verify
+    # idempotent re-stop. All steps run inside the UEFI shell; serial
+    # log assertions verify each phase.
+    # ========================================================================
+
+    info "QEMU" "=== Serve-stop test: X64 ==="
+
+    APP_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs.efi"
+
+    if [ ! -f "$APP_EFI" ]; then
+        skip "serve-stop: axl-webfs.efi not built"
+    elif [ "${RUN_STOP_TEST:-}" != "1" ]; then
+        skip "serve-stop: blocked on axl-sdk AXL_SERVICE_DRIVER unload-stub not calling svc.teardown (HTTP server leaks, UnloadImage refuses); set RUN_STOP_TEST=1 to attempt"
+    else
+        STOP_NSH=$(mktemp --suffix=.nsh)
+        cat > "$STOP_NSH" <<'NSHEOF'
+@echo -off
+fs0:
+axl-webfs.efi serve -p 8080 --detach
+echo === DETACHED ===
+axl-webfs.efi serve-stop
+echo === STOPPED ===
+axl-webfs.efi serve-stop
+echo === RE-STOP ===
+NSHEOF
+
+        eval "$("$RUN_QEMU_SH" --arch X64 --timeout 60 \
+            --net \
+            --nsh "$STOP_NSH" \
+            --background \
+            "$APP_EFI")"
+
+        rm -f "$STOP_NSH"
+
+        if [ -z "${QEMU_PID:-}" ]; then
+            fail "serve-stop: QEMU failed to start"
+        else
+            # Wait for the nsh to finish all three markers (or timeout).
+            for WAIT in $(seq 1 30); do
+                sleep 1
+                if grep -q "RE-STOP" "$SERIAL_LOG" 2>/dev/null; then
+                    break
+                fi
+                kill -0 "$QEMU_PID" 2>/dev/null || break
+            done
+
+            grep -q "axl-webfs serve: listening" "$SERIAL_LOG" 2>/dev/null && \
+                pass "serve-stop: detach launched the driver" || \
+                fail "serve-stop: detach" "no listening banner"
+
+            grep -q "axl-webfs: stopping serve\.\.\." "$SERIAL_LOG" 2>/dev/null && \
+            grep -q "axl-webfs: serve stopped" "$SERIAL_LOG" 2>/dev/null && \
+                pass "serve-stop: first stop unloaded the driver" || \
+                fail "serve-stop: first stop" "no stopping/stopped lines"
+
+            grep -q "axl-webfs: no serve running" "$SERIAL_LOG" 2>/dev/null && \
+                pass "serve-stop: re-stop is idempotent (exit 0, no error)" || \
+                fail "serve-stop: idempotent re-stop" "second stop did not report 'no serve running'"
+
+            grep -q "RE-STOP" "$SERIAL_LOG" 2>/dev/null && \
+                pass "serve-stop: shell completed all three commands" || \
+                fail "serve-stop: shell completion" "RE-STOP marker missing"
+
+            kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+            rm -rf "$TMPDIR"
+        fi
+    fi
+
     fi  # run-qemu.sh exists
 fi
 

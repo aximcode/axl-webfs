@@ -21,6 +21,7 @@ extern const AxlArgDesc webfs_serve_flags[];
 extern const AxlArgDesc webfs_mount_flags[];
 extern const AxlArgDesc webfs_mount_pos[];
 extern int webfs_serve_handler(AxlArgs *a);
+extern int webfs_serve_stop_handler(AxlArgs *a);
 extern int webfs_mount_handler(AxlArgs *a);
 extern int webfs_umount_handler(AxlArgs *a);
 
@@ -70,6 +71,9 @@ static const AxlArgsNode verbs[] = {
       .help        = "Run HTTP file server",
       .flags       = webfs_serve_flags,
       .handler     = webfs_serve_handler },
+    { .name        = "serve-stop",
+      .help        = "Stop a backgrounded serve driver (started via --detach)",
+      .handler     = webfs_serve_stop_handler },
     { .name        = "mount",
       .help        = "Mount a remote axl-webfs server URL as a UEFI volume",
       .flags       = webfs_mount_flags,
