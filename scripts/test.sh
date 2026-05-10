@@ -860,8 +860,6 @@ NSHEOF
 
     if [ ! -f "$APP_EFI" ]; then
         skip "serve-stop: axl-webfs.efi not built"
-    elif [ "${RUN_STOP_TEST:-}" != "1" ]; then
-        skip "serve-stop: blocked on axl-sdk AXL_SERVICE_DRIVER unload-stub not calling svc.teardown (HTTP server leaks, UnloadImage refuses); set RUN_STOP_TEST=1 to attempt"
     else
         STOP_NSH=$(mktemp --suffix=.nsh)
         cat > "$STOP_NSH" <<'NSHEOF'
