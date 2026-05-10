@@ -41,7 +41,9 @@ diagnostics. Build on your workstation, run immediately in the UEFI Shell.
 
 ## Architecture
 
-Two binaries, two internal libraries, all using the AXL SDK:
+One distributable binary plus two DXE drivers (the serve driver is
+embedded into the app, the mount driver ships alongside as a sidecar
+for now), with two internal libraries; all using the AXL SDK:
 
 ```
 +---------------------------------------------------------------+
@@ -237,7 +239,8 @@ Options:
   -v               Verbose logging
   -h               Show help
 
-Press ESC to stop the server (foreground only).
+Press ESC to stop the server (foreground). For --detach, use
+`axl-webfs serve-stop`.
 ```
 
 ### Foreground vs --detach
@@ -256,8 +259,8 @@ Press ESC to stop the server (foreground only).
   `AXL_SERVICE_DRIVER` macro decodes LoadOptions back into the
   same `ServeOpts` the foreground populated and runs the same
   `serve_setup` callback against a driver-mode loop. Stop with
-  `unload -n axl-webfs-serve-dxe.efi` from the Shell (a
-  `serve-stop` verb is planned).
+  `axl-webfs serve-stop` (preferred) or `unload -n
+  axl-webfs-serve-dxe.efi` from the Shell.
 
 Both modes share `src/serve/serve-core.c`: the route handlers, the
 permission middleware, and the `webfs_serve` AxlService descriptor
@@ -280,14 +283,20 @@ curl -C - http://192.168.1.100:8080/fs0/large.bin -o large.bin  # resume
 src/
   app/                         CLI application
     main.c                     Entry point, subcommand dispatch
-    cmd-serve.c                HTTP file server (AxlHttpServer + AxlLoop)
+    cmd-serve.c                serve / serve-stop verbs (foreground + --detach)
     cmd-mount.c                Mount/umount (axl_driver_load/start/unload)
-    webfs-internal.h          Shared command declarations
-  driver/                      DXE driver
-    webfs.c                 Driver entry, URL parsing, protocol install
-    webfs-file.c            EFI_FILE_PROTOCOL (11 functions)
-    webfs-cache.c           Directory cache + HTTP request helper
-    webfs-internal.h        Private types
+  serve/                       Serve mode (shared between app and driver)
+    serve-core.c               AxlService descriptor, route handlers
+    serve-shared.h             Shared types (ServeOpts, webfs_serve)
+    serve-blob.S               .incbin of axl-webfs-serve-dxe.efi
+    upload-asset.c/.h          Embedded upload UI assets
+  driver/                      DXE drivers
+    webfs.c                    Mount driver entry, URL parsing,
+                               EFI_FILE_PROTOCOL install
+    webfs-file.c               EFI_FILE_PROTOCOL (11 functions)
+    webfs-cache.c              Directory cache + HTTP request helper
+    webfs-internal.h           Mount driver private types
+    serve-dxe.c                Serve driver entry (AXL_SERVICE_DRIVER)
   net/                         Network initialization
     network.c                  Wrapper around axl_net_auto_init
     network.h                  Public API
@@ -303,6 +312,12 @@ docs/
 Makefile                       axl-cc build
 CLAUDE.md                      Project instructions for Claude Code
 ```
+
+Build outputs (per arch, in `out/<arch>/`):
+
+- `axl-webfs.efi` — application; embeds the serve driver via `.incbin`
+- `axl-webfs-dxe.efi` — mount driver (sidecar, loaded by `mount`)
+- `axl-webfs-serve-dxe.efi` — serve driver (built then embedded into the app)
 
 ## Network Initialization
 
@@ -353,8 +368,8 @@ Progress tracking hooks into streaming callbacks.
 ```bash
 make                           # X64
 make ARCH=aa64                 # AARCH64
-scripts/test.sh                # Host-side tests (24)
-scripts/test.sh --qemu         # Full suite with QEMU (47 tests)
+scripts/test.sh                # Host-side tests (25)
+scripts/test.sh --qemu         # Full suite with QEMU (66 tests)
 ```
 
 ## Future Enhancements
