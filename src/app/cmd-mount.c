@@ -1,9 +1,15 @@
 /** @file
   axl-webfs -- mount and umount command handlers.
 
-  mount: Loads axl-webfs-dxe.efi via axl_driver_load, passes the server
-  URL as UCS-2 load options, and starts the driver.
-  umount: Unloads the previously loaded driver handle.
+  mount: LoadImages the embedded axl-webfs-dxe.efi blob via
+  axl_driver_load_buffer, installs the server URL as UCS-2 LoadOptions,
+  and starts the driver. The driver image is .incbin'd into
+  axl-webfs.efi by axl-cc --embed (see Makefile), so mount works as
+  a single binary -- no sidecar driver file on disk.
+
+  umount: Unloads the previously loaded driver handle. Falls back to
+  scanning loaded images for the axl-webfs vendor GUID device path
+  when invoked from a different process than the one that mounted.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
@@ -11,9 +17,12 @@
 
 #include <axl.h>
 #include <axl/axl-driver.h>
+#include <axl/axl-embed.h>
 #include <axl/axl-sys.h>
 
-#define DRIVER_FILENAME  "axl-webfs-dxe.efi"
+/* Embedded axl-webfs-dxe.efi blob -- spliced in by
+   `axl-cc --embed ...=axl_webfs_mount_dxe` (see Makefile). */
+AXL_EMBED_DECLARE(axl_webfs_mount_dxe);
 
 static const AxlGuid HttpFsVendorGuid = AXL_GUID(
     0xf47c0fa2, 0xbf67, 0x4c0d,
@@ -42,26 +51,18 @@ webfs_mount_handler(AxlArgs *a)
 {
     const char *url = axl_args_get_string(a, "url");
 
-    // Find the driver — search image's drivers/<arch>/, image's own
-    // directory, image's drivers/, then other volumes' drivers/<arch>/.
-    // axl_driver_load(DRIVER_FILENAME, ...) by itself would be CWD-
-    // relative and fail when the user invoked us from a different
-    // volume than where the binaries live (the Dell case).
-    char drv_path[256];
-    if (axl_driver_locate(DRIVER_FILENAME, drv_path, sizeof(drv_path)) != 0) {
-        axl_printf("ERROR: %s not found on any mounted volume.\n",
-                   DRIVER_FILENAME);
-        axl_printf("       Place it next to axl-webfs.efi or under "
-                   "drivers/<arch>/ on the boot disk.\n");
-        return 1;
-    }
-
-    axl_printf("Loading %s...\n", drv_path);
-
-    // Load the driver image
+    /* Load the embedded mount driver image. axl_driver_load_buffer
+       wraps gBS->LoadImage with SourceBuffer/SourceSize and returns
+       a handle for set_load_options + start + unload. We can't use
+       axl_driver_ensure_with_embedded here -- its LocateProtocol
+       short-circuit on EFI_FILE_PROTOCOL would match any unrelated
+       FS handle and skip the load entirely, and it doesn't expose
+       the AxlDriverHandle the umount path needs. */
     AxlDriverHandle handle = NULL;
-    if (axl_driver_load(drv_path, &handle) != 0) {
-        axl_printf("ERROR: Cannot load %s\n", drv_path);
+    if (axl_driver_load_buffer(AXL_EMBED_DATA(axl_webfs_mount_dxe),
+                               AXL_EMBED_SIZE(axl_webfs_mount_dxe),
+                               &handle) != 0) {
+        axl_printf("ERROR: Cannot load embedded mount driver\n");
         return 1;
     }
 

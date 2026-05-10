@@ -387,9 +387,10 @@ if [ "$RUN_QEMU" = true ]; then
         ARCH_DIR=$(echo "$QEMU_ARCH" | tr '[:upper:]' '[:lower:]')
         [ "$ARCH_DIR" = "aarch64" ] && ARCH_DIR="aa64"
         APP_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/axl-webfs.efi"
-        DRV_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/axl-webfs-dxe.efi"
 
-        if [ ! -f "$APP_EFI" ] || [ ! -f "$DRV_EFI" ]; then
+        # The mount driver is .incbin'd into axl-webfs.efi via
+        # axl-cc --embed, so no sidecar driver staging is required.
+        if [ ! -f "$APP_EFI" ]; then
             skip "$QEMU_ARCH: binaries not built"
             continue
         fi
@@ -428,7 +429,7 @@ NSHEOF
         info "QEMU" "$QEMU_ARCH: Booting mount test..."
 
         "$RUN_QEMU_SH" --arch "$QEMU_ARCH" --timeout 30 --raw --net \
-            --extra "$DRV_EFI" --nsh "$MOUNT_NSH" \
+            --nsh "$MOUNT_NSH" \
             --serial-log "$SERIAL_LOG" \
             "$APP_EFI" > /dev/null 2>&1 || true
 

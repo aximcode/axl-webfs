@@ -41,9 +41,10 @@ diagnostics. Build on your workstation, run immediately in the UEFI Shell.
 
 ## Architecture
 
-One distributable binary plus two DXE drivers (the serve driver is
-embedded into the app, the mount driver ships alongside as a sidecar
-for now), with two internal libraries; all using the AXL SDK:
+One distributable binary that bundles two DXE drivers (both
+embedded via `axl-cc --embed`), plus two internal libraries; all
+using the AXL SDK. The drivers are also emitted as standalone
+`.efi` files for users who prefer the UEFI-shell `load` workflow.
 
 ```
 +---------------------------------------------------------------+
@@ -80,7 +81,8 @@ for now), with two internal libraries; all using the AXL SDK:
 1. **axl-webfs.efi** (Application) — `int main()` entry via AXL_APP.
    CLI parsing with `axl_args_parse`. Dispatches `serve`/`mount`/
    `umount`/`list-nics`. Serve uses AXL's `AxlHttpServer` with
-   event loop. Mount uses `axl_driver_load`/`start`/`set_load_options`.
+   event loop. Mount uses `axl_driver_load_buffer` against the embedded
+   driver image, then `set_load_options` + `start`.
 
 2. **axl-webfs-dxe.efi** (DXE Driver) — `DriverEntry` with
    `axl_driver_init`. Implements `EFI_FILE_PROTOCOL` backed by
@@ -106,9 +108,10 @@ memory allocation, string utilities, logging.
 
 ### How It Works
 
-The `mount` command loads a companion DXE driver (`axl-webfs-dxe.efi`)
-that installs `EFI_FILE_PROTOCOL` on a new device handle. The UEFI
-Shell sees this as a new volume (FSn:).
+The `mount` command loads a companion DXE driver (`axl-webfs-dxe.efi`,
+embedded into the app via `axl-cc --embed` and LoadImaged via
+`axl_driver_load_buffer`) that installs `EFI_FILE_PROTOCOL` on a new
+device handle. The UEFI Shell sees this as a new volume (FSn:).
 
 ```
 Workstation                              UEFI Host
@@ -315,9 +318,11 @@ CLAUDE.md                      Project instructions for Claude Code
 
 Build outputs (per arch, in `out/<arch>/`):
 
-- `axl-webfs.efi` — application; embeds the serve driver via `.incbin`
-- `axl-webfs-dxe.efi` — mount driver (sidecar, loaded by `mount`)
-- `axl-webfs-serve-dxe.efi` — serve driver (built then embedded into the app)
+- `axl-webfs.efi` — application; embeds both drivers via `axl-cc --embed`
+- `axl-webfs-dxe.efi` — mount driver (built then embedded into the app;
+  also emitted as a standalone .efi for `load`-from-shell workflows)
+- `axl-webfs-serve-dxe.efi` — serve driver (same: built, embedded, and
+  also emitted standalone)
 
 ## Network Initialization
 
@@ -343,10 +348,19 @@ The mount driver uses plain HTTP with JSON directory listings instead
 of full WebDAV XML. Avoids XML parsing on the UEFI side. We control
 both sides (xfer-server.py + axl-webfs-dxe).
 
-### Two Binaries (axl-webfs.efi + axl-webfs-dxe.efi)
-`mount` needs a persistent protocol that survives after the command
-returns. UEFI's mechanism is a DXE driver that stays resident. The
-app loads/unloads the driver.
+### Single-Binary Toolkit (Embedded Drivers)
+`mount` and `serve --detach` both need a persistent protocol that
+survives after the command returns. UEFI's mechanism is a DXE driver
+that stays resident, so axl-webfs ships two of them. To keep the
+toolkit a single distributable file, both driver images are
+`.incbin`'d into `axl-webfs.efi` via `axl-cc --embed`. `serve --detach`
+loads its driver via `axl_service_launch_embedded`; `mount` loads its
+driver via `axl_driver_load_buffer` (which doesn't go through the
+AxlService machinery -- mount's protocol is the standard
+`EFI_FILE_PROTOCOL`, which isn't unique-per-driver and would defeat
+the AxlService LocateProtocol short-circuit). Standalone `.efi`
+files for both drivers are still emitted by the build for users who
+prefer the UEFI-shell `load` workflow.
 
 ### AXL SDK
 All HTTP, JSON, event loop, hash table, TCP, and network functionality

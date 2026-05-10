@@ -82,12 +82,16 @@ AXL_SDK=~/src/axl-sdk-releases/out make
 ## Build
 
 ```bash
-make                 # axl-webfs.efi and axl-webfs-dxe.efi for x64
+make                 # axl-webfs.efi (single distributable binary) for x64
 make ARCH=aa64       # AArch64
 make clean
 ```
 
-Output lands in `build/axl/<arch>/`.
+Output lands in `build/axl/<arch>/`. The build also emits the two
+DXE driver images (`axl-webfs-dxe.efi`, `axl-webfs-serve-dxe.efi`)
+as standalone files for the UEFI-shell `load` workflow, but
+`axl-webfs.efi` already embeds both via `axl-cc --embed` and is
+self-contained.
 
 ## Architecture
 
@@ -97,10 +101,10 @@ flowchart LR
     CURL["curl / browser"]
 
     subgraph UEFI["UEFI Host"]
-        APP["axl-webfs.efi<br/>(application)<br/>serve · mount · umount · list-nics"]
-        DXE["axl-webfs-dxe.efi<br/>(DXE driver)<br/>EFI_FILE_PROTOCOL over HTTP"]
+        APP["axl-webfs.efi<br/>(application + embedded DXE drivers)<br/>serve · serve-stop · mount · umount · list-nics"]
+        DXE["axl-webfs-dxe.efi<br/>(DXE driver, embedded)<br/>EFI_FILE_PROTOCOL over HTTP"]
         FS["FSn: volume"]
-        APP -. "loads on mount" .-> DXE
+        APP -. "LoadImage on mount" .-> DXE
         DXE --> FS
     end
 
@@ -108,8 +112,10 @@ flowchart LR
     CURL <-->|"HTTP (serve)"| APP
 ```
 
-Two binaries, both built with `axl-cc`. All HTTP, JSON, event loop,
-hash table, and network functionality comes from the AXL SDK.
+Single distributable `axl-webfs.efi` with both DXE drivers .incbin'd
+in via `axl-cc --embed`, all built with `axl-cc`. All HTTP, JSON,
+event loop, hash table, and network functionality comes from the
+AXL SDK.
 
 See [docs/Design.md](docs/Design.md) for the full design.
 
