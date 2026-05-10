@@ -766,11 +766,10 @@ NSHEOF
     info "QEMU" "=== Serve --detach test: X64 ==="
 
     APP_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs.efi"
-    SERVE_DRV_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs-serve-dxe.efi"
     DETACH_PORT=18091
 
-    if [ ! -f "$SERVE_DRV_EFI" ]; then
-        skip "serve --detach: axl-webfs-serve-dxe.efi not built"
+    if [ ! -f "$APP_EFI" ]; then
+        skip "serve --detach: axl-webfs.efi not built"
     else
         DETACH_STAGE=$(mktemp -d)
         echo "detach test" > "$DETACH_STAGE/detach_test.txt"
@@ -783,10 +782,12 @@ axl-webfs.efi serve -p 8080 --detach
 echo === DETACHED ===
 NSHEOF
 
+        # Embedded-driver model: the serve driver is .incbin'd into
+        # axl-webfs.efi via serve-blob.S, so no separate driver image
+        # staging is required.
         eval "$("$RUN_QEMU_SH" --arch X64 --timeout 60 \
             --net --hostfwd "${DETACH_PORT}:8080" \
             --extra "$DETACH_STAGE/detach_test.txt" \
-            --extra "$SERVE_DRV_EFI" \
             --nsh "$DETACH_NSH" \
             --background \
             "$APP_EFI")"
@@ -816,9 +817,9 @@ NSHEOF
                     pass "serve --detach: shell returned after detach" || \
                     fail "serve --detach: shell return" "no DETACHED marker in serial log"
 
-                grep -q "HTTP file server (background)" "$SERIAL_LOG" 2>/dev/null && \
+                grep -q "axl-webfs serve: listening" "$SERIAL_LOG" 2>/dev/null && \
                     pass "serve --detach: driver banner printed" || \
-                    fail "serve --detach: banner" "no background banner in serial log"
+                    fail "serve --detach: banner" "no listening banner in serial log"
 
                 CONTENT=$(curl -sf "$BASE/fs0/detach_test.txt" 2>/dev/null)
                 echo "$CONTENT" | grep -q "detach test" && \

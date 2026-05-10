@@ -6,10 +6,15 @@ AXL_CC   = $(AXL_SDK)/bin/axl-cc
 ARCH     ?= x64
 OUTDIR   = build/axl/$(ARCH)
 
+# axl-webfs.efi sources. Includes serve-blob.S, which uses .incbin
+# to splice the prebuilt axl-webfs-serve-dxe.efi into .rodata so
+# `serve --detach` can load it without a sidecar file. The .efi
+# build below has a build-time dep on the driver image.
 APP_SRCS = src/app/main.c \
            src/app/cmd-serve.c \
            src/app/cmd-mount.c \
            src/net/network.c \
+           src/serve/serve-blob.S \
            src/serve/serve-core.c \
            src/serve/upload-asset.c \
            src/transfer/file-transfer.c \
@@ -31,9 +36,14 @@ CFLAGS   = -Isrc
 
 all: axl-webfs axl-webfs-dxe axl-webfs-serve-dxe
 
+# axl-webfs.efi depends on the serve driver image because serve-blob.S
+# .incbin's it; refreshed driver bytes propagate into the launcher on
+# the next link.
 axl-webfs: $(OUTDIR)/axl-webfs.efi
-$(OUTDIR)/axl-webfs.efi: $(APP_SRCS) | $(OUTDIR)
-	$(AXL_CC) --arch $(ARCH) $(CFLAGS) $(APP_SRCS) -o $@
+$(OUTDIR)/axl-webfs.efi: $(APP_SRCS) $(OUTDIR)/axl-webfs-serve-dxe.efi | $(OUTDIR)
+	$(AXL_CC) --arch $(ARCH) $(CFLAGS) \
+	    -DBLOB_PATH=$(OUTDIR)/axl-webfs-serve-dxe.efi \
+	    $(APP_SRCS) -o $@
 
 axl-webfs-dxe: $(OUTDIR)/axl-webfs-dxe.efi
 $(OUTDIR)/axl-webfs-dxe.efi: $(DRV_SRCS) | $(OUTDIR)

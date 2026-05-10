@@ -1,16 +1,21 @@
 /** @file
-  axl-webfs -- serve core (shared between foreground app and DXE driver).
+  axl-webfs -- serve service implementation (linked into both binaries).
 
-  Owns the URL parser, JSON-Accept sniffer, permission middleware, and
-  every route handler — all the pieces both the foreground `serve` command
-  and the resident webfs-server-dxe driver need. The only foreground-
-  specific bits (ESC handler, banner, axl_loop_run) live in cmd-serve.c.
+  Owns the URL parser, JSON-Accept sniffer, permission middleware, all
+  six route handlers, the AxlConfigDesc table, the AxlService setup /
+  teardown callbacks, and the const AxlService descriptor that
+  axl_service_run (foreground) and AXL_SERVICE_DRIVER (driver) both
+  consume.
+
+  Compiled into axl-webfs.efi and axl-webfs-serve-dxe.efi alike. The
+  cross-binary ABI rule (same source, same flags) is what makes the
+  AxlConfig auto-apply contract safe across the LoadOptions handoff.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
 **/
 
-#include "serve/serve-core.h"
+#include "serve/serve-shared.h"
 
 #include <axl.h>
 #include <axl/axl-net.h>
@@ -19,6 +24,24 @@
 #include "serve/upload-asset.h"
 #include "transfer/file-transfer.h"
 
+ServeOpts g_serve_opts;
+
+const AxlConfigDesc serve_descs[] = {
+    { "port",     AXL_CFG_UINT,   "8080",       "Listen port",
+      offsetof(ServeOpts, port),             sizeof(uint64_t) },
+    { "nic",      AXL_CFG_UINT,   "18446744073709551615", /* (uint64_t)-1 = auto */
+                                              "NIC index (auto if unset)",
+      offsetof(ServeOpts, nic_index),        sizeof(uint64_t) },
+    { "timeout",  AXL_CFG_UINT,   "0",          "Idle timeout in seconds (0 = none)",
+      offsetof(ServeOpts, idle_timeout_sec), sizeof(uint64_t) },
+    { "verbose",  AXL_CFG_BOOL,   "false",      "Verbose logging",
+      offsetof(ServeOpts, verbose),          sizeof(bool) },
+    { "mode",     AXL_CFG_STRING, "read-write", "Permission mode",
+      offsetof(ServeOpts, mode),             sizeof(const char *) },
+    { "source",   AXL_CFG_STRING, "",           "Bind to interface with this IPv4 (auto if empty)",
+      offsetof(ServeOpts, source),           sizeof(const char *) },
+    { 0 }
+};
 
 // ----------------------------------------------------------------------------
 // URL parsing helpers
@@ -30,7 +53,6 @@ static int
 parse_volume_path(const char *url_path, FtVolume *volume,
                   char *sub_path, size_t sub_path_size)
 {
-    // Decode percent-encoded path (e.g. %20 -> space)
     char decoded[512];
     axl_url_decode(url_path, decoded, sizeof(decoded));
     const char *p = decoded;
@@ -45,7 +67,6 @@ parse_volume_path(const char *url_path, FtVolume *volume,
     while (*p != '/' && *p != '\0' && i < 15) {
         vol_name[i++] = *p++;
     }
-
     vol_name[i] = '\0';
 
     if (ft_find_volume(vol_name, volume) != 0) {
@@ -56,7 +77,6 @@ parse_volume_path(const char *url_path, FtVolume *volume,
     while (*p != '\0' && i < sub_path_size - 1) {
         sub_path[i++] = *p++;
     }
-
     sub_path[i] = '\0';
 
     if (sub_path[0] == '\0') {
@@ -72,7 +92,6 @@ static bool
 wants_json(AxlHttpRequest *req)
 {
     const char *accept = (const char *)axl_hash_table_lookup(req->headers, "accept");
-
     if (accept == NULL) {
         return false;
     }
@@ -82,10 +101,8 @@ wants_json(AxlHttpRequest *req)
         if (axl_strncmp(p, "application/json", 16) == 0) {
             return true;
         }
-
         p++;
     }
-
     return false;
 }
 
@@ -96,7 +113,7 @@ wants_json(AxlHttpRequest *req)
 static int
 permission_middleware(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-    ServeCoreOpts *opts = (ServeCoreOpts *)data;
+    ServeOpts *opts = (ServeOpts *)data;
 
     if (opts->read_only &&
         (axl_streql(req->method, "PUT") ||
@@ -121,28 +138,26 @@ permission_middleware(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 // Route handlers
 // ----------------------------------------------------------------------------
 
-/// GET /_axl-webfs/upload.js -- embedded upload UI script.
 static int
 handle_get_upload_js(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
     (void)req;
     (void)data;
-
     axl_http_response_set_static(resp, upload_js, upload_js_len,
                                  "application/javascript");
     return 0;
 }
 
-/// GET / -- list all volumes.
 static int
 handle_get_root(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
+    (void)data;
+
     size_t buf_size = 4096;
     char  *buf = axl_malloc(buf_size);
     size_t written = 0;
     bool   as_json = wants_json(req);
 
-    (void)data;
     if (buf == NULL) {
         axl_http_response_set_status(resp, 500);
         return 0;
@@ -159,19 +174,17 @@ handle_get_root(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         resp->content_type = "text/html";
         resp->status_code = 200;
     }
-
     return 0;
 }
 
-/// GET /<vol>/<path> -- download file or list directory.
 static int
 handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-    ServeCoreOpts *opts = (ServeCoreOpts *)data;
-    FtVolume       volume;
-    char           sub_path[512];
-    int            status;
-    bool           is_dir;
+    ServeOpts *opts = (ServeOpts *)data;
+    FtVolume   volume;
+    char       sub_path[512];
+    int        status;
+    bool       is_dir;
 
     status = parse_volume_path(req->path, &volume, sub_path, 512);
     if (status != 0) {
@@ -218,13 +231,10 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
             resp->content_type = "text/html";
             resp->status_code = 200;
         }
-
         return 0;
     }
 
-    //
-    // File download -- read entire file into memory
-    //
+    /* File download -- read entire file into memory */
     uint64_t file_size = 0;
     status = ft_get_file_size(&volume, sub_path, &file_size);
     if (status != 0) {
@@ -257,20 +267,15 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         if (want > FT_CHUNK_SIZE) {
             want = FT_CHUNK_SIZE;
         }
-
         status = ft_read_chunk(&read_ctx, (uint8_t *)file_buf + total_read,
                                want, &got);
         if (status != 0 || got == 0) {
             break;
         }
-
         total_read += got;
     }
-
     ft_close_read(&read_ctx);
 
-    /* Handle Range header — set_range slices the buffer, sets 206 +
-       Content-Range. */
     const char *range_hdr = (const char *)axl_hash_table_lookup(req->headers, "range");
     if (range_hdr != NULL) {
         AxlHttpRange range;
@@ -288,11 +293,9 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     resp->body_size = total_read;
     resp->content_type = "application/octet-stream";
     resp->status_code = 200;
-
     return 0;
 }
 
-/// PUT /<vol>/<path> -- upload/overwrite file.
 static int
 handle_put_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
@@ -324,13 +327,11 @@ handle_put_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
             if (chunk_size > FT_CHUNK_SIZE) {
                 chunk_size = FT_CHUNK_SIZE;
             }
-
             status = ft_write_chunk(&write_ctx,
                          (const uint8_t *)req->body + written, chunk_size);
             if (status != 0) {
                 break;
             }
-
             written += chunk_size;
         }
     }
@@ -341,7 +342,6 @@ handle_put_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     return 0;
 }
 
-/// DELETE /<vol>/<path> -- delete file or empty directory.
 static int
 handle_delete_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
@@ -369,7 +369,6 @@ handle_delete_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     return 0;
 }
 
-/// POST /<vol>/<path>?mkdir -- create directory.
 static int
 handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
@@ -405,248 +404,109 @@ handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 }
 
 // ----------------------------------------------------------------------------
-// Public bring-up / tear-down
+// AxlService callbacks
 // ----------------------------------------------------------------------------
 
-int
-serve_core_setup(const ServeCoreOpts *opts, ServeCore *core)
+static int
+serve_setup(AxlLoop *loop, void *user)
 {
-    axl_memset(core, 0, sizeof(*core));
-    core->opts = *opts;
+    ServeOpts *o = (ServeOpts *)user;
 
-    if (network_init(opts->nic_index, NULL, 10) != 0) {
+    /* Derive permission bools from the parsed mode string. */
+    o->read_only  = axl_streql(o->mode, "read-only");
+    o->write_only = axl_streql(o->mode, "write-only");
+
+    size_t nic = (o->nic_index == (uint64_t)-1)
+                 ? (size_t)-1
+                 : (size_t)o->nic_index;
+    if (network_init(nic, NULL, 10) != 0) {
         return AXL_ERR;
     }
-
-    network_get_address(core->addr);
+    network_get_address(o->addr);
 
     if (ft_init() != 0) {
         network_cleanup();
         return AXL_ERR;
     }
 
-    core->server = axl_http_server_new(opts->port);
-    if (core->server == NULL) {
+    o->server = axl_http_server_new((uint16_t)o->port);
+    if (o->server == NULL) {
         network_cleanup();
         return AXL_ERR;
     }
 
-    /* Optional source-IP pin: empty / NULL = auto-pick. The HTTP server
-       validates and returns an error if the value is malformed. */
-    if (opts->source != NULL && opts->source[0] != '\0') {
-        axl_http_server_set(core->server, "listen.ip", opts->source);
+    if (o->source != NULL && o->source[0] != '\0') {
+        axl_http_server_set(o->server, "listen.ip", o->source);
     }
 
-    axl_http_server_set_body_limit(core->server, 128 * 1024 * 1024);  /* 128 MB */
+    axl_http_server_set_body_limit(o->server, 128 * 1024 * 1024);  /* 128 MB */
     /* Single-threaded server -- keep-alive would block subsequent
        connections. */
-    axl_http_server_set_keep_alive(core->server, 0);
+    axl_http_server_set_keep_alive(o->server, 0);
 
-    if (core->opts.read_only || core->opts.write_only) {
-        axl_http_server_use(core->server, permission_middleware, &core->opts);
+    if (o->read_only || o->write_only) {
+        axl_http_server_use(o->server, permission_middleware, o);
     }
 
     /* Routes. The SDK dispatcher tries exact matches before prefix
        patterns, so /_axl-webfs/upload.js shadows the GET wildcard
-       regardless of registration order. The /_axl-webfs/ namespace is
-       reserved for embedded UI assets so they don't collide with
-       parse_volume_path's first-segment volume lookup. */
-    axl_http_server_add_route(core->server, "GET",    "/_axl-webfs/upload.js",
+       regardless of registration order. */
+    axl_http_server_add_route(o->server, "GET",    "/_axl-webfs/upload.js",
                               handle_get_upload_js, NULL);
-    axl_http_server_add_route(core->server, "GET",    "/",  handle_get_root,    NULL);
-    axl_http_server_add_route(core->server, "GET",    "/*", handle_get_path,    &core->opts);
-    axl_http_server_add_route(core->server, "PUT",    "/*", handle_put_path,    NULL);
-    axl_http_server_add_route(core->server, "DELETE", "/*", handle_delete_path, NULL);
-    axl_http_server_add_route(core->server, "POST",   "/*", handle_post_path,   NULL);
+    axl_http_server_add_route(o->server, "GET",    "/",  handle_get_root,    NULL);
+    axl_http_server_add_route(o->server, "GET",    "/*", handle_get_path,    o);
+    axl_http_server_add_route(o->server, "PUT",    "/*", handle_put_path,    NULL);
+    axl_http_server_add_route(o->server, "DELETE", "/*", handle_delete_path, NULL);
+    axl_http_server_add_route(o->server, "POST",   "/*", handle_post_path,   NULL);
 
-    core->loop = axl_loop_new();
-    if (core->loop == NULL) {
-        axl_http_server_free(core->server);
-        core->server = NULL;
+    if (axl_http_server_start(o->server, loop) != AXL_OK) {
+        axl_http_server_free(o->server);
+        o->server = NULL;
         network_cleanup();
         return AXL_ERR;
     }
 
-    if (axl_http_server_start(core->server, core->loop) != 0) {
-        axl_loop_free(core->loop);
-        core->loop = NULL;
-        axl_http_server_free(core->server);
-        core->server = NULL;
-        network_cleanup();
-        return AXL_ERR;
+    /* Recognizable single-line banner for both foreground and driver
+       mode (the foreground caller may add its own pre-banner before
+       calling axl_service_run). */
+    axl_printf("axl-webfs serve: listening on %d.%d.%d.%d:%llu (mode %s)\n",
+               o->addr[0], o->addr[1], o->addr[2], o->addr[3],
+               (unsigned long long)o->port, o->mode);
+
+    /* Volume list also goes here -- ft_init has run by now. Pre-
+       migration the foreground caller printed this from cmd-serve.c
+       AFTER its own setup; with AxlService the work happens inside
+       this callback so the banner has to follow. Driver-mode users
+       see the same list on the serial console, which is fine. */
+    axl_printf("Volumes:\n");
+    size_t vcount = ft_get_volume_count();
+    for (size_t i = 0; i < vcount; i++) {
+        FtVolume vol;
+        ft_get_volume(i, &vol);
+        axl_printf("  %s:\n", vol.name);
     }
 
     return AXL_OK;
 }
 
-void
-serve_core_teardown(ServeCore *core)
+static int
+serve_teardown(void *user)
 {
-    if (core == NULL) {
-        return;
-    }
+    ServeOpts *o = (ServeOpts *)user;
 
-    /* Free the server FIRST -- its detach path removes TCP listener
-       event sources from the loop. Reversing this order leaves
-       caller-owned event sources active when axl_loop_free walks the
-       table and triggers a use-after-free warning (and a real crash on
-       the next loop ops). */
-    if (core->server != NULL) {
-        axl_http_server_free(core->server);
-        core->server = NULL;
+    if (o->server != NULL) {
+        axl_http_server_free(o->server);
+        o->server = NULL;
     }
-
-    if (core->loop != NULL) {
-        axl_loop_free(core->loop);
-        core->loop = NULL;
-    }
-
     network_cleanup();
-}
-
-// ----------------------------------------------------------------------------
-// Load-options serialise / parse
-// ----------------------------------------------------------------------------
-
-int
-serve_opts_serialize(const ServeCoreOpts *opts, char *out, size_t out_size)
-{
-    const char *mode = opts->read_only  ? "read-only"
-                     : opts->write_only ? "write-only"
-                     :                    "read-write";
-
-    /* Build the string in pieces so optional fields stay omitted instead
-       of carrying a sentinel. nic_index = (size_t)-1 means "auto" and
-       must not be serialised -- otherwise the wire string carries the
-       unsigned wrap value (~24 bytes of noise). */
-    size_t pos = 0;
-    int    n;
-
-#define APPEND(...) do {                                              \
-        n = axl_snprintf(out + pos, out_size - pos, __VA_ARGS__);     \
-        if (n <= 0 || (size_t)n >= out_size - pos) return AXL_ERR;    \
-        pos += (size_t)n;                                             \
-    } while (0)
-
-    APPEND("port=%u", (unsigned)opts->port);
-    if (opts->nic_index != (size_t)-1) {
-        APPEND(";nic=%zu", opts->nic_index);
-    }
-    APPEND(";mode=%s", mode);
-    if (opts->source != NULL && opts->source[0] != '\0') {
-        APPEND(";source=%s", opts->source);
-    }
-    APPEND(";verbose=%u", (unsigned)(opts->verbose ? 1 : 0));
-    APPEND(";timeout=%zu", opts->idle_timeout_sec);
-
-#undef APPEND
-
     return AXL_OK;
 }
 
-/// Find the value of @p key in a "k=v;k=v;..." string. Returns a pointer
-/// into @p in (NULL if not found), and writes the value's length to
-/// @p value_len. The pointer is NOT NUL-terminated -- caller must use
-/// @p value_len.
-static const char *
-opts_find(const char *in, const char *key, size_t *value_len)
-{
-    size_t key_len = 0;
-    while (key[key_len] != '\0') key_len++;
-
-    const char *p = in;
-    while (*p != '\0') {
-        /* Skip leading separators */
-        while (*p == ';' || *p == ' ') p++;
-        if (*p == '\0') break;
-
-        const char *kbeg = p;
-        while (*p != '=' && *p != ';' && *p != '\0') p++;
-
-        if (*p == '=' && (size_t)(p - kbeg) == key_len &&
-            axl_strncmp(kbeg, key, key_len) == 0)
-        {
-            const char *vbeg = ++p;
-            while (*p != ';' && *p != '\0') p++;
-            *value_len = (size_t)(p - vbeg);
-            return vbeg;
-        }
-
-        /* Skip past this pair */
-        while (*p != ';' && *p != '\0') p++;
-    }
-
-    *value_len = 0;
-    return NULL;
-}
-
-/// Convert a leading-decimal-digit substring to an unsigned 64-bit value.
-/// Stops at the first non-digit. Returns 0 on empty input.
-static uint64_t
-opts_parse_uint(const char *s, size_t len)
-{
-    uint64_t v = 0;
-    for (size_t i = 0; i < len; i++) {
-        if (s[i] < '0' || s[i] > '9') break;
-        v = v * 10 + (uint64_t)(s[i] - '0');
-    }
-    return v;
-}
-
-int
-serve_opts_parse(const char *in, ServeCoreOpts *opts,
-                 char *source_buf, size_t source_buf_size)
-{
-    if (in == NULL || opts == NULL) {
-        return AXL_ERR;
-    }
-
-    axl_memset(opts, 0, sizeof(*opts));
-    opts->nic_index = (size_t)-1;
-    if (source_buf != NULL && source_buf_size > 0) {
-        source_buf[0] = '\0';
-    }
-
-    size_t      vlen;
-    const char *v;
-
-    if ((v = opts_find(in, "port", &vlen)) != NULL) {
-        opts->port = (uint16_t)opts_parse_uint(v, vlen);
-    }
-
-    if ((v = opts_find(in, "nic", &vlen)) != NULL) {
-        opts->nic_index = (size_t)opts_parse_uint(v, vlen);
-    }
-
-    if ((v = opts_find(in, "mode", &vlen)) != NULL) {
-        if (vlen == 9 && axl_strncmp(v, "read-only", 9) == 0) {
-            opts->read_only = true;
-        } else if (vlen == 10 && axl_strncmp(v, "write-only", 10) == 0) {
-            opts->write_only = true;
-        } else if (vlen == 10 && axl_strncmp(v, "read-write", 10) == 0) {
-            /* default; no flag bits set */
-        } else {
-            return AXL_ERR;
-        }
-    }
-
-    if ((v = opts_find(in, "source", &vlen)) != NULL &&
-        source_buf != NULL && vlen + 1 <= source_buf_size)
-    {
-        for (size_t i = 0; i < vlen; i++) {
-            source_buf[i] = v[i];
-        }
-        source_buf[vlen] = '\0';
-        opts->source = source_buf;
-    }
-
-    if ((v = opts_find(in, "verbose", &vlen)) != NULL) {
-        opts->verbose = (vlen > 0 && v[0] != '0');
-    }
-
-    if ((v = opts_find(in, "timeout", &vlen)) != NULL) {
-        opts->idle_timeout_sec = (size_t)opts_parse_uint(v, vlen);
-    }
-
-    return AXL_OK;
-}
+const AxlService webfs_serve = {
+    .name          = "axl-webfs-serve",
+    .opts_descs    = serve_descs,
+    .setup         = serve_setup,
+    .teardown      = serve_teardown,
+    .user          = &g_serve_opts,
+    .protocol_guid = WEBFS_SERVICE_GUID,
+};

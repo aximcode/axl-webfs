@@ -233,11 +233,35 @@ Options:
   --mode <m>       Permission mode: read-write (default),
                    read-only (block PUT/POST/DELETE),
                    write-only (block GET)
+  -d, --detach     Run as a resident DXE driver and return to the shell
   -v               Verbose logging
   -h               Show help
 
-Press ESC to stop the server.
+Press ESC to stop the server (foreground only).
 ```
+
+### Foreground vs --detach
+
+`serve` runs in two modes:
+
+- **Foreground (default)** — `axl-webfs.efi serve` blocks in the
+  shell until ESC is pressed. The HTTP server runs in-process via
+  `axl_service_run` on the default AxlLoop.
+
+- **Detached** — `axl-webfs.efi serve --detach` loads a resident
+  DXE driver via `axl_service_launch_embedded` and returns to the
+  shell. The driver image (`axl-webfs-serve-dxe.efi`) is embedded
+  into `axl-webfs.efi` via `.incbin` (see `src/serve/serve-blob.S`)
+  so the toolkit ships as a single binary. The driver's
+  `AXL_SERVICE_DRIVER` macro decodes LoadOptions back into the
+  same `ServeOpts` the foreground populated and runs the same
+  `serve_setup` callback against a driver-mode loop. Stop with
+  `unload -n axl-webfs-serve-dxe.efi` from the Shell (a
+  `serve-stop` verb is planned).
+
+Both modes share `src/serve/serve-core.c`: the route handlers, the
+permission middleware, and the `webfs_serve` AxlService descriptor
+are linked into both `axl-webfs.efi` and `axl-webfs-serve-dxe.efi`.
 
 ### Examples
 
