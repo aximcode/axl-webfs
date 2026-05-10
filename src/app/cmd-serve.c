@@ -1,13 +1,17 @@
 /** @file
   axl-webfs -- foreground `serve` verb.
 
-  Populates the shared g_serve_opts from CLI arguments. With --detach,
-  hands an AxlServiceDeploy to axl_service_launch_embedded — the SDK
-  loads the embedded driver image and serializes g_serve_opts via
-  AxlConfig into the driver's LoadOptions, where the driver's
+  With --detach, populates g_serve_opts from AxlArgs and hands an
+  AxlServiceDeploy to axl_service_launch_embedded — the SDK loads
+  the embedded driver image and serializes g_serve_opts via AxlConfig
+  into the driver's LoadOptions, where the driver's
   AXL_SERVICE_DRIVER macro decodes them back into its own g_serve_opts.
-  Without --detach, runs in-process via axl_service_run on the default
-  loop with an ESC key handler for graceful exit.
+
+  Without --detach, runs in-process via axl_service_run_with_loop_args
+  on a manually-owned loop (so the ESC key handler can be registered
+  before run). The _args variant walks svc->opts_descs against the
+  parsed AxlArgs to populate g_serve_opts -- no manual struct fill
+  required, and no AxlConfig auto-default-apply to clobber it.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
@@ -106,25 +110,21 @@ webfs_serve_stop_handler(AxlArgs *a)
 int
 webfs_serve_handler(AxlArgs *a)
 {
-    /* AxlArgs is the source of truth for the foreground binary --
-       defaults live in webfs_serve_flags[] and were applied during
-       parse. Just write them through into g_serve_opts; AxlConfig
-       round-tripping happens on the driver side via the LoadOptions
-       handoff inside axl_service_launch_embedded. */
-    g_serve_opts.port             = axl_args_get_uint(a, "port");
-    g_serve_opts.nic_index        = axl_args_get_string(a, "nic") != NULL
-                                  ? axl_args_get_uint(a, "nic")
-                                  : (uint64_t)-1;
-    g_serve_opts.idle_timeout_sec = axl_args_get_uint(a, "timeout");
-    g_serve_opts.verbose          = axl_args_get_bool(a, "verbose");
-    g_serve_opts.mode             = axl_args_get_string(a, "mode");
-    g_serve_opts.source           = axl_args_get_string(a, "source");
-
-    /* Detach: load the embedded driver image with our options
-       serialized into LoadOptions. The driver's AXL_SERVICE_DRIVER
-       trampoline decodes them back into its own g_serve_opts and
-       calls webfs_serve.setup against a driver-mode loop. */
+    /* Detach: serialize options into LoadOptions for the driver image.
+       axl_service_launch_embedded reads g_serve_opts via svc->opts_descs
+       and produces the URL-encoded payload that AXL_SERVICE_DRIVER
+       decodes on the driver side, so we must pre-populate g_serve_opts
+       here. The foreground path below leaves it to the SDK. */
     if (axl_args_get_bool(a, "detach")) {
+        g_serve_opts.port             = axl_args_get_uint(a, "port");
+        g_serve_opts.nic_index        = axl_args_get_string(a, "nic") != NULL
+                                      ? axl_args_get_uint(a, "nic")
+                                      : (uint64_t)-1;
+        g_serve_opts.idle_timeout_sec = axl_args_get_uint(a, "timeout");
+        g_serve_opts.verbose          = axl_args_get_bool(a, "verbose");
+        g_serve_opts.mode             = axl_args_get_string(a, "mode");
+        g_serve_opts.source           = axl_args_get_string(a, "source");
+
         AxlServiceDeploy deploy = {
             .service     = &webfs_serve,
             .driver_blob = AXL_EMBED_DATA(axl_webfs_serve_dxe),
@@ -145,7 +145,10 @@ webfs_serve_handler(AxlArgs *a)
         return 0;
     }
 
-    /* Foreground: run on the default loop with ESC to quit. */
+    /* Foreground: own the loop so ESC can be registered before run.
+       axl_service_run_with_loop_args walks svc->opts_descs against
+       the parsed AxlArgs to populate g_serve_opts -- no manual fill
+       and no AxlConfig auto-default-apply involved. */
     AxlLoop *loop = axl_loop_default();
     if (loop == NULL) {
         axl_printf("ERROR: default loop unavailable\n");
@@ -162,9 +165,9 @@ webfs_serve_handler(AxlArgs *a)
     m_serve_loop = loop;
     axl_loop_add_key_press(loop, esc_key_handler, NULL);
 
-    int rc = axl_service_run(loop, &webfs_serve);
+    int rc = axl_service_run_with_loop_args(loop, &webfs_serve, a);
 
     m_serve_loop = NULL;
-    /* axl_service_run returns 0 on clean quit, -1 on Ctrl-C / ESC. */
+    /* Returns 0 on clean quit, -1 on Ctrl-C / ESC. */
     return (rc == 0 || rc == -1) ? 0 : 1;
 }
