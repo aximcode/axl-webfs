@@ -760,17 +760,19 @@ NSHEOF
     fi
 
     # ========================================================================
-    # Serve --detach test (X64 only): driver image runs the HTTP server,
-    # the shell returns immediately, host curls validate the driver is alive.
+    # Serve test (X64 only): driver image runs the HTTP server, the shell
+    # returns immediately after `serve`, host curls validate the driver
+    # is alive. (No --detach flag -- serve is detach-only as of the
+    # foreground removal.)
     # ========================================================================
 
-    info "QEMU" "=== Serve --detach test: X64 ==="
+    info "QEMU" "=== Serve test: X64 ==="
 
     APP_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs.efi"
     DETACH_PORT=18091
 
     if [ ! -f "$APP_EFI" ]; then
-        skip "serve --detach: axl-webfs.efi not built"
+        skip "serve: axl-webfs.efi not built"
     else
         DETACH_STAGE=$(mktemp -d)
         echo "detach test" > "$DETACH_STAGE/detach_test.txt"
@@ -779,7 +781,7 @@ NSHEOF
         cat > "$DETACH_NSH" <<'NSHEOF'
 @echo -off
 fs0:
-axl-webfs.efi serve -p 8080 --detach
+axl-webfs.efi serve -p 8080
 echo === DETACHED ===
 NSHEOF
 
@@ -797,7 +799,7 @@ NSHEOF
         rm -rf "$DETACH_STAGE"
 
         if [ -z "${QEMU_PID:-}" ]; then
-            fail "serve --detach: QEMU failed to start"
+            fail "serve: QEMU failed to start"
         else
             READY=false
             for WAIT in $(seq 1 30); do
@@ -812,25 +814,25 @@ NSHEOF
             BASE="http://127.0.0.1:${DETACH_PORT}"
 
             if $READY; then
-                pass "serve --detach: driver came up (HTTP responding)"
+                pass "serve: driver came up (HTTP responding)"
 
                 grep -q "DETACHED" "$SERIAL_LOG" 2>/dev/null && \
-                    pass "serve --detach: shell returned after detach" || \
-                    fail "serve --detach: shell return" "no DETACHED marker in serial log"
+                    pass "serve: shell returned after detach" || \
+                    fail "serve: shell return" "no DETACHED marker in serial log"
 
                 grep -q "axl-webfs serve: listening" "$SERIAL_LOG" 2>/dev/null && \
-                    pass "serve --detach: driver banner printed" || \
-                    fail "serve --detach: banner" "no listening banner in serial log"
+                    pass "serve: driver banner printed" || \
+                    fail "serve: banner" "no listening banner in serial log"
 
                 CONTENT=$(curl -sf "$BASE/fs0/detach_test.txt" 2>/dev/null)
                 echo "$CONTENT" | grep -q "detach test" && \
-                    pass "serve --detach: GET works against driver" || \
-                    fail "serve --detach: GET" "unexpected: $CONTENT"
+                    pass "serve: GET works against driver" || \
+                    fail "serve: GET" "unexpected: $CONTENT"
 
                 HTTP_CODE=$(echo -n "uploaded" | curl -s -o /dev/null -w "%{http_code}" -T - "$BASE/fs0/detach_upload.txt" 2>/dev/null || true)
                 [ "$HTTP_CODE" = "201" ] && \
-                    pass "serve --detach: PUT works against driver" || \
-                    fail "serve --detach: PUT" "expected 201, got $HTTP_CODE"
+                    pass "serve: PUT works against driver" || \
+                    fail "serve: PUT" "expected 201, got $HTTP_CODE"
 
                 # Pubsub-driven console feedback fires on the deferred
                 # queue, so we need a beat for the line to land in
@@ -838,10 +840,10 @@ NSHEOF
                 sleep 2
                 grep -qE "axl-webfs serve: PUT /fs0/detach_upload.txt -> 201" \
                     "$SERIAL_LOG" 2>/dev/null && \
-                    pass "serve --detach: console feedback for PUT" || \
-                    fail "serve --detach: console feedback" "no PUT line in serial log"
+                    pass "serve: console feedback for PUT" || \
+                    fail "serve: console feedback" "no PUT line in serial log"
             else
-                fail "serve --detach: driver did not start within 30s"
+                fail "serve: driver did not start within 30s"
             fi
 
             kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
@@ -850,9 +852,9 @@ NSHEOF
     fi
 
     # ========================================================================
-    # serve-stop verb (X64 only): launch via --detach, stop, verify
-    # idempotent re-stop. All steps run inside the UEFI shell; serial
-    # log assertions verify each phase.
+    # serve-stop verb (X64 only): launch serve, stop, verify idempotent
+    # re-stop. All steps run inside the UEFI shell; serial log
+    # assertions verify each phase.
     # ========================================================================
 
     info "QEMU" "=== Serve-stop test: X64 ==="
@@ -866,7 +868,7 @@ NSHEOF
         cat > "$STOP_NSH" <<'NSHEOF'
 @echo -off
 fs0:
-axl-webfs.efi serve -p 8080 --detach
+axl-webfs.efi serve -p 8080
 echo === DETACHED ===
 axl-webfs.efi serve-stop
 echo === STOPPED ===
