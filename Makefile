@@ -62,12 +62,13 @@ CFLAGS   = -Isrc
 
 all: axl-webfs axl-webfs-mount-dxe axl-webfs-serve-dxe
 
-# axl-webfs.efi embeds both DXE drivers via axl-cc --embed (which
-# generates a .incbin sidecar): the serve driver for `serve --detach`
-# (loaded via axl_service_launch_embedded), and the mount driver for
-# `mount` (loaded via axl_driver_load_buffer). Single-binary toolkit;
-# the standalone .efi files below are kept for users who prefer the
-# UEFI-shell `load` workflow.
+# axl-webfs.efi embeds both AxlService driver images via axl-cc
+# --embed (which generates a .incbin sidecar). serve and mount each
+# go through axl_service_start_embedded; the launcher decodes which
+# verb the user invoked, populates the matching opts struct, and
+# calls start_embedded against the matching deploy descriptor.
+# Single-binary toolkit; the standalone -dxe.efi files below are
+# also emitted for users who prefer the UEFI-shell `load` workflow.
 axl-webfs: $(OUTDIR)/axl-webfs.efi
 $(OUTDIR)/axl-webfs.efi: $(APP_SRCS) \
                          $(OUTDIR)/axl-webfs-serve-dxe.efi \

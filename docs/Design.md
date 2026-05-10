@@ -41,61 +41,78 @@ diagnostics. Build on your workstation, run immediately in the UEFI Shell.
 
 ## Architecture
 
-One distributable binary that bundles two DXE drivers (both
-embedded via `axl-cc --embed`), plus two internal libraries; all
-using the AXL SDK. The drivers are also emitted as standalone
-`.efi` files for users who prefer the UEFI-shell `load` workflow.
+One distributable launcher binary that bundles two AxlService
+driver images (both embedded via `axl-cc --embed`), plus two
+internal libraries. All UEFI plumbing comes from the AXL SDK.
+The drivers are also emitted as standalone `.efi` files for users
+who prefer the UEFI-shell `load` workflow.
+
+Each service follows the single-source-file dual-compile pattern
+from axl-sdk's `service-demo-custom.c`: one `.c` per service,
+compiled twice (once with `-DAXL_SERVICE_BUILD_DRIVER` for the
+driver image's setup/teardown body + `AXL_SERVICE_DRIVER` entry,
+once without for the launcher's descriptor stub used by
+`axl_service_start_embedded` to serialize LoadOptions).
 
 ```
-+---------------------------------------------------------------+
-|  Application / Driver Layer                                    |
-|                                                                |
-|  +------------------------+  +------------------------------+ |
-|  | axl-webfs.efi          |  | axl-webfs-dxe.efi            | |
-|  |                        |  |                              | |
-|  | CLI: serve, mount,     |  | DXE driver (stays resident)  | |
-|  |      umount, list-nics |  | EFI_FILE_PROTOCOL over HTTP  | |
-|  | HTTP server (serve)    |  | Directory cache + read-ahead | |
-|  | Driver loader (mount)  |  |                              | |
-|  +------+---------+-------+  +------+--------+--------------+ |
-|         |         |                 |        |                 |
-|  Internal Libraries                                            |
-|  +------v---+ +---v---------+ +----v---+ +--v--------------+ |
-|  | network  | | transfer    | |  AXL SDK (external)         | |
-|  |          | |             | |  axl_http_server_*           | |
-|  | DHCP/IP  | | Volume enum | |  axl_http_client_*           | |
-|  | via SDK  | | Stream R/W  | |  axl_json_*                  | |
-|  |          | | Dir listing | |  axl_loop_*                  | |
-|  +----+-----+ +------+------+ +----+--------+--------------+ |
-|       |               |             |        |                 |
-|  UEFI Firmware Protocols                                       |
-|  +----v--------------+  +----------v--------v--------------+ |
-|  | IP4Config2, DHCP4  |  | EFI_SIMPLE_FILE_SYSTEM            | |
-|  | SNP (via SDK)      |  | EFI_FILE_PROTOCOL                 | |
-|  +--------------------+  +-----------------------------------+ |
-+---------------------------------------------------------------+
++--------------------------------------------------------------------+
+|  Application / Driver Layer                                         |
+|                                                                     |
+|  +-------------------------+    +----------------------------+ +----------------------------+
+|  | axl-webfs.efi           |    | axl-webfs-serve-dxe.efi    | | axl-webfs-mount-dxe.efi    |
+|  |                         |    | (AxlService driver)        | | (AxlService driver)        |
+|  | CLI dispatch:           |    | setup: HTTP server + routes| | setup: install             |
+|  |   serve / serve-stop    |--->| teardown: free everything  | |   EFI_FILE_PROTOCOL        |
+|  |   mount / umount        |    | tick: 50ms (drives loop)   | | teardown: uninstall + free |
+|  |   list-nics             |--->|                            | | tick: 1s (no sources)      |
+|  +-------------------------+    +----------------------------+ +----------------------------+
+|        |              |                  |                                 |
+|  Shared internal libraries                                                  |
+|  +--------+  +----------+  +--------------------------------------+        |
+|  | network|  | transfer |  | AXL SDK (external)                   |        |
+|  | DHCP/IP|  | Volume + |  | axl_http_server / _client / _json    |        |
+|  | wrapper|  | Stream IO|  | axl_loop / axl_service / axl_url     |        |
+|  +--------+  +----------+  +--------------------------------------+        |
++--------------------------------------------------------------------+
 ```
 
 ### Components
 
-1. **axl-webfs.efi** (Application) — `int main()` entry via AXL_APP.
-   CLI parsing with `axl_args_parse`. Dispatches `serve`/`mount`/
-   `umount`/`list-nics`. Serve uses AXL's `AxlHttpServer` with
-   event loop. Mount uses `axl_driver_load_buffer` against the embedded
-   driver image, then `set_load_options` + `start`.
+1. **axl-webfs.efi** (Launcher) — `int main()` entry via AXL_APP.
+   CLI parsing with `axl_args_parse`. Dispatches `serve`/`serve-stop`/
+   `mount`/`umount`/`list-nics` to verb handlers. Each handler
+   populates the matching opts struct from AxlArgs and calls
+   `axl_service_start_embedded` (or `axl_service_stop`) against the
+   matching deploy descriptor. The launcher carries no service body
+   itself -- both driver images run from their own `.efi` blob
+   inside the launcher binary.
 
-2. **axl-webfs-dxe.efi** (DXE Driver) — `DriverEntry` with
-   `axl_driver_init`. Implements `EFI_FILE_PROTOCOL` backed by
-   AXL's HTTP client (`axl_http_request`). Uses `axl_json_parse`
-   for directory listings, `axl_url_parse` for URL handling.
+2. **axl-webfs-serve-dxe.efi** (AxlService DXE driver) — built from
+   `src/serve/webfs-serve.c` with `-DAXL_SERVICE_BUILD_DRIVER`.
+   `setup()` brings up the network, starts an `AxlHttpServer` on
+   the configured port, registers six route handlers, and
+   subscribes to a pubsub topic for non-GET request console
+   feedback. `teardown()` reverses it. Tick fires every 50 ms to
+   drive the loop.
 
-3. **network** (`src/net/`) — Thin wrapper around `axl_net_auto_init`
+3. **axl-webfs-mount-dxe.efi** (AxlService DXE driver) — built from
+   `src/mount/webfs-mount.c` with `-DAXL_SERVICE_BUILD_DRIVER`.
+   `setup()` parses the URL, brings up the network, validates the
+   server with `GET /info`, then installs `EFI_FILE_PROTOCOL` on a
+   new handle (vendor device path so `umount` can find it).
+   `teardown()` uninstalls and frees. Tick fires every 1000 ms;
+   `EFI_FILE_PROTOCOL` callbacks run synchronously from the Shell's
+   caller, not on the loop.
+
+4. **network** (`src/net/`) — Thin wrapper around `axl_net_auto_init`
    for the common DHCP path. Retains static IP support via direct
-   `IP4Config2` protocol calls.
+   `IP4Config2` protocol calls. Linked into the launcher (for
+   `list-nics`) and both driver images.
 
-4. **transfer** (`src/transfer/`) — Volume enumeration via
+5. **transfer** (`src/transfer/`) — Volume enumeration via
    `axl_volume_enumerate`, streaming file I/O via `axl_fopen`/
    `axl_fread`/`axl_fwrite`, directory listing as JSON/HTML.
+   Driver-only (linked into the serve driver image only).
 
 ### What comes from the AXL SDK
 
@@ -108,15 +125,19 @@ memory allocation, string utilities, logging.
 
 ### How It Works
 
-The `mount` command loads a companion DXE driver (`axl-webfs-dxe.efi`,
-embedded into the app via `axl-cc --embed` and LoadImaged via
-`axl_driver_load_buffer`) that installs `EFI_FILE_PROTOCOL` on a new
-device handle. The UEFI Shell sees this as a new volume (FSn:).
+The `mount` command starts the embedded `axl-webfs-mount-dxe.efi`
+AxlService via `axl_service_start_embedded`. The driver's
+`mount_setup` parses the URL passed via LoadOptions, validates the
+server, and installs `EFI_FILE_PROTOCOL` on a new device handle so
+the UEFI Shell sees a new volume (FSn:). `umount` calls
+`axl_service_stop`, which resolves the running driver image by the
+service's name-derived GUID and unloads it; the driver's unload
+stub runs `mount_teardown` to uninstall the protocols.
 
 ```
 Workstation                              UEFI Host
 +------------------+                    +----------------------+
-| xfer-server.py   |  HTTP/JSON         | axl-webfs-dxe.efi    |
+| xfer-server.py   |  HTTP/JSON         | axl-webfs-mount-dxe.efi    |
 |                  |<------------------>|                      |
 | Serves files     |  GET/PUT/DELETE    | EFI_FILE_PROTOCOL    |
 | from a local dir |  + JSON dir list   |                      |
@@ -269,9 +290,13 @@ Press ESC to stop the server (foreground). For --detach, use
   `axl-webfs serve-stop` (preferred) or `unload -n
   axl-webfs-serve-dxe.efi` from the Shell.
 
-Both modes share `src/serve/serve-core.c`: the route handlers, the
-permission middleware, and the `webfs_serve` AxlService descriptor
-are linked into both `axl-webfs.efi` and `axl-webfs-serve-dxe.efi`.
+Both modes share `src/serve/webfs-serve.c`. The driver build
+(`-DAXL_SERVICE_BUILD_DRIVER`) gets the full body (route handlers,
+permission middleware, `serve_setup`, `serve_teardown`,
+`AXL_SERVICE_DRIVER` entry); the launcher build gets just the
+descriptor stub (`g_serve_opts`, `serve_descs`, `webfs_serve` with
+NULL setup/teardown) that `axl_service_start_embedded` reads to
+serialize LoadOptions for the driver.
 
 ### Examples
 
@@ -288,25 +313,28 @@ curl -C - http://192.168.1.100:8080/fs0/large.bin -o large.bin  # resume
 
 ```
 src/
-  app/                         CLI application
-    main.c                     Entry point, subcommand dispatch
-    cmd-serve.c                serve / serve-stop verbs (foreground + --detach)
-    cmd-mount.c                Mount/umount (axl_driver_load/start/unload)
-  serve/                       Serve mode (shared between app and driver)
-    serve-core.c               AxlService descriptor, route handlers
-    serve-shared.h             Shared types (ServeOpts, webfs_serve)
-    upload-asset.c/.h          Embedded upload UI assets
-  driver/                      DXE drivers
-    webfs.c                    Mount driver entry, URL parsing,
-                               EFI_FILE_PROTOCOL install
-    webfs-file.c               EFI_FILE_PROTOCOL (11 functions)
+  app/                         Launcher (axl-webfs.efi)
+    main.c                     Entry point, AxlArgs verb dispatch
+    cmd-serve.c                serve / serve-stop verbs (axl_service_*)
+    cmd-mount.c                mount / umount verbs (axl_service_*)
+  serve/                       Serve service (single-file dual-compile)
+    webfs-serve.c              AxlService descriptor + setup/teardown +
+                               route handlers, gated on
+                               AXL_SERVICE_BUILD_DRIVER
+    webfs-serve.h              Public extern decls (ServeOpts, webfs_serve)
+    upload-asset.c/.h          Embedded upload UI assets (driver-only)
+  mount/                       Mount service (single-file dual-compile)
+    webfs-mount.c              AxlService descriptor + setup/teardown,
+                               gated on AXL_SERVICE_BUILD_DRIVER
+    webfs-mount.h              Public extern decls (MountOpts, webfs_mount)
+    webfs-file.c               EFI_FILE_PROTOCOL impl (driver-only)
     webfs-cache.c              Directory cache + HTTP request helper
-    webfs-internal.h           Mount driver private types
-    serve-dxe.c                Serve driver entry (AXL_SERVICE_DRIVER)
-  net/                         Network initialization
+                               (driver-only)
+    webfs-internal.h           Driver-only types (WebFsPrivate, etc.)
+  net/                         Network initialization (shared)
     network.c                  Wrapper around axl_net_auto_init
     network.h                  Public API
-  transfer/                    Local file operations
+  transfer/                    Local file operations (used by serve)
     file-transfer.c            Volume enum, streaming read/write
     file-transfer.h            Public API
     dir-list.c                 Directory listing as JSON/HTML
@@ -322,7 +350,7 @@ CLAUDE.md                      Project instructions for Claude Code
 Build outputs (per arch, in `out/<arch>/`):
 
 - `axl-webfs.efi` — application; embeds both drivers via `axl-cc --embed`
-- `axl-webfs-dxe.efi` — mount driver (built then embedded into the app;
+- `axl-webfs-mount-dxe.efi` — mount driver (built then embedded into the app;
   also emitted as a standalone .efi for `load`-from-shell workflows)
 - `axl-webfs-serve-dxe.efi` — serve driver (same: built, embedded, and
   also emitted standalone)
@@ -349,21 +377,28 @@ run immediately in UEFI Shell.
 ### Simple HTTP/JSON Protocol
 The mount driver uses plain HTTP with JSON directory listings instead
 of full WebDAV XML. Avoids XML parsing on the UEFI side. We control
-both sides (xfer-server.py + axl-webfs-dxe).
+both sides (xfer-server.py + axl-webfs-mount-dxe).
 
-### Single-Binary Toolkit (Embedded Drivers)
-`mount` and `serve --detach` both need a persistent protocol that
-survives after the command returns. UEFI's mechanism is a DXE driver
-that stays resident, so axl-webfs ships two of them. To keep the
-toolkit a single distributable file, both driver images are
-`.incbin`'d into `axl-webfs.efi` via `axl-cc --embed`. `serve --detach`
-loads its driver via `axl_service_start_embedded`; `mount` loads its
-driver via `axl_driver_load_buffer` (which doesn't go through the
-AxlService machinery -- mount's protocol is the standard
-`EFI_FILE_PROTOCOL`, which isn't unique-per-driver and would defeat
-the AxlService LocateProtocol short-circuit). Standalone `.efi`
-files for both drivers are still emitted by the build for users who
-prefer the UEFI-shell `load` workflow.
+### Two AxlServices, One Launcher Binary
+`mount` and `serve` both need a persistent protocol that survives
+after the command returns, so axl-webfs ships two DXE drivers. Each
+driver is an AxlService (single-source-file dual-compile pattern,
+mirroring axl-sdk's `service-demo-custom.c`): one `.c` per service,
+compiled twice from the same source -- once with
+`-DAXL_SERVICE_BUILD_DRIVER` for the driver image (full body +
+`AXL_SERVICE_DRIVER` entry), once without for the launcher
+(descriptor stub only, used by `axl_service_start_embedded` to
+serialize LoadOptions). Both driver images are `.incbin`'d into
+`axl-webfs.efi` via `axl-cc --embed` so the toolkit ships as a
+single distributable file. The launcher's verb handlers
+(serve / serve-stop / mount / umount) all reduce to the same
+shape: populate the matching opts struct from AxlArgs, then call
+`axl_service_start_embedded` (or `axl_service_stop`). The two
+services use distinct descriptor names, so each gets its own
+deterministic `axl_guid_v5` identity GUID for `is_running` /
+`stop` lookups. Standalone `-dxe.efi` files for both drivers are
+still emitted by the build for users who prefer the UEFI-shell
+`load` workflow.
 
 ### AXL SDK
 All HTTP, JSON, event loop, hash table, TCP, and network functionality
