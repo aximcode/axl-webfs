@@ -52,7 +52,6 @@ typedef struct {
     AxlHttpServer   *server;
     AxlLoop         *loop;             /* needed by route handlers to publish */
     uint32_t         request_sub_id;   /* axl_pubsub_subscribe handle */
-    AxlStream       *log_stream;       /* tee target for stdout/stderr; NULL = no log file */
     uint8_t          addr[4];
 } ServeOpts;
 

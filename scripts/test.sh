@@ -820,7 +820,7 @@ NSHEOF
                     pass "serve: shell returned after detach" || \
                     fail "serve: shell return" "no DETACHED marker in serial log"
 
-                grep -q "axl-webfs serve: listening" "$SERIAL_LOG" 2>/dev/null && \
+                grep -q "listening" "$SERIAL_LOG" 2>/dev/null && \
                     pass "serve: driver banner printed" || \
                     fail "serve: banner" "no listening banner in serial log"
 
@@ -838,7 +838,7 @@ NSHEOF
                 # queue, so we need a beat for the line to land in
                 # the serial log after the PUT response is sent.
                 sleep 2
-                grep -qE "axl-webfs serve: PUT /fs0/detach_upload.txt -> 201" \
+                grep -qE "PUT /fs0/detach_upload.txt -> 201" \
                     "$SERIAL_LOG" 2>/dev/null && \
                     pass "serve: console feedback for PUT" || \
                     fail "serve: console feedback" "no PUT line in serial log"
@@ -896,7 +896,7 @@ NSHEOF
                 kill -0 "$QEMU_PID" 2>/dev/null || break
             done
 
-            grep -q "axl-webfs serve: listening" "$SERIAL_LOG" 2>/dev/null && \
+            grep -q "listening" "$SERIAL_LOG" 2>/dev/null && \
                 pass "serve-stop: detach launched the driver" || \
                 fail "serve-stop: detach" "no listening banner"
 

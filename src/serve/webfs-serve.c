@@ -72,6 +72,8 @@ const AxlConfigDesc serve_descs[] = {
 
 #ifdef AXL_SERVICE_BUILD_DRIVER
 
+AXL_LOG_DOMAIN("webfs-serve");
+
 // ----------------------------------------------------------------------------
 // URL parsing helpers
 // ----------------------------------------------------------------------------
@@ -173,10 +175,10 @@ on_webfs_request(void *event_data, void *user_data)
         return;
     }
 
-    axl_printf("axl-webfs serve: %s %s -> %llu (%llu bytes)\n",
-               e->method, e->path,
-               (unsigned long long)e->status,
-               (unsigned long long)e->body_size);
+    axl_info("%s %s -> %llu (%llu bytes)",
+             e->method, e->path,
+             (unsigned long long)e->status,
+             (unsigned long long)e->body_size);
 }
 
 // ----------------------------------------------------------------------------
@@ -499,20 +501,25 @@ serve_setup(AxlLoop *loop, void *user)
 {
     ServeOpts *o = (ServeOpts *)user;
 
-    /* Open the log file FIRST so subsequent setup output (banner,
-       volume list, errors) lands in it. On failure, surface a clear
-       console error and continue -- a missing log destination
-       shouldn't bring down the server. axl_fopen "a" appends, so
-       repeated start/stop cycles preserve history. */
+    /* Attach the log file FIRST so subsequent setup output (banner,
+       volume list, axl_warning/axl_error from later steps) reaches
+       it. axl_log_file_attach handles open + handler registration
+       + buffering internally. On failure, surface a clear console
+       error and continue -- a missing log destination shouldn't
+       bring down the server. (axl-sdk has no axl_log_file_detach
+       counterpart yet -- see sdk-prompts/2026-05-10-axl-log-file-
+       detach.md. For now we rely on driver-image unload + a
+       teardown-time axl_log_flush; once the SDK lands detach,
+       teardown can call it explicitly.) */
     if (o->log_path != NULL && o->log_path[0] != '\0') {
-        o->log_stream = axl_fopen(o->log_path, "a");
-        if (o->log_stream == NULL) {
+        if (axl_log_file_attach(o->log_path) != AXL_OK) {
+            /* axl_printf (not axl_error) because the log facility
+               we just failed to attach is what axl_error would
+               route through -- console is the only sane channel
+               for this specific failure. */
             axl_printf("ERROR: serve: cannot open log file '%s' "
                        "(read-only volume? bad path?) -- continuing "
                        "with console output only\n", o->log_path);
-        } else {
-            axl_stream_set_stdout_tee(o->log_stream);
-            axl_stream_set_stderr_tee(o->log_stream);
         }
     }
 
@@ -579,24 +586,18 @@ serve_setup(AxlLoop *loop, void *user)
     o->request_sub_id = axl_pubsub_subscribe(loop, WEBFS_REQUEST_TOPIC,
                                              on_webfs_request, NULL);
 
-    /* Recognizable single-line banner for both foreground and driver
-       mode (the foreground caller may add its own pre-banner before
-       calling axl_service_run). */
-    axl_printf("axl-webfs serve: listening on %d.%d.%d.%d:%llu (mode %s)\n",
-               o->addr[0], o->addr[1], o->addr[2], o->addr[3],
-               (unsigned long long)o->port, o->mode);
+    /* Recognizable single-line banner; goes through axl_info so the
+       file log handler captures it when --log is set. */
+    axl_info("listening on %d.%d.%d.%d:%llu (mode %s)",
+             o->addr[0], o->addr[1], o->addr[2], o->addr[3],
+             (unsigned long long)o->port, o->mode);
 
-    /* Volume list also goes here -- ft_init has run by now. Pre-
-       migration the foreground caller printed this from cmd-serve.c
-       AFTER its own setup; with AxlService the work happens inside
-       this callback so the banner has to follow. Driver-mode users
-       see the same list on the serial console, which is fine. */
-    axl_printf("Volumes:\n");
+    /* Volume list -- ft_init has run by now. */
     size_t vcount = ft_get_volume_count();
     for (size_t i = 0; i < vcount; i++) {
         FtVolume vol;
         ft_get_volume(i, &vol);
-        axl_printf("  %s:\n", vol.name);
+        axl_info("  volume: %s", vol.name);
     }
 
     return AXL_OK;
@@ -619,15 +620,12 @@ serve_teardown(void *user)
     }
     network_cleanup();
 
-    /* Close the log file last so any output from the steps above
-       lands in it. Clear the tees first to avoid writing through a
-       freed stream. */
-    if (o->log_stream != NULL) {
-        axl_stream_set_stdout_tee(NULL);
-        axl_stream_set_stderr_tee(NULL);
-        axl_fclose(o->log_stream);
-        o->log_stream = NULL;
-    }
+    /* Flush buffered log output before image unload. The SDK lacks
+       an axl_log_file_detach counterpart (see sdk-prompts entry);
+       firmware will release the file handle when the driver image
+       is unloaded. axl_log_flush is a no-op if no file is attached
+       (--log not used). */
+    axl_log_flush();
     return AXL_OK;
 }
 
@@ -645,6 +643,5 @@ const AxlService webfs_serve = {
 };
 
 #ifdef AXL_SERVICE_BUILD_DRIVER
-AXL_LOG_DOMAIN("webfs-serve-drv");
 AXL_SERVICE_DRIVER(webfs_serve);
 #endif
