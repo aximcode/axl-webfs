@@ -118,6 +118,46 @@ parse_volume_path(const char *url_path, FtVolume *volume,
     return 0;
 }
 
+/* Streaming GET state (one per in-flight download). The SDK's
+   axl_http_response_set_streamer pulls chunks via get_streamer_pull
+   and finalizes via get_streamer_close on EOF, error, or connection
+   reset -- closes the FtReadCtx and frees the context regardless of
+   how the response ended. */
+typedef struct {
+    FtReadCtx ctx;
+    uint64_t  remaining;
+} GetStreamerCtx;
+
+static int
+get_streamer_pull(void *ctx, void *out_buf, size_t out_buf_size,
+                  size_t *out_size)
+{
+    GetStreamerCtx *s = (GetStreamerCtx *)ctx;
+    if (s->remaining == 0) {
+        *out_size = 0;
+        return AXL_OK;
+    }
+
+    size_t want = (s->remaining < (uint64_t)out_buf_size)
+                  ? (size_t)s->remaining
+                  : out_buf_size;
+    size_t got = 0;
+    if (ft_read_chunk(&s->ctx, out_buf, want, &got) != 0 || got == 0) {
+        return AXL_ERR;
+    }
+    *out_size = got;
+    s->remaining -= got;
+    return AXL_OK;
+}
+
+static void
+get_streamer_close(void *ctx)
+{
+    GetStreamerCtx *s = (GetStreamerCtx *)ctx;
+    ft_close_read(&s->ctx);
+    axl_free(s);
+}
+
 /// Does the client EXPLICITLY ask for JSON? The SDK's
 /// axl_http_request_wants_json wraps axl_http_accepts which honors
 /// the */* wildcard -- correct content negotiation per RFC 9110, but
@@ -311,15 +351,12 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         return 0;
     }
 
-    /* File download -- the SDK's response dispatcher (and our code
-       below) currently materialize the full body in RAM before
-       sending. Cap downloads so a misdirected GET on a huge ISO
-       turns into a clean 413 instead of an OOM. Once the SDK has
-       a streaming response API (see sdk-prompts/2026-05-10-axl-
-       http-response-streamer.md), this cap can lift and we'll
-       stream directly to the socket. */
-#define WEBFS_MAX_GET_BODY  (256ULL * 1024 * 1024)  /* 256 MB */
-
+    /* File download -- streamed via axl_http_response_set_streamer
+       (SDK 6218fa3). The dispatcher pulls chunks from
+       get_streamer_pull and runs get_streamer_close on EOF / error
+       / connection reset, so neither the file handle nor the
+       streamer ctx ever leaks. No full-file malloc, no body-size
+       cap. */
     uint64_t file_size = 0;
     status = ft_get_file_size(&volume, sub_path, &file_size);
     if (status != 0) {
@@ -328,133 +365,96 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         return 0;
     }
 
-    if (file_size > WEBFS_MAX_GET_BODY) {
-        char msg[160];
-        axl_snprintf(msg, sizeof(msg),
-            "File is %llu bytes; serve currently caps GET at %llu "
-            "bytes (streaming-response API pending).\n",
-            (unsigned long long)file_size,
-            (unsigned long long)WEBFS_MAX_GET_BODY);
-        axl_http_response_set_text(resp, msg);
-        axl_http_response_set_status(resp, 413);
-        return 0;
+    /* Range support: open at the requested start offset and bound
+       the streamer to the slice length. The 206-status comes from
+       us; the SDK doesn't synthesize Content-Range (existing
+       behavior, separate concern). */
+    uint64_t start_offset = 0;
+    uint64_t slice_len    = file_size;
+    bool     is_range     = false;
+
+    const char *range_hdr =
+        (const char *)axl_hash_table_lookup(req->headers, "range");
+    if (range_hdr != NULL) {
+        AxlHttpRange range;
+        if (axl_http_parse_range(range_hdr, file_size, &range)) {
+            start_offset = range.start;
+            slice_len    = range.end - range.start + 1;
+            is_range     = true;
+        }
     }
 
-    FtReadCtx read_ctx;
-    status = ft_open_read(&volume, sub_path, 0, NULL, NULL, &read_ctx);
-    if (status != 0) {
-        axl_http_response_set_text(resp, "Cannot open file\n");
-        axl_http_response_set_status(resp, 500);
-        return 0;
-    }
-
-    size_t full_size = (size_t)file_size;
-    void *file_buf = axl_malloc(full_size);
-    if (file_buf == NULL) {
-        ft_close_read(&read_ctx);
+    GetStreamerCtx *sctx = axl_calloc(1, sizeof(*sctx));
+    if (sctx == NULL) {
         axl_http_response_set_text(resp, "Out of memory\n");
         axl_http_response_set_status(resp, 500);
         return 0;
     }
 
-    size_t total_read = 0;
-    while (total_read < full_size) {
-        size_t got = 0;
-        size_t want = full_size - total_read;
-        if (want > FT_CHUNK_SIZE) {
-            want = FT_CHUNK_SIZE;
-        }
-        status = ft_read_chunk(&read_ctx, (uint8_t *)file_buf + total_read,
-                               want, &got);
-        if (status != 0 || got == 0) {
-            break;
-        }
-        total_read += got;
+    if (ft_open_read(&volume, sub_path, start_offset, NULL, NULL,
+                     &sctx->ctx) != 0) {
+        axl_free(sctx);
+        axl_http_response_set_text(resp, "Cannot open file\n");
+        axl_http_response_set_status(resp, 500);
+        return 0;
     }
-    ft_close_read(&read_ctx);
+    sctx->remaining = slice_len;
 
-    const char *range_hdr = (const char *)axl_hash_table_lookup(req->headers, "range");
-    if (range_hdr != NULL) {
-        AxlHttpRange range;
-        if (axl_http_parse_range(range_hdr, file_size, &range)) {
-            axl_http_response_set_range(resp, file_buf,
-                (size_t)range.start,
-                (size_t)(range.end - range.start + 1),
-                total_read);
-            axl_free(file_buf);
-            return 0;
-        }
-    }
-
-    resp->body = file_buf;
-    resp->body_size = total_read;
-    resp->content_type = "application/octet-stream";
-    resp->status_code = 200;
+    axl_http_response_set_streamer(resp, get_streamer_pull, sctx,
+                                   get_streamer_close,
+                                   (size_t)slice_len,
+                                   "application/octet-stream");
+    axl_http_response_set_status(resp, is_range ? 206 : 200);
     return 0;
 }
 
 /* Streaming PUT upload state.
  *
  * The SDK calls our handler N times for one PUT: once per chunk
- * (chunk != NULL, chunk_size > 0), then a final call with chunk=NULL,
- * chunk_size=0 where we set the response. UEFI is single-threaded
- * and the dispatcher is single-armed, so only one upload runs at a
- * time and these statics don't race.
+ * (chunk != NULL, chunk_size > 0), then EITHER a clean-EOF final
+ * call (chunk=NULL, chunk_size=0, aborted=false) where we set the
+ * response, OR an abort call (same NULL/0 with aborted=true) when
+ * the TCP peer disconnected mid-upload. The two terminal calls are
+ * mutually exclusive (SDK 2341dcc). UEFI is single-threaded and the
+ * dispatcher is single-armed, so only one upload runs at a time
+ * and these statics don't race.
+ *
+ * Read-only enforcement runs in permission_middleware, which the
+ * SDK now invokes ahead of upload routes (1eb3fc0).
  *
  * Failure handling: we keep consuming bytes after a per-chunk error
- * (just don't write them) so the dispatcher gets to the final call
+ * (just don't write them) so the dispatcher reaches the final call
  * with a clean state machine and we can emit the right status code
  * (404 / 500 / 201) explicitly. Returning non-zero mid-stream would
  * force a generic 500 from the SDK and lose our error context.
- *
- * Abort handling: if the TCP peer disconnects mid-upload, the SDK's
- * reset_connection path tears the conn down WITHOUT invoking the
- * upload handler with a final/abort signal -- m_put_open stays true
- * and m_put_ctx leaks into the next request. See
- * sdk-prompts/2026-05-10-upload-route-lifecycle.md for the proposed
- * SDK fix; meanwhile we recognize a hanging state at the start of
- * each call by comparing the current request path against the one
- * we saw on the last call. Different path with state still open
- * means abort recovery: discard the dangling FtWriteCtx. (Edge
- * case: same-path retry after abort still corrupts -- documented
- * in the prompt; gone once SDK abort signal lands.)
  */
 static FtWriteCtx m_put_ctx;
 static bool       m_put_open    = false;
 static bool       m_put_failed  = false;
 static int        m_put_status  = 201;
-static char       m_put_path[512] = {0};
 
 static int
 handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
-                 const void *chunk, size_t chunk_size, void *data)
+                 const void *chunk, size_t chunk_size, void *data,
+                 bool aborted)
 {
     ServeOpts *opts = (ServeOpts *)data;
-    bool is_final = (chunk == NULL && chunk_size == 0);
 
-    /* Abort-recovery heuristic: a different request path arriving
-       while state is still open means a prior upload was aborted.
-       Discard the leaked write context. */
-    if (m_put_open && req->path != NULL &&
-        axl_strcmp(req->path, m_put_path) != 0) {
-        ft_close_write(&m_put_ctx);
-        m_put_open   = false;
+    /* Abort: TCP teardown mid-upload. resp is NOT transmitted on
+       this call -- our only job is to release per-request state. */
+    if (aborted) {
+        if (m_put_open) {
+            ft_close_write(&m_put_ctx);
+            m_put_open = false;
+        }
         m_put_failed = false;
         m_put_status = 201;
+        return 0;
     }
 
-    /* First chunk OR final-with-empty-body: enforce read-only +
-       parse path + open file. The SDK's middleware chain runs for
-       regular routes only -- upload routes go straight to the
-       handler -- so the read-only check that lives in
-       permission_middleware has to be replicated here. See the
-       same sdk-prompts entry for the middleware-bypass gap. */
-    if (!m_put_open && !m_put_failed) {
-        if (opts->read_only) {
-            m_put_failed = true;
-            m_put_status = 403;
-        }
-    }
+    bool is_final = (chunk == NULL && chunk_size == 0);
+
+    /* First chunk OR final-with-empty-body: parse path + open file. */
     if (!m_put_open && !m_put_failed) {
         FtVolume volume;
         char     sub_path[512];
@@ -469,7 +469,6 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
             m_put_status = 500;
         } else {
             m_put_open = true;
-            axl_strlcpy(m_put_path, req->path, sizeof(m_put_path));
         }
     }
 
@@ -495,8 +494,6 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
     const char *body;
     if (!m_put_failed) {
         body = "Created\n";
-    } else if (m_put_status == 403) {
-        body = "Read-only mode\n";
     } else if (m_put_status == 404) {
         body = "Volume not found\n";
     } else {
@@ -507,9 +504,8 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
     publish_request(opts->loop, req, resp);
 
     /* Reset for the next upload. */
-    m_put_failed  = false;
-    m_put_status  = 201;
-    m_put_path[0] = '\0';
+    m_put_failed = false;
+    m_put_status = 201;
     return 0;
 }
 

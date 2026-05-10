@@ -426,21 +426,15 @@ scripts/test.sh --aarch64      # Same, also runs the AARCH64 mount test
 
 ## Future Enhancements
 
-- **Streaming large-file GET (multi-GB ISO downloads)** — the
-  current GET handler `axl_malloc`s the full file body before
-  responding (the SDK's send_response also wants a single
-  contiguous tx_buf). Capped at 256 MB per
-  `WEBFS_MAX_GET_BODY` in webfs-serve.c; oversized requests
-  return 413 Payload Too Large with a hint pointing at the
-  pending streaming-response API. See
-  `sdk-prompts/2026-05-10-axl-http-response-streamer.md` for
-  the proposed `axl_http_response_set_streamer` shape.
-
-  *(Streaming PUT for multi-GB uploads is already supported via
-  `axl_http_server_add_upload_route` -- chunks land in the
-  upload handler as bytes arrive on the wire, no full-body
-  buffering, no 128 MB body_limit cap. Round-tripped multi-MB
-  uploads in the QEMU integration test.)*
+*(Multi-GB ISO transfers are now supported in both directions:
+PUT via `axl_http_server_add_upload_route` (per-chunk bytes
+land in the upload handler as they arrive on the wire, no full-
+body buffering, body_limit bypassed), and GET via
+`axl_http_response_set_streamer` (the dispatcher pulls chunks
+from `get_streamer_pull` and finalizes via `get_streamer_close`
+on EOF, error, or connection reset, so the FtReadCtx never
+leaks). Range requests open the file at `range.start` and bound
+the streamer to the slice length.)*
 - WebDAV serve mode (PROPFIND, MKCOL, MOVE, COPY for network drive mount)
 - WebDAV client for mount (mount standard WebDAV servers without xfer-server.py)
 - TLS support (SDK has `axl_http_client_set("tls.verify", ...)`)

@@ -860,16 +860,44 @@ NSHEOF
                     "$BASE/fs0/multichunk.bin" 2>/dev/null || true)
                 if [ "$HTTP_CODE" = "201" ]; then
                     pass "serve: multi-chunk streaming PUT (1 MB, ~16 chunks) returned 201"
+                    # Full-file GET via the streamer: pulls bytes
+                    # chunk-by-chunk from the FtReadCtx, no full-file
+                    # malloc.
                     GOT=$(mktemp)
                     curl -sf "$BASE/fs0/multichunk.bin" -o "$GOT" \
                         2>/dev/null || true
                     if cmp -s "$MULTI_CHUNK" "$GOT"; then
-                        pass "serve: multi-chunk PUT round-trip preserves bytes"
+                        pass "serve: streaming GET full-file round-trip preserves bytes"
                     else
-                        fail "serve: multi-chunk PUT round-trip" \
+                        fail "serve: streaming GET round-trip" \
                              "GET'd content differs from PUT"
                     fi
                     rm -f "$GOT"
+
+                    # Range GET via the streamer: opens at offset and
+                    # bounds the slice. Pull bytes 100000-101023 (1 KB
+                    # slice from inside the 1 MB upload) and verify
+                    # status=206 + content matches.
+                    SLICE=$(mktemp)
+                    HTTP_CODE=$(curl -s -o "$SLICE" -w "%{http_code}" \
+                        -H "Range: bytes=100000-101023" \
+                        "$BASE/fs0/multichunk.bin" 2>/dev/null || true)
+                    if [ "$HTTP_CODE" = "206" ]; then
+                        EXPECT=$(mktemp)
+                        dd if="$MULTI_CHUNK" of="$EXPECT" bs=1 skip=100000 \
+                            count=1024 status=none 2>/dev/null
+                        if cmp -s "$EXPECT" "$SLICE"; then
+                            pass "serve: streaming Range GET (bytes=100000-101023, 206) matches slice"
+                        else
+                            fail "serve: streaming Range GET" \
+                                 "slice content mismatch"
+                        fi
+                        rm -f "$EXPECT"
+                    else
+                        fail "serve: streaming Range GET" \
+                             "expected 206, got $HTTP_CODE"
+                    fi
+                    rm -f "$SLICE"
                 else
                     fail "serve: multi-chunk PUT" \
                          "expected 201, got $HTTP_CODE"
