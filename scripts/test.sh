@@ -830,6 +830,15 @@ NSHEOF
                 [ "$HTTP_CODE" = "201" ] && \
                     pass "serve --detach: PUT works against driver" || \
                     fail "serve --detach: PUT" "expected 201, got $HTTP_CODE"
+
+                # Pubsub-driven console feedback fires on the deferred
+                # queue, so we need a beat for the line to land in
+                # the serial log after the PUT response is sent.
+                sleep 2
+                grep -qE "axl-webfs serve: PUT /fs0/detach_upload.txt -> 201" \
+                    "$SERIAL_LOG" 2>/dev/null && \
+                    pass "serve --detach: console feedback for PUT" || \
+                    fail "serve --detach: console feedback" "no PUT line in serial log"
             else
                 fail "serve --detach: driver did not start within 30s"
             fi

@@ -19,10 +19,30 @@
 
 #include <axl.h>
 #include <axl/axl-net.h>
+#include <axl/axl-pubsub.h>
 #include <axl/axl-url.h>
 #include "net/network.h"
 #include "serve/upload-asset.h"
 #include "transfer/file-transfer.h"
+
+/* Pub/sub topic for non-GET request notifications. The default
+   subscriber is the in-process console printer registered in
+   serve_setup; external consumers can subscribe to the same topic
+   for telemetry / audit. */
+#define WEBFS_REQUEST_TOPIC "webfs.request"
+
+/* Single-buffer event payload reused across requests. Safe because
+   UEFI is single-threaded and pubsub deferred dispatch drains before
+   the next request handler runs. Strings are inline copies so the
+   underlying req fields can be freed when the handler returns. */
+typedef struct {
+    char     method[16];
+    char     path[256];
+    uint64_t status;
+    uint64_t body_size;
+} WebfsRequestEvent;
+
+static WebfsRequestEvent m_req_event;
 
 ServeOpts g_serve_opts;
 
@@ -104,6 +124,50 @@ wants_json(AxlHttpRequest *req)
         p++;
     }
     return false;
+}
+
+// ----------------------------------------------------------------------------
+// Request-event publish helper
+// ----------------------------------------------------------------------------
+
+/// Snapshot the request method/path + the response status/body size into
+/// the file-static event buffer and publish on WEBFS_REQUEST_TOPIC.
+/// Subscribers (the console printer is the default) get a deferred
+/// callback at the next loop tick.
+static void
+publish_request(AxlLoop *loop, AxlHttpRequest *req, AxlHttpResponse *resp)
+{
+    if (loop == NULL) {
+        return;
+    }
+
+    axl_strlcpy(m_req_event.method, req->method != NULL ? req->method : "?",
+                sizeof(m_req_event.method));
+    axl_strlcpy(m_req_event.path,   req->path   != NULL ? req->path   : "?",
+                sizeof(m_req_event.path));
+    m_req_event.status    = (uint64_t)resp->status_code;
+    m_req_event.body_size = (uint64_t)req->body_size;
+
+    (void)axl_pubsub_publish(loop, WEBFS_REQUEST_TOPIC, &m_req_event);
+}
+
+/// Default console-feedback subscriber. Prints one line per non-GET
+/// request so a shell user knows when remote clients are mutating the
+/// filesystem. Registered in serve_setup, unregistered in
+/// serve_teardown.
+static void
+on_webfs_request(void *event_data, void *user_data)
+{
+    (void)user_data;
+    WebfsRequestEvent *e = (WebfsRequestEvent *)event_data;
+    if (e == NULL) {
+        return;
+    }
+
+    axl_printf("axl-webfs serve: %s %s -> %llu (%llu bytes)\n",
+               e->method, e->path,
+               (unsigned long long)e->status,
+               (unsigned long long)e->body_size);
 }
 
 // ----------------------------------------------------------------------------
@@ -299,16 +363,16 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 static int
 handle_put_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-    FtVolume volume;
-    char     sub_path[512];
-    int      status;
-
-    (void)data;
+    ServeOpts *opts = (ServeOpts *)data;
+    FtVolume   volume;
+    char       sub_path[512];
+    int        status;
 
     status = parse_volume_path(req->path, &volume, sub_path, 512);
     if (status != 0) {
         axl_http_response_set_text(resp, "Volume not found\n");
         axl_http_response_set_status(resp, 404);
+        publish_request(opts->loop, req, resp);
         return 0;
     }
 
@@ -317,9 +381,11 @@ handle_put_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     if (status != 0) {
         axl_http_response_set_text(resp, "Cannot create file\n");
         axl_http_response_set_status(resp, 500);
+        publish_request(opts->loop, req, resp);
         return 0;
     }
 
+    bool write_failed = false;
     if (req->body != NULL && req->body_size > 0) {
         size_t written = 0;
         while (written < req->body_size) {
@@ -330,6 +396,7 @@ handle_put_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
             status = ft_write_chunk(&write_ctx,
                          (const uint8_t *)req->body + written, chunk_size);
             if (status != 0) {
+                write_failed = true;
                 break;
             }
             written += chunk_size;
@@ -337,24 +404,30 @@ handle_put_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     }
 
     ft_close_write(&write_ctx);
-    axl_http_response_set_text(resp, "Created\n");
-    axl_http_response_set_status(resp, 201);
+    if (write_failed) {
+        axl_http_response_set_text(resp, "Write failed\n");
+        axl_http_response_set_status(resp, 500);
+    } else {
+        axl_http_response_set_text(resp, "Created\n");
+        axl_http_response_set_status(resp, 201);
+    }
+    publish_request(opts->loop, req, resp);
     return 0;
 }
 
 static int
 handle_delete_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-    FtVolume volume;
-    char     sub_path[512];
-    int      status;
-
-    (void)data;
+    ServeOpts *opts = (ServeOpts *)data;
+    FtVolume   volume;
+    char       sub_path[512];
+    int        status;
 
     status = parse_volume_path(req->path, &volume, sub_path, 512);
     if (status != 0) {
         axl_http_response_set_text(resp, "Volume not found\n");
         axl_http_response_set_status(resp, 404);
+        publish_request(opts->loop, req, resp);
         return 0;
     }
 
@@ -362,25 +435,27 @@ handle_delete_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     if (status != 0) {
         axl_http_response_set_text(resp, "Not found\n");
         axl_http_response_set_status(resp, 404);
+        publish_request(opts->loop, req, resp);
         return 0;
     }
 
     axl_http_response_set_text(resp, "Deleted\n");
+    publish_request(opts->loop, req, resp);
     return 0;
 }
 
 static int
 handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 {
-    FtVolume volume;
-    char     sub_path[512];
-    int      status;
-
-    (void)data;
+    ServeOpts *opts = (ServeOpts *)data;
+    FtVolume   volume;
+    char       sub_path[512];
+    int        status;
 
     if (req->query == NULL || !axl_streql(req->query, "mkdir")) {
         axl_http_response_set_text(resp, "Use ?mkdir\n");
         axl_http_response_set_status(resp, 400);
+        publish_request(opts->loop, req, resp);
         return 0;
     }
 
@@ -388,6 +463,7 @@ handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     if (status != 0) {
         axl_http_response_set_text(resp, "Volume not found\n");
         axl_http_response_set_status(resp, 404);
+        publish_request(opts->loop, req, resp);
         return 0;
     }
 
@@ -395,11 +471,13 @@ handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     if (status != 0) {
         axl_http_response_set_text(resp, "mkdir failed\n");
         axl_http_response_set_status(resp, 500);
+        publish_request(opts->loop, req, resp);
         return 0;
     }
 
     axl_http_response_set_text(resp, "Created\n");
     axl_http_response_set_status(resp, 201);
+    publish_request(opts->loop, req, resp);
     return 0;
 }
 
@@ -455,9 +533,9 @@ serve_setup(AxlLoop *loop, void *user)
                               handle_get_upload_js, NULL);
     axl_http_server_add_route(o->server, "GET",    "/",  handle_get_root,    NULL);
     axl_http_server_add_route(o->server, "GET",    "/*", handle_get_path,    o);
-    axl_http_server_add_route(o->server, "PUT",    "/*", handle_put_path,    NULL);
-    axl_http_server_add_route(o->server, "DELETE", "/*", handle_delete_path, NULL);
-    axl_http_server_add_route(o->server, "POST",   "/*", handle_post_path,   NULL);
+    axl_http_server_add_route(o->server, "PUT",    "/*", handle_put_path,    o);
+    axl_http_server_add_route(o->server, "DELETE", "/*", handle_delete_path, o);
+    axl_http_server_add_route(o->server, "POST",   "/*", handle_post_path,   o);
 
     if (axl_http_server_start(o->server, loop) != AXL_OK) {
         axl_http_server_free(o->server);
@@ -465,6 +543,15 @@ serve_setup(AxlLoop *loop, void *user)
         network_cleanup();
         return AXL_ERR;
     }
+
+    /* Stash the loop on the opts struct so request handlers can
+       publish on WEBFS_REQUEST_TOPIC; subscribe the default console
+       printer for non-GET request feedback. Done after start
+       succeeds so we don't leak a subscriber if start fails (the
+       service framework doesn't call teardown on a failed setup). */
+    o->loop = loop;
+    o->request_sub_id = axl_pubsub_subscribe(loop, WEBFS_REQUEST_TOPIC,
+                                             on_webfs_request, NULL);
 
     /* Recognizable single-line banner for both foreground and driver
        mode (the foreground caller may add its own pre-banner before
@@ -493,6 +580,12 @@ static int
 serve_teardown(void *user)
 {
     ServeOpts *o = (ServeOpts *)user;
+
+    if (o->loop != NULL && o->request_sub_id != 0) {
+        (void)axl_pubsub_unsubscribe(o->loop, o->request_sub_id);
+        o->request_sub_id = 0;
+    }
+    o->loop = NULL;
 
     if (o->server != NULL) {
         axl_http_server_free(o->server);

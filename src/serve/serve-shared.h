@@ -46,6 +46,8 @@ typedef struct {
     bool             read_only;
     bool             write_only;
     AxlHttpServer   *server;
+    AxlLoop         *loop;             /* needed by route handlers to publish */
+    uint32_t         request_sub_id;   /* axl_pubsub_subscribe handle */
     uint8_t          addr[4];
 } ServeOpts;
 
