@@ -1,0 +1,53 @@
+/** @file
+  axl-webfs -- mount service descriptor (linked into both binaries).
+
+  webfs-mount.c defines MountOpts + the AxlService descriptor stub
+  unconditionally; impl (setup, teardown, parse_url, EFI_FILE_PROTOCOL
+  install) is gated on AXL_SERVICE_BUILD_DRIVER. The launcher only
+  reads url + read_only out of MountOpts to serialize via opts_descs;
+  the WebFsPrivate runtime context lives behind an opaque pointer
+  that's set by setup() and only meaningful in the driver build.
+
+  Cross-binary ABI rule: same source, same flags except for the
+  AXL_SERVICE_BUILD_DRIVER toggle.
+
+  Copyright (c) 2026, AximCode. All rights reserved.
+  SPDX-License-Identifier: Apache-2.0
+**/
+
+#ifndef AXL_WEBFS_MOUNT_H_
+#define AXL_WEBFS_MOUNT_H_
+
+#include <axl.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+/// Configuration + (driver-side) runtime state for the mount service.
+///
+/// The auto-applied fields (@ref url, @ref read_only) are written by
+/// AxlConfig auto-apply: launcher-side from the parsed `mount` verb,
+/// driver-side from LoadOptions. STRING values land as pointers into
+/// caller-owned storage per AxlConfig's contract.
+///
+/// `priv` is a runtime field set by mount_setup; it's compiled out of
+/// the launcher's MountOpts so the launcher never references the
+/// driver-only WebFsPrivate type. axl-sdk's serialization is offset-
+/// driven against opts_descs, which doesn't list `priv`, so the launcher's
+/// shorter MountOpts is wire-compatible with the driver's longer one.
+typedef struct {
+    /* Auto-applied from mount_descs */
+    const char *url;
+    bool        read_only;
+
+#ifdef AXL_SERVICE_BUILD_DRIVER
+    /* Driver-side runtime — owned by setup, freed by teardown. */
+    struct WebFsPrivate *priv;
+#endif
+} MountOpts;
+
+/* Defined in webfs-mount.c, linked into both binaries. */
+extern MountOpts          g_mount_opts;
+extern const AxlConfigDesc mount_descs[];
+extern const AxlService    webfs_mount;
+
+#endif /* AXL_WEBFS_MOUNT_H_ */

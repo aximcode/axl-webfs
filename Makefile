@@ -37,12 +37,17 @@ APP_SRCS = src/app/main.c \
            src/app/cmd-serve.c \
            src/app/cmd-mount.c \
            src/net/network.c \
-           src/serve/webfs-serve.c
+           src/serve/webfs-serve.c \
+           src/mount/webfs-mount.c
 
-DRV_SRCS = src/driver/webfs.c \
-           src/driver/webfs-file.c \
-           src/driver/webfs-cache.c \
-           src/net/network.c
+# Mount driver image. -DAXL_SERVICE_BUILD_DRIVER pulls in setup,
+# teardown, EFI_FILE_PROTOCOL impl, and AXL_SERVICE_DRIVER entry
+# from webfs-mount.c. webfs-file.c and webfs-cache.c are the
+# protocol-callback / cache supporting files (driver-only).
+MOUNT_DRV_SRCS = src/mount/webfs-mount.c \
+                 src/mount/webfs-file.c \
+                 src/mount/webfs-cache.c \
+                 src/net/network.c
 
 # Serve driver image. -DAXL_SERVICE_BUILD_DRIVER pulls in setup,
 # teardown, route handlers, and the AXL_SERVICE_DRIVER entry point
@@ -55,7 +60,7 @@ SERVE_DRV_SRCS = src/serve/webfs-serve.c \
 
 CFLAGS   = -Isrc
 
-all: axl-webfs axl-webfs-dxe axl-webfs-serve-dxe
+all: axl-webfs axl-webfs-mount-dxe axl-webfs-serve-dxe
 
 # axl-webfs.efi embeds both DXE drivers via axl-cc --embed (which
 # generates a .incbin sidecar): the serve driver for `serve --detach`
@@ -66,15 +71,17 @@ all: axl-webfs axl-webfs-dxe axl-webfs-serve-dxe
 axl-webfs: $(OUTDIR)/axl-webfs.efi
 $(OUTDIR)/axl-webfs.efi: $(APP_SRCS) \
                          $(OUTDIR)/axl-webfs-serve-dxe.efi \
-                         $(OUTDIR)/axl-webfs-dxe.efi | $(OUTDIR) $(SDK_SYNC_DEP)
+                         $(OUTDIR)/axl-webfs-mount-dxe.efi | $(OUTDIR) $(SDK_SYNC_DEP)
 	$(AXL_CC) --arch $(ARCH) $(CFLAGS) \
 	    --embed $(OUTDIR)/axl-webfs-serve-dxe.efi=axl_webfs_serve_dxe \
-	    --embed $(OUTDIR)/axl-webfs-dxe.efi=axl_webfs_mount_dxe \
+	    --embed $(OUTDIR)/axl-webfs-mount-dxe.efi=axl_webfs_mount_dxe \
 	    $(APP_SRCS) -o $@
 
-axl-webfs-dxe: $(OUTDIR)/axl-webfs-dxe.efi
-$(OUTDIR)/axl-webfs-dxe.efi: $(DRV_SRCS) | $(OUTDIR) $(SDK_SYNC_DEP)
-	$(AXL_CC) --arch $(ARCH) --type driver $(CFLAGS) $(DRV_SRCS) -o $@
+axl-webfs-mount-dxe: $(OUTDIR)/axl-webfs-mount-dxe.efi
+$(OUTDIR)/axl-webfs-mount-dxe.efi: $(MOUNT_DRV_SRCS) | $(OUTDIR) $(SDK_SYNC_DEP)
+	$(AXL_CC) --arch $(ARCH) --type driver $(CFLAGS) \
+	    -DAXL_SERVICE_BUILD_DRIVER \
+	    $(MOUNT_DRV_SRCS) -o $@
 
 axl-webfs-serve-dxe: $(OUTDIR)/axl-webfs-serve-dxe.efi
 $(OUTDIR)/axl-webfs-serve-dxe.efi: $(SERVE_DRV_SRCS) | $(OUTDIR) $(SDK_SYNC_DEP)
@@ -98,4 +105,4 @@ demo-mount:
 demo-serve:
 	scripts/demo-serve.sh
 
-.PHONY: all axl-webfs axl-webfs-dxe axl-webfs-serve-dxe clean demo demo-mount demo-serve
+.PHONY: all axl-webfs axl-webfs-mount-dxe axl-webfs-serve-dxe clean demo demo-mount demo-serve

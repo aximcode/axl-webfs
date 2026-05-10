@@ -1,5 +1,5 @@
 /** @file
-  axl-webfs-dxe -- Internal types and declarations.
+  axl-webfs-mount -- internal types and declarations.
 
   Private data structures for the remote filesystem driver.
   Uses SIGNATURE_32 + CR macros for container derivation.
@@ -60,12 +60,13 @@ typedef struct {
 } DirCacheSlot;
 
 // ---------------------------------------------------------------------------
-// Driver private context (one per mount)
+// Driver-side runtime context (one per mount). Tag (struct WebFsPrivate)
+// matches the opaque forward decl in mount/webfs-mount.h so MountOpts.priv
+// can reference it without dragging UEFI types into the launcher build.
 // ---------------------------------------------------------------------------
 
-typedef struct {
+typedef struct WebFsPrivate {
     UINT32                              signature;
-    void                               *image_handle;
     void                               *fs_handle;
 
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL     simple_fs;
@@ -115,14 +116,6 @@ typedef struct {
 
 #define WEBFS_FILE_FROM_FILE_PROTOCOL(a) \
     AXL_CONTAINER_OF(a, WebFsFileCtx, file)
-
-// ---------------------------------------------------------------------------
-// Forward declarations -- webfs.c
-// ---------------------------------------------------------------------------
-
-EFI_STATUS EFIAPI DriverEntry(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable);
-EFI_STATUS EFIAPI WebFsDriverUnload(EFI_HANDLE ImageHandle);
-EFI_STATUS EFIAPI WebFsOpenVolume(EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *This, EFI_FILE_PROTOCOL **Root);
 
 // ---------------------------------------------------------------------------
 // Forward declarations -- webfs-file.c

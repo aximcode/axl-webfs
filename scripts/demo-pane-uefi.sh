@@ -32,13 +32,9 @@ sleep 4.0
 # 1) mount.
 type_line "axl-webfs.efi mount http://10.0.0.5:8080/"
 sleep 0.3
-printf "Loading axl-webfs-dxe.efi...\n"
-sleep 0.4
-printf "Connecting to http://10.0.0.5:8080/...\n"
+printf "axl-webfs-mount: connecting to 10.0.0.5:8080/\n"
 sleep 0.8
-printf "axl-webfs-dxe: Mounted successfully\n"
-printf "Mounted as FS handle A3FC8098\n"
-printf "Use 'map -r' to refresh Shell mappings.\n"
+printf "axl-webfs-mount: mounted (use 'map -r' to refresh Shell mappings)\n"
 sleep 1.2
 
 # 2) ls fs1:.

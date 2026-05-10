@@ -1,5 +1,5 @@
 /** @file
-  axl-webfs-dxe -- EFI_FILE_PROTOCOL implementation.
+  axl-webfs-mount -- EFI_FILE_PROTOCOL implementation.
 
   Every UEFI file operation translates to HTTP requests against
   xfer-server.py. Directory listings use GET /list/, file I/O uses

@@ -1,5 +1,5 @@
 /** @file
-  axl-webfs-dxe -- Directory cache and HTTP request helper.
+  axl-webfs-mount -- directory cache and HTTP request helper.
 
   Caches GET /list/ responses for 2 seconds to avoid hammering the
   network on repeated ls/access patterns. Provides auto-reconnect

@@ -452,11 +452,11 @@ NSHEOF
             continue
         fi
 
-        if grep -q "Mounted successfully" "$SERIAL_LOG" 2>/dev/null; then
+        if grep -qE "axl-webfs-mount: mounted" "$SERIAL_LOG" 2>/dev/null; then
             pass "$QEMU_ARCH: mount connected to xfer-server"
         else
             fail "$QEMU_ARCH: mount" "driver did not report success"
-            grep -i "error\|fail\|axl-webfs-dxe" "$SERIAL_LOG" 2>/dev/null | head -5 || true
+            grep -i "error\|fail\|axl-webfs-mount" "$SERIAL_LOG" 2>/dev/null | head -5 || true
         fi
 
         grep -q "readme.txt" "$SERIAL_LOG" 2>/dev/null && \
@@ -483,9 +483,9 @@ NSHEOF
             pass "$QEMU_ARCH: large file read (50KB)" || \
             fail "$QEMU_ARCH: large file" "content not found"
 
-        grep -q "Unmounted" "$SERIAL_LOG" 2>/dev/null && \
+        grep -qE "axl-webfs-mount: unmounted" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: umount succeeded" || \
-            fail "$QEMU_ARCH: umount" "Unmounted not found"
+            fail "$QEMU_ARCH: umount" "axl-webfs-mount: unmounted not found"
 
         grep -q "TESTS COMPLETE" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: all Shell commands completed" || \
