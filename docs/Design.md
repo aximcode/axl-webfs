@@ -260,6 +260,14 @@ Options:
   --mode <m>       Permission mode: read-write (default),
                    read-only (block PUT/POST/DELETE),
                    write-only (block GET)
+  --source <ip>    Bind listener to interface with this station IPv4
+  -l, --log <path> Tee axl_log output to a file (e.g. fs0:\webfs.log).
+                   Open failure surfaces a console error and serve
+                   continues with console-only output -- a missing
+                   log destination doesn't bring down the server.
+                   Uses axl_log_file_attach so output is structured
+                   ([LEVEL] [domain] message) and includes the
+                   request log lines from the pubsub feedback path.
   -v               Verbose logging
   -h               Show help
 

@@ -781,7 +781,7 @@ NSHEOF
         cat > "$DETACH_NSH" <<'NSHEOF'
 @echo -off
 fs0:
-axl-webfs.efi serve -p 8080
+axl-webfs.efi serve -p 8080 --log fs0:\webfs.log
 echo === DETACHED ===
 NSHEOF
 
@@ -823,6 +823,17 @@ NSHEOF
                 grep -q "listening" "$SERIAL_LOG" 2>/dev/null && \
                     pass "serve: driver banner printed" || \
                     fail "serve: banner" "no listening banner in serial log"
+
+                # Valid --log path success counterpart to serve-stop's
+                # bogus-path failure check: a writable fs0:\webfs.log
+                # must NOT trip the "cannot open log file" error path.
+                if grep -q "ERROR: serve: cannot open log file" \
+                       "$SERIAL_LOG" 2>/dev/null; then
+                    fail "serve --log: valid path" \
+                         "spurious 'cannot open log file' for fs0:\\webfs.log"
+                else
+                    pass "serve --log: valid fs0:\\webfs.log opens cleanly"
+                fi
 
                 CONTENT=$(curl -sf "$BASE/fs0/detach_test.txt" 2>/dev/null)
                 echo "$CONTENT" | grep -q "detach test" && \
