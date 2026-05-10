@@ -1,8 +1,9 @@
 /** @file
-  NetworkLib -- NIC discovery, DHCP configuration, and static IP setup.
+  NetworkLib -- thin idempotency + state cache around axl_net_bring_up.
 
-  Uses axl_net_auto_init() for DHCP and axl_net_set_static_ip() for
-  static IP. No direct UEFI protocol calls.
+  axl-sdk does the actual work: drivers up, DHCP or static, address
+  read-back. We just cache the resulting address so callers can ask
+  for it later without re-querying the protocol.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
@@ -12,7 +13,6 @@
 
 #include <axl.h>
 #include <axl/axl-net.h>
-#include <axl/axl-wait.h>
 
 /* ------------------------------------------------------------------ */
 /* Module state                                                       */
@@ -32,31 +32,18 @@ network_init(size_t nic_index, const uint8_t *static_ip, size_t timeout_sec)
 
     axl_memset(&mIfaceInfo, 0, sizeof(mIfaceInfo));
 
-    if (static_ip == NULL) {
-        if (axl_net_auto_init(nic_index, timeout_sec) != 0) {
-            axl_printf("ERROR: Network init failed\n");
-            return -1;
-        }
-    } else {
-        /* Load drivers and connect SNP, then set static IP */
-        axl_net_auto_init(nic_index, 0);
-
-        uint8_t netmask[] = {255, 255, 255, 0};
-        if (axl_net_set_static_ip(nic_index, static_ip, netmask, NULL) != 0) {
-            axl_printf("ERROR: Failed to set static IP\n");
-            return -1;
-        }
-        axl_msleep(500);
-    }
-
-    AxlIPv4Address ip;
-    if (axl_net_get_ip_address(&ip) != 0) {
-        axl_printf("ERROR: No IP address acquired\n");
+    /* axl_net_bring_up: NULL static_ip -> DHCP; non-NULL -> static
+       (default netmask 255.255.255.0, no gateway). Returns the
+       acquired address in addr_out. */
+    AxlIPv4Address addr;
+    if (axl_net_bring_up(nic_index, static_ip, NULL, NULL,
+                         timeout_sec, &addr) != 0) {
+        axl_printf("ERROR: Network init failed\n");
         return -1;
     }
-    mIfaceInfo.valid = true;
-    axl_memcpy(mIfaceInfo.ip, ip.addr, 4);
 
+    mIfaceInfo.valid = true;
+    axl_memcpy(mIfaceInfo.ip, addr.addr, 4);
     mInitialized = true;
     return 0;
 }

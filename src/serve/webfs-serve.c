@@ -118,7 +118,12 @@ parse_volume_path(const char *url_path, FtVolume *volume,
     return 0;
 }
 
-/// Check if Accept header requests JSON.
+/// Does the client EXPLICITLY ask for JSON? The SDK's
+/// axl_http_request_wants_json wraps axl_http_accepts which honors
+/// the */* wildcard -- correct content negotiation per RFC 9110, but
+/// wrong for a UEFI tool where curl's default Accept: */* should get
+/// the human-readable HTML, not JSON. Stick to a literal substring
+/// scan so JSON is opt-in via an explicit application/json mention.
 static bool
 wants_json(AxlHttpRequest *req)
 {
@@ -126,13 +131,10 @@ wants_json(AxlHttpRequest *req)
     if (accept == NULL) {
         return false;
     }
-
-    const char *p = accept;
-    while (*p != '\0') {
+    for (const char *p = accept; *p != '\0'; p++) {
         if (axl_strncmp(p, "application/json", 16) == 0) {
             return true;
         }
-        p++;
     }
     return false;
 }
@@ -504,13 +506,10 @@ serve_setup(AxlLoop *loop, void *user)
     /* Attach the log file FIRST so subsequent setup output (banner,
        volume list, axl_warning/axl_error from later steps) reaches
        it. axl_log_file_attach handles open + handler registration
-       + buffering internally. On failure, surface a clear console
-       error and continue -- a missing log destination shouldn't
-       bring down the server. (axl-sdk has no axl_log_file_detach
-       counterpart yet -- see sdk-prompts/2026-05-10-axl-log-file-
-       detach.md. For now we rely on driver-image unload + a
-       teardown-time axl_log_flush; once the SDK lands detach,
-       teardown can call it explicitly.) */
+       + buffering internally; serve_teardown calls
+       axl_log_file_detach for symmetric cleanup. On failure,
+       surface a clear console error and continue -- a missing log
+       destination shouldn't bring down the server. */
     if (o->log_path != NULL && o->log_path[0] != '\0') {
         if (axl_log_file_attach(o->log_path) != AXL_OK) {
             /* axl_printf (not axl_error) because the log facility
@@ -620,12 +619,10 @@ serve_teardown(void *user)
     }
     network_cleanup();
 
-    /* Flush buffered log output before image unload. The SDK lacks
-       an axl_log_file_detach counterpart (see sdk-prompts entry);
-       firmware will release the file handle when the driver image
-       is unloaded. axl_log_flush is a no-op if no file is attached
-       (--log not used). */
-    axl_log_flush();
+    /* Flush + close the log file before image unload (NULL-safe
+       no-op when --log wasn't used). Symmetric with the
+       axl_log_file_attach in setup. */
+    axl_log_file_detach();
     return AXL_OK;
 }
 
