@@ -4,9 +4,9 @@
 
   AXL_SERVICE_DRIVER expands to the firmware-side DriverEntry +
   Unload stubs that decode LoadOptions into ServeOpts via serve_descs,
-  call webfs_serve.setup, register a periodic 50 ms tick that drives
-  the loop via axl_loop_attach_driver, and reverse the dance at
-  Unload time.
+  call webfs_serve.setup, register a periodic tick (from
+  webfs_serve.driver_tick_ms) that drives the loop via
+  axl_loop_attach_driver, and reverse the dance at Unload time.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
@@ -18,4 +18,4 @@
 
 AXL_LOG_DOMAIN("webfs-serve-drv");
 
-AXL_SERVICE_DRIVER(webfs_serve, 50)
+AXL_SERVICE_DRIVER(webfs_serve)
