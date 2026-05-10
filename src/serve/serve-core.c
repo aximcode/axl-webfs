@@ -596,10 +596,9 @@ serve_teardown(void *user)
 }
 
 const AxlService webfs_serve = {
-    .name          = "axl-webfs-serve",
-    .opts_descs    = serve_descs,
-    .setup         = serve_setup,
-    .teardown      = serve_teardown,
-    .user          = &g_serve_opts,
-    .protocol_guid = WEBFS_SERVICE_GUID,
+    .name       = "axl-webfs-serve",
+    .opts_descs = serve_descs,
+    .setup      = serve_setup,
+    .teardown   = serve_teardown,
+    .user       = &g_serve_opts,
 };

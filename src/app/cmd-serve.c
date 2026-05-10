@@ -84,9 +84,9 @@ webfs_serve_stop_handler(AxlArgs *a)
 {
     (void)a;
 
-    /* axl_service_stop only reads deploy->service->protocol_guid;
-       driver_blob / driver_name aren't needed (no relaunch path).
-       Same shape as sdk/examples/service-demo-stop.c. */
+    /* axl_service_stop only reads deploy->service (the name-derived
+       GUID is what it actually looks up); driver_blob / driver_name
+       aren't needed (no relaunch path). */
     AxlServiceDeploy deploy = {
         .service = &webfs_serve,
     };

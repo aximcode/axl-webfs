@@ -51,12 +51,12 @@ typedef struct {
     uint8_t          addr[4];
 } ServeOpts;
 
-/* Stable vendor GUID. AXL_SERVICE_DRIVER auto-publishes it on a
-   sentinel handle so axl_service_is_running can detect a live
-   instance. UUID v4 generated 2026-05-08. */
-#define WEBFS_SERVICE_GUID \
-    AXL_GUID(0x14b96243, 0x2a35, 0x4fae, \
-             0xa0, 0xeb, 0xff, 0x63, 0xdb, 0x88, 0x23, 0x8e)
+/* The service's UEFI protocol identity is derived from
+   webfs_serve.name via axl_guid_v5 (see axl-sdk's axl-service.h).
+   AXL_SERVICE_DRIVER publishes the derived GUID on the driver
+   image's handle so axl_service_is_running can detect a live
+   instance — both binaries pick out the same derived GUID by
+   sharing this descriptor. */
 
 /* Defined in serve-core.c, linked into both binaries. */
 extern ServeOpts          g_serve_opts;
