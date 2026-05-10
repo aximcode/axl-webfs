@@ -845,6 +845,37 @@ NSHEOF
                     pass "serve: PUT works against driver" || \
                     fail "serve: PUT" "expected 201, got $HTTP_CODE"
 
+                # Multi-chunk PUT: 1 MB exercises ~16 chunk-handler
+                # invocations (default upload.chunk.size = 64 KB), so
+                # the per-chunk write path is hit repeatedly. Round-
+                # trip via GET and compare to verify chunks are
+                # ordered correctly. We can't test >128 MB here
+                # because run-qemu.sh's auto-sized disk is ~40 MB --
+                # multi-GB streaming is verified by SDK-level tests.
+                MULTI_CHUNK=$(mktemp)
+                dd if=/dev/urandom of="$MULTI_CHUNK" bs=1024 count=1024 \
+                    status=none 2>/dev/null
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    -T "$MULTI_CHUNK" \
+                    "$BASE/fs0/multichunk.bin" 2>/dev/null || true)
+                if [ "$HTTP_CODE" = "201" ]; then
+                    pass "serve: multi-chunk streaming PUT (1 MB, ~16 chunks) returned 201"
+                    GOT=$(mktemp)
+                    curl -sf "$BASE/fs0/multichunk.bin" -o "$GOT" \
+                        2>/dev/null || true
+                    if cmp -s "$MULTI_CHUNK" "$GOT"; then
+                        pass "serve: multi-chunk PUT round-trip preserves bytes"
+                    else
+                        fail "serve: multi-chunk PUT round-trip" \
+                             "GET'd content differs from PUT"
+                    fi
+                    rm -f "$GOT"
+                else
+                    fail "serve: multi-chunk PUT" \
+                         "expected 201, got $HTTP_CODE"
+                fi
+                rm -f "$MULTI_CHUNK"
+
                 # Pubsub-driven console feedback fires on the deferred
                 # queue, so we need a beat for the line to land in
                 # the serial log after the PUT response is sent.

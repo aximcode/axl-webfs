@@ -311,12 +311,32 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         return 0;
     }
 
-    /* File download -- read entire file into memory */
+    /* File download -- the SDK's response dispatcher (and our code
+       below) currently materialize the full body in RAM before
+       sending. Cap downloads so a misdirected GET on a huge ISO
+       turns into a clean 413 instead of an OOM. Once the SDK has
+       a streaming response API (see sdk-prompts/2026-05-10-axl-
+       http-response-streamer.md), this cap can lift and we'll
+       stream directly to the socket. */
+#define WEBFS_MAX_GET_BODY  (256ULL * 1024 * 1024)  /* 256 MB */
+
     uint64_t file_size = 0;
     status = ft_get_file_size(&volume, sub_path, &file_size);
     if (status != 0) {
         axl_http_response_set_text(resp, "File not found\n");
         axl_http_response_set_status(resp, 404);
+        return 0;
+    }
+
+    if (file_size > WEBFS_MAX_GET_BODY) {
+        char msg[160];
+        axl_snprintf(msg, sizeof(msg),
+            "File is %llu bytes; serve currently caps GET at %llu "
+            "bytes (streaming-response API pending).\n",
+            (unsigned long long)file_size,
+            (unsigned long long)WEBFS_MAX_GET_BODY);
+        axl_http_response_set_text(resp, msg);
+        axl_http_response_set_status(resp, 413);
         return 0;
     }
 
@@ -373,58 +393,123 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     return 0;
 }
 
+/* Streaming PUT upload state.
+ *
+ * The SDK calls our handler N times for one PUT: once per chunk
+ * (chunk != NULL, chunk_size > 0), then a final call with chunk=NULL,
+ * chunk_size=0 where we set the response. UEFI is single-threaded
+ * and the dispatcher is single-armed, so only one upload runs at a
+ * time and these statics don't race.
+ *
+ * Failure handling: we keep consuming bytes after a per-chunk error
+ * (just don't write them) so the dispatcher gets to the final call
+ * with a clean state machine and we can emit the right status code
+ * (404 / 500 / 201) explicitly. Returning non-zero mid-stream would
+ * force a generic 500 from the SDK and lose our error context.
+ *
+ * Abort handling: if the TCP peer disconnects mid-upload, the SDK's
+ * reset_connection path tears the conn down WITHOUT invoking the
+ * upload handler with a final/abort signal -- m_put_open stays true
+ * and m_put_ctx leaks into the next request. See
+ * sdk-prompts/2026-05-10-upload-route-lifecycle.md for the proposed
+ * SDK fix; meanwhile we recognize a hanging state at the start of
+ * each call by comparing the current request path against the one
+ * we saw on the last call. Different path with state still open
+ * means abort recovery: discard the dangling FtWriteCtx. (Edge
+ * case: same-path retry after abort still corrupts -- documented
+ * in the prompt; gone once SDK abort signal lands.)
+ */
+static FtWriteCtx m_put_ctx;
+static bool       m_put_open    = false;
+static bool       m_put_failed  = false;
+static int        m_put_status  = 201;
+static char       m_put_path[512] = {0};
+
 static int
-handle_put_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
+handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
+                 const void *chunk, size_t chunk_size, void *data)
 {
     ServeOpts *opts = (ServeOpts *)data;
-    FtVolume   volume;
-    char       sub_path[512];
-    int        status;
+    bool is_final = (chunk == NULL && chunk_size == 0);
 
-    status = parse_volume_path(req->path, &volume, sub_path, 512);
-    if (status != 0) {
-        axl_http_response_set_text(resp, "Volume not found\n");
-        axl_http_response_set_status(resp, 404);
-        publish_request(opts->loop, req, resp);
-        return 0;
+    /* Abort-recovery heuristic: a different request path arriving
+       while state is still open means a prior upload was aborted.
+       Discard the leaked write context. */
+    if (m_put_open && req->path != NULL &&
+        axl_strcmp(req->path, m_put_path) != 0) {
+        ft_close_write(&m_put_ctx);
+        m_put_open   = false;
+        m_put_failed = false;
+        m_put_status = 201;
     }
 
-    FtWriteCtx write_ctx;
-    status = ft_open_write(&volume, sub_path, NULL, NULL, &write_ctx);
-    if (status != 0) {
-        axl_http_response_set_text(resp, "Cannot create file\n");
-        axl_http_response_set_status(resp, 500);
-        publish_request(opts->loop, req, resp);
-        return 0;
+    /* First chunk OR final-with-empty-body: enforce read-only +
+       parse path + open file. The SDK's middleware chain runs for
+       regular routes only -- upload routes go straight to the
+       handler -- so the read-only check that lives in
+       permission_middleware has to be replicated here. See the
+       same sdk-prompts entry for the middleware-bypass gap. */
+    if (!m_put_open && !m_put_failed) {
+        if (opts->read_only) {
+            m_put_failed = true;
+            m_put_status = 403;
+        }
     }
+    if (!m_put_open && !m_put_failed) {
+        FtVolume volume;
+        char     sub_path[512];
 
-    bool write_failed = false;
-    if (req->body != NULL && req->body_size > 0) {
-        size_t written = 0;
-        while (written < req->body_size) {
-            size_t chunk_size = req->body_size - written;
-            if (chunk_size > FT_CHUNK_SIZE) {
-                chunk_size = FT_CHUNK_SIZE;
-            }
-            status = ft_write_chunk(&write_ctx,
-                         (const uint8_t *)req->body + written, chunk_size);
-            if (status != 0) {
-                write_failed = true;
-                break;
-            }
-            written += chunk_size;
+        if (parse_volume_path(req->path, &volume, sub_path,
+                              sizeof(sub_path)) != 0) {
+            m_put_failed = true;
+            m_put_status = 404;
+        } else if (ft_open_write(&volume, sub_path, NULL, NULL,
+                                 &m_put_ctx) != 0) {
+            m_put_failed = true;
+            m_put_status = 500;
+        } else {
+            m_put_open = true;
+            axl_strlcpy(m_put_path, req->path, sizeof(m_put_path));
         }
     }
 
-    ft_close_write(&write_ctx);
-    if (write_failed) {
-        axl_http_response_set_text(resp, "Write failed\n");
-        axl_http_response_set_status(resp, 500);
-    } else {
-        axl_http_response_set_text(resp, "Created\n");
-        axl_http_response_set_status(resp, 201);
+    /* Stream chunk to disk. Failure flips us into "consume but don't
+       write" until the final call. */
+    if (!is_final && m_put_open && !m_put_failed) {
+        if (ft_write_chunk(&m_put_ctx, chunk, chunk_size) != 0) {
+            m_put_failed = true;
+            m_put_status = 500;
+        }
     }
+
+    if (!is_final) {
+        return 0;
+    }
+
+    /* Final call -- close, respond, reset. */
+    if (m_put_open) {
+        ft_close_write(&m_put_ctx);
+        m_put_open = false;
+    }
+
+    const char *body;
+    if (!m_put_failed) {
+        body = "Created\n";
+    } else if (m_put_status == 403) {
+        body = "Read-only mode\n";
+    } else if (m_put_status == 404) {
+        body = "Volume not found\n";
+    } else {
+        body = "Write failed\n";
+    }
+    axl_http_response_set_text(resp, body);
+    axl_http_response_set_status(resp, (size_t)m_put_status);
     publish_request(opts->loop, req, resp);
+
+    /* Reset for the next upload. */
+    m_put_failed  = false;
+    m_put_status  = 201;
+    m_put_path[0] = '\0';
     return 0;
 }
 
@@ -565,7 +650,11 @@ serve_setup(AxlLoop *loop, void *user)
                               handle_get_upload_js, NULL);
     axl_http_server_add_route(o->server, "GET",    "/",  handle_get_root,    NULL);
     axl_http_server_add_route(o->server, "GET",    "/*", handle_get_path,    o);
-    axl_http_server_add_route(o->server, "PUT",    "/*", handle_put_path,    o);
+    /* PUT goes through the streaming upload route so multi-GB
+       uploads bypass body_limit and never materialize the whole
+       request body in RAM. */
+    axl_http_server_add_upload_route(o->server, "PUT", "/*",
+                                     handle_put_chunk, o);
     axl_http_server_add_route(o->server, "DELETE", "/*", handle_delete_path, o);
     axl_http_server_add_route(o->server, "POST",   "/*", handle_post_path,   o);
 
