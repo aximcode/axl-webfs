@@ -14,16 +14,15 @@
 **/
 
 #include <axl.h>
+#include <axl/axl-embed.h>
 #include <axl/axl-service.h>
 
 #include "serve/serve-shared.h"
 #include "webfs-version.h"
 
-/* Embedded axl-webfs-serve-dxe.efi blob -- emitted by serve-blob.S
-   via .incbin. The bytes between the two symbols are the driver
-   image; length is the runtime pointer-difference. */
-extern const unsigned char axl_embedded_axl_webfs_serve_dxe[];
-extern const unsigned char axl_embedded_axl_webfs_serve_dxe_end[];
+/* Embedded axl-webfs-serve-dxe.efi blob -- spliced in by
+   `axl-cc --embed ...=axl_webfs_serve_dxe` (see Makefile). */
+AXL_EMBED_DECLARE(axl_webfs_serve_dxe);
 
 // ----------------------------------------------------------------------------
 // ESC key handler (foreground only)
@@ -128,12 +127,10 @@ webfs_serve_handler(AxlArgs *a)
     if (axl_args_get_bool(a, "detach")) {
         AxlServiceDeploy deploy = {
             .service     = &webfs_serve,
-            .driver_blob = axl_embedded_axl_webfs_serve_dxe,
+            .driver_blob = AXL_EMBED_DATA(axl_webfs_serve_dxe),
             .driver_name = "axl-webfs-serve-dxe.efi",
         };
-        deploy.driver_blob_len =
-            (size_t)(axl_embedded_axl_webfs_serve_dxe_end -
-                     axl_embedded_axl_webfs_serve_dxe);
+        deploy.driver_blob_len = AXL_EMBED_SIZE(axl_webfs_serve_dxe);
 
         if (axl_service_is_running(&deploy)) {
             axl_printf("axl-webfs: serve already running\n");

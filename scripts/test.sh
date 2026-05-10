@@ -783,8 +783,8 @@ echo === DETACHED ===
 NSHEOF
 
         # Embedded-driver model: the serve driver is .incbin'd into
-        # axl-webfs.efi via serve-blob.S, so no separate driver image
-        # staging is required.
+        # axl-webfs.efi via axl-cc --embed, so no separate driver
+        # image staging is required.
         eval "$("$RUN_QEMU_SH" --arch X64 --timeout 60 \
             --net --hostfwd "${DETACH_PORT}:8080" \
             --extra "$DETACH_STAGE/detach_test.txt" \
