@@ -4,18 +4,24 @@
 """
 xfer-server — Workstation file server for axl-webfs mount command.
 
-Serves a local directory over HTTP with JSON directory listings.
-No external dependencies — Python 3 stdlib only.
+Default mode serves a local directory over HTTP with JSON directory
+listings (bespoke protocol; Python stdlib only). The --webdav flag
+swaps the implementation for an RFC 4918 WebDAV server (wsgidav +
+cheroot), so axl-webfs's mount client can either keep talking the
+JSON protocol or migrate to standard WebDAV — both target the same
+on-disk root.
 
 Usage:
-    ./xfer-server.py                        # Serve current directory
+    ./xfer-server.py                        # JSON protocol, current dir
     ./xfer-server.py --root /path --port 9090
     ./xfer-server.py --read-only
+    ./xfer-server.py --webdav               # WebDAV protocol (needs wsgidav)
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -31,6 +37,7 @@ class XferServer(HTTPServer):
 
     root_dir: str
     read_only: bool
+    digest_cache: dict[str, tuple[int, float, str]]
 
     def __init__(self, server_address: tuple[str, int],
                  handler: type[BaseHTTPRequestHandler],
@@ -38,12 +45,51 @@ class XferServer(HTTPServer):
         super().__init__(server_address, handler)
         self.root_dir = root_dir
         self.read_only = read_only
+        # Per-(path,size,mtime) SHA-256 cache so repeated GETs and
+        # HEAD-then-GET chains don't re-hash multi-hundred-MB files.
+        self.digest_cache = {}
+
+
+def _file_sha256(server: XferServer, local_path: str) -> str | None:
+    """Compute or recall the SHA-256 of @p local_path. Returns 64
+    lowercase hex chars on success, None on read error.
+    Cache key includes file size and mtime so an in-place edit
+    invalidates the entry promptly."""
+    try:
+        st = os.stat(local_path)
+    except OSError:
+        return None
+    key = local_path
+    cached = server.digest_cache.get(key)
+    if cached is not None and cached[0] == st.st_size and cached[1] == st.st_mtime:
+        return cached[2]
+    h = hashlib.sha256()
+    try:
+        with open(local_path, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                h.update(chunk)
+    except OSError:
+        return None
+    hex_value = h.hexdigest()
+    server.digest_cache[key] = (st.st_size, st.st_mtime, hex_value)
+    return hex_value
 
 
 class XferHandler(BaseHTTPRequestHandler):
     """HTTP request handler for axl-webfs mount protocol."""
 
     server_version = f"xfer-server/{VERSION}"
+    # HTTP/1.1 + keep-alive. The default BaseHTTPRequestHandler runs
+    # HTTP/1.0, which forces Connection: close on every response — and
+    # the mount client reads files in 64 KB Range chunks, so a 500 MB
+    # download would otherwise pay the TCP-handshake cost ~8000 times.
+    # Enabling HTTP/1.1 lets the stdlib emit a Content-Length-framed
+    # persistent connection, dropping per-request setup by an order of
+    # magnitude in practice.
+    protocol_version = "HTTP/1.1"
 
     @property
     def xfer_server(self) -> XferServer:
@@ -132,59 +178,94 @@ class XferHandler(BaseHTTPRequestHandler):
 
         # GET /files/<path> — download file (with Range support)
         if path.startswith("/files"):
-            local = self._resolve_path(self.path)
-            if local is None:
-                self._send_error(403, "Forbidden")
-                return
-            if not os.path.isfile(local):
-                self._send_error(404, "Not found")
-                return
-
-            file_size = os.path.getsize(local)
-            range_hdr = self.headers.get("Range")
-            start = 0
-            end = file_size - 1
-
-            if range_hdr and range_hdr.startswith("bytes="):
-                range_spec = range_hdr[6:]
-                if "-" in range_spec:
-                    parts = range_spec.split("-", 1)
-                    if parts[0]:
-                        start = int(parts[0])
-                    if parts[1]:
-                        end = int(parts[1])
-
-                if start > end or start >= file_size:
-                    self.send_response(416)
-                    self.send_header("Content-Range", f"bytes */{file_size}")
-                    self.end_headers()
-                    return
-
-                length = end - start + 1
-                self.send_response(206)
-                self.send_header("Content-Range",
-                                 f"bytes {start}-{end}/{file_size}")
-            else:
-                length = file_size
-                self.send_response(200)
-
-            self.send_header("Content-Length", str(length))
-            self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-
-            with open(local, "rb") as f:
-                f.seek(start)
-                remaining = length
-                while remaining > 0:
-                    chunk = f.read(min(65536, remaining))
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    remaining -= len(chunk)
+            self._serve_file(head_only=False)
             return
 
         self._send_error(404, "Unknown endpoint")
+
+    def do_HEAD(self) -> None:
+        """HEAD on a file path: emit the headers a GET would, with
+        no body. Mount clients use this to fetch the file's SHA-256
+        from the Digest header before reading via Range."""
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        if path.startswith("/files"):
+            self._serve_file(head_only=True)
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    def _serve_file(self, head_only: bool) -> None:
+        """Shared GET/HEAD body. Computes the file's SHA-256 (cached
+        per (size, mtime)) and emits `Digest: sha-256=<hex>` so the
+        mount client can verify integrity end-to-end without an out-
+        of-band hash exchange."""
+        local = self._resolve_path(self.path)
+        if local is None:
+            self._send_error(403, "Forbidden")
+            return
+        if not os.path.isfile(local):
+            self._send_error(404, "Not found")
+            return
+
+        file_size = os.path.getsize(local)
+        range_hdr = self.headers.get("Range")
+        start = 0
+        end = file_size - 1
+
+        if range_hdr and range_hdr.startswith("bytes="):
+            range_spec = range_hdr[6:]
+            if "-" in range_spec:
+                parts = range_spec.split("-", 1)
+                if parts[0]:
+                    start = int(parts[0])
+                if parts[1]:
+                    end = int(parts[1])
+
+            if start > end or start >= file_size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.end_headers()
+                return
+
+            length = end - start + 1
+            self.send_response(206)
+            self.send_header("Content-Range",
+                             f"bytes {start}-{end}/{file_size}")
+        else:
+            length = file_size
+            self.send_response(200)
+
+        # RFC 3230 Digest header — opt-in via `Want-Digest:`. Full-
+        # file hash (not range-slice) so HEAD and Range GET responses
+        # carry the same value; mount clients send Want-Digest on
+        # their first Range read and validate incrementally. curl /
+        # browser GETs without the request header skip the compute
+        # (~30 ms per MB on this machine).
+        want_digest = (self.headers.get("Want-Digest") or "").lower()
+        if "sha-256" in want_digest or "sha256" in want_digest:
+            digest_hex = _file_sha256(self.xfer_server, local)
+            if digest_hex is not None:
+                self.send_header("Digest", f"sha-256={digest_hex}")
+
+        self.send_header("Content-Length", str(length))
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        if head_only:
+            return
+
+        with open(local, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(65536, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def do_PUT(self) -> None:
         if self.xfer_server.read_only:
@@ -336,6 +417,48 @@ class XferHandler(BaseHTTPRequestHandler):
         self._send_error(400, "Unknown POST action")
 
 
+def run_webdav(root: str, bind: str, port: int, read_only: bool) -> None:
+    """Serve @p root over RFC 4918 WebDAV via wsgidav + cheroot.
+
+    Anonymous access (`simple_dc.anonymous`) so the mount client
+    doesn't need credentials in the URL; mount mode currently runs
+    on trusted networks where the JSON variant is also wide open.
+    Auth can be layered on later by swapping out simple_dc.
+    """
+    try:
+        from wsgidav.wsgidav_app import WsgiDAVApp
+        from cheroot import wsgi as cheroot_wsgi
+    except ImportError as exc:
+        print(f"Error: --webdav requires wsgidav + cheroot ({exc}).\n"
+              f"Install with: pip install --user wsgidav cheroot",
+              file=sys.stderr)
+        sys.exit(2)
+
+    config = {
+        "host": bind,
+        "port": port,
+        "provider_mapping": {"/": root},
+        "simple_dc": {"user_mapping": {"*": True}},  # anonymous access
+        "verbose": 1,
+        "logging": {"enable_loggers": []},
+        "lock_storage": True,
+        "dir_browser": {"enable": True},
+        "suppress_version_info": True,
+    }
+    if read_only:
+        # wsgidav exposes per-share read-only via the provider config.
+        # Re-wire provider_mapping with a readonly flag.
+        config["provider_mapping"] = {"/": {"root": root, "readonly": True}}
+
+    app = WsgiDAVApp(config)
+    server = cheroot_wsgi.Server((bind, port), app)
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        print("\nShutting down.")
+        server.stop()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="xfer-server — Workstation file server for axl-webfs")
@@ -347,6 +470,9 @@ def main() -> None:
                         help="Bind address (default: 0.0.0.0)")
     parser.add_argument("--read-only", action="store_true",
                         help="Disable uploads and deletes")
+    parser.add_argument("--webdav", action="store_true",
+                        help="Speak RFC 4918 WebDAV instead of the "
+                             "bespoke JSON protocol (requires wsgidav).")
     args = parser.parse_args()
 
     root = os.path.realpath(args.root)
@@ -354,15 +480,19 @@ def main() -> None:
         print(f"Error: {root} is not a directory", file=sys.stderr)
         sys.exit(1)
 
-    server = XferServer((args.bind, args.port), XferHandler, root, args.read_only)
-
     mode = "read-only" if args.read_only else "read-write"
-    print(f"xfer-server v{VERSION}")
+    proto = "WebDAV" if args.webdav else "JSON"
+    print(f"xfer-server v{VERSION} ({proto})")
     print(f"Serving {root} on {args.bind}:{args.port}")
     print(f"Mode: {mode}")
     print("Ready for axl-webfs mount connections.")
     print("Press Ctrl-C to stop.\n")
 
+    if args.webdav:
+        run_webdav(root, args.bind, args.port, args.read_only)
+        return
+
+    server = XferServer((args.bind, args.port), XferHandler, root, args.read_only)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

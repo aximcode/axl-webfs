@@ -38,6 +38,10 @@ typedef struct {
     /* Auto-applied from mount_descs */
     const char *url;
     bool        read_only;
+    /// "auto" (probe), "json" (force JSON), or "dav" (force WebDAV).
+    /// Probe issues OPTIONS / and picks DAV when the server returns
+    /// a DAV: header, otherwise JSON.
+    const char *protocol;
 
 #ifdef AXL_SERVICE_BUILD_DRIVER
     /* Driver-side runtime — owned by setup, freed by teardown. */

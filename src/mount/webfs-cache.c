@@ -1,109 +1,20 @@
 /** @file
-  axl-webfs-mount -- directory cache and HTTP request helper.
+  axl-webfs-mount -- directory cache + HTTP helper.
 
-  Caches GET /list/ responses for 2 seconds to avoid hammering the
-  network on repeated ls/access patterns. Provides auto-reconnect
-  HTTP request wrapper.
+  Wraps axl-sdk's AxlCache (TTL + LRU) to memoize directory listings
+  per path, plus the auto-reconnect HTTP request helper used by both
+  protocol implementations.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
 **/
 
 #include "webfs-internal.h"
+#include "webfs-protocol.h"
 
-// ---------------------------------------------------------------------------
-// Timestamp helper
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// Cache operations
-// ---------------------------------------------------------------------------
-
-/// Find a cache slot by path. Returns NULL if not found or expired.
-static DirCacheSlot *
-dir_cache_find(
-    WebFsPrivate *priv,
-    const char      *path
-)
-{
-    uint64_t now = axl_time_get_ms();
-
-    for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
-        DirCacheSlot *slot = &priv->dir_cache[i];
-        if (!slot->valid) continue;
-        if (!axl_streql(slot->path, path)) continue;
-
-        // Check TTL
-        uint64_t age = now - slot->timestamp_ms;
-        if (age > DIR_CACHE_TTL_MS) {
-            slot->valid = false;
-            return NULL;
-        }
-        return slot;
-    }
-    return NULL;
-}
-
-/// Store a directory listing in the cache (LRU eviction of oldest slot).
-static void
-dir_cache_put(
-    WebFsPrivate *priv,
-    const char      *path,
-    DirEntry        *entries,
-    size_t           count
-)
-{
-    // Find existing slot or oldest/empty slot
-    DirCacheSlot *target = NULL;
-    uint64_t oldest_ts = UINT64_MAX;
-
-    for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
-        DirCacheSlot *slot = &priv->dir_cache[i];
-
-        if (slot->valid && axl_streql(slot->path, path)) {
-            target = slot;
-            break;
-        }
-        if (!slot->valid) {
-            if (target == NULL) target = slot;
-            continue;
-        }
-        if (slot->timestamp_ms < oldest_ts) {
-            oldest_ts = slot->timestamp_ms;
-            target = slot;
-        }
-    }
-
-    if (target == NULL) target = &priv->dir_cache[0];
-
-    axl_strlcpy(target->path, path, MAX_PATH_LEN);
-    if (count > DIR_CACHE_MAX_ENTRIES) {
-        count = DIR_CACHE_MAX_ENTRIES;
-    }
-    axl_memcpy(target->entries, entries, count * sizeof(DirEntry));
-    target->entry_count = count;
-    target->timestamp_ms = axl_time_get_ms();
-    target->valid = true;
-}
-
-void
-dir_cache_invalidate(
-    WebFsPrivate *priv,
-    const char      *path
-)
-{
-    for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
-        if (priv->dir_cache[i].valid &&
-            axl_streql(priv->dir_cache[i].path, path)) {
-            priv->dir_cache[i].valid = false;
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // HTTP request with auto-reconnect
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 int
 webfs_http_request(
@@ -141,126 +52,140 @@ webfs_http_request(
         NULL, extra_headers, response);
 }
 
-// ---------------------------------------------------------------------------
-// Fetch directory listing (cache or HTTP)
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// Directory listing cache
+// ----------------------------------------------------------------------------
+
+/* `entries` borrow window: callers must finish iterating the
+   returned pointer before issuing another dir_cache_fetch on this
+   WebFsPrivate. The pointer aliases into this file-static slot,
+   which is overwritten on every call (hit OR miss). Today's callers
+   (read_dir copies immediately into its own DirEntry array;
+   lookup_entry iterates and returns by value within one function)
+   honor that. Safe under the single-threaded UEFI model — the
+   dispatcher is single-armed, only one EFI_FILE_PROTOCOL call runs
+   at a time, so reentrant overwrite isn't a concern; the borrow
+   window is purely sequential. */
+static DirCacheSlot mLastSlot;
 
 int
 dir_cache_fetch(
     WebFsPrivate *priv,
-    const char      *path,
-    DirEntry       **entries,
-    size_t          *count
+    const char   *path,
+    DirEntry    **entries,
+    size_t       *count
 )
 {
-    // Check cache first
-    DirCacheSlot *slot = dir_cache_find(priv, path);
-    if (slot != NULL) {
-        *entries = slot->entries;
-        *count = slot->entry_count;
+    if (priv->dir_cache != NULL &&
+        axl_cache_get(priv->dir_cache, path, &mLastSlot) == AXL_OK) {
+        *entries = mLastSlot.entries;
+        *count   = mLastSlot.entry_count;
         return 0;
     }
 
-    // Cache miss -- fetch from server
-    char list_path[MAX_PATH_LEN];
-    axl_snprintf(list_path, sizeof(list_path), "/list%s", path);
-
-    AxlHttpClientResponse *response = NULL;
-    int ret = webfs_http_request(
-        priv, "GET", list_path, NULL, NULL, 0, &response);
-    if (ret != 0 || response == NULL) return -1;
-
-    if (response->status_code == 404) {
-        axl_http_client_response_free(response);
+    /* Miss — fetch via the active protocol's list_dir. */
+    DirCacheSlot fresh;
+    axl_memset(&fresh, 0, sizeof(fresh));
+    const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
+    if (ops->list_dir(priv, path, fresh.entries,
+                      DIR_CACHE_MAX_ENTRIES, &fresh.entry_count) != 0)
         return -1;
+
+    if (priv->dir_cache != NULL) {
+        axl_cache_put(priv->dir_cache, path, &fresh);
     }
-    if (response->status_code != 200) {
-        axl_http_client_response_free(response);
-        return -1;
-    }
-
-    // NUL-terminate body for JSON parsing
-    size_t body_size = response->body_size;
-    if (body_size >= HTTP_BODY_BUF_SIZE) body_size = HTTP_BODY_BUF_SIZE - 1;
-    char *body_buf = axl_malloc(body_size + 1);
-    if (body_buf == NULL) {
-        axl_http_client_response_free(response);
-        return -1;
-    }
-    axl_memcpy(body_buf, response->body, body_size);
-    body_buf[body_size] = '\0';
-    axl_http_client_response_free(response);
-
-    // Parse JSON array
-    AxlJsonReader ctx;
-    if (!axl_json_parse(body_buf, body_size, &ctx)) {
-        axl_free(body_buf);
-        return -1;
-    }
-
-    AxlJsonArrayIter iter;
-    if (!axl_json_root_array_begin(&ctx, &iter)) {
-        axl_json_free(&ctx);
-        axl_free(body_buf);
-        return -1;
-    }
-
-    DirEntry *temp_entries = axl_calloc(DIR_CACHE_MAX_ENTRIES, sizeof(DirEntry));
-    if (temp_entries == NULL) {
-        axl_json_free(&ctx);
-        axl_free(body_buf);
-        return -1;
-    }
-    size_t n = 0;
-
-    AxlJsonReader elem;
-    while (axl_json_array_next(&iter, &elem) &&
-           n < DIR_CACHE_MAX_ENTRIES) {
-        DirEntry *e = &temp_entries[n];
-
-        axl_json_get_string(&elem, "name", e->name, sizeof(e->name));
-        axl_json_get_uint(&elem, "size", &e->size);
-        axl_json_get_bool(&elem, "dir", &e->is_dir);
-        axl_json_get_string(&elem, "modified", e->modified, sizeof(e->modified));
-
-        if (e->name[0] != '\0') n++;
-    }
-
-    axl_json_free(&ctx);
-    axl_free(body_buf);
-
-    // Store in cache
-    dir_cache_put(priv, path, temp_entries, n);
-    axl_free(temp_entries);
-
-    // Return from cache (stable pointers)
-    slot = dir_cache_find(priv, path);
-    if (slot != NULL) {
-        *entries = slot->entries;
-        *count = slot->entry_count;
-        return 0;
-    }
-
-    return -1;
+    mLastSlot = fresh;
+    *entries = mLastSlot.entries;
+    *count   = mLastSlot.entry_count;
+    return 0;
 }
 
 int
 dir_cache_lookup_entry(
     WebFsPrivate *priv,
-    const char      *dir_path,
-    const char      *name,
-    DirEntry        *entry
+    const char   *dir_path,
+    const char   *name,
+    DirEntry     *entry
 )
 {
     DirEntry *entries = NULL;
-    size_t count = 0;
+    size_t    count = 0;
 
-    int ret = dir_cache_fetch(priv, dir_path, &entries, &count);
-    if (ret != 0) return -1;
+    if (dir_cache_fetch(priv, dir_path, &entries, &count) != 0) return -1;
 
     for (size_t i = 0; i < count; i++) {
         if (axl_strcasecmp(entries[i].name, name) == 0) {
             axl_memcpy(entry, &entries[i], sizeof(DirEntry));
+            return 0;
+        }
+    }
+    return -1;
+}
+
+void
+dir_cache_invalidate(
+    WebFsPrivate *priv,
+    const char   *path
+)
+{
+    if (priv->dir_cache != NULL)
+        axl_cache_invalidate(priv->dir_cache, path);
+}
+
+// ----------------------------------------------------------------------------
+// Digest header parser
+// ----------------------------------------------------------------------------
+
+int
+webfs_digest_parse_sha256(
+    const char *header_value,
+    char       *out_hex,
+    size_t      hex_size
+)
+{
+    if (header_value == NULL || out_hex == NULL || hex_size < 65)
+        return -1;
+
+    /* Header value follows the RFC 3230 grammar: comma-separated
+       <algorithm>=<value> pairs, optional whitespace, case-insensitive
+       algorithm name. Example values:
+         "sha-256=abc123..."
+         "MD5=deadbeef, SHA-256=cafe..."
+         "sha-256=cafe;q=1, md5=..."  (we ignore parameters)
+       We accept either `sha-256=` or `sha256=` since some servers
+       drop the dash. */
+    const char *p = header_value;
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (*p == '\0') break;
+
+        const char *alg_start = p;
+        while (*p != '\0' && *p != '=' && *p != ',') p++;
+        size_t alg_len = (size_t)(p - alg_start);
+
+        bool is_sha256 = (alg_len == 7 &&
+                          axl_strncasecmp(alg_start, "sha-256", 7) == 0)
+                      || (alg_len == 6 &&
+                          axl_strncasecmp(alg_start, "sha256", 6) == 0);
+
+        if (*p != '=') {
+            /* malformed entry — skip to next comma */
+            while (*p != '\0' && *p != ',') p++;
+            continue;
+        }
+        p++;  /* past '=' */
+
+        const char *val_start = p;
+        while (*p != '\0' && *p != ',') p++;
+        size_t val_len = (size_t)(p - val_start);
+
+        if (is_sha256 && val_len == 64) {
+            for (size_t i = 0; i < 64; i++) {
+                char c = val_start[i];
+                if (c >= 'A' && c <= 'F') c = (char)(c - 'A' + 'a');
+                out_hex[i] = c;
+            }
+            out_hex[64] = '\0';
             return 0;
         }
     }

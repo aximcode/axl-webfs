@@ -497,6 +497,119 @@ NSHEOF
     rm -rf "$QEMU_TEST_DIR"
 
     # ========================================================================
+    # WebDAV mount test (parallel-protocol parity)
+    #
+    # Same shape as the JSON mount test above, but the workstation
+    # serves WebDAV (xfer-server.py --webdav, wsgidav-backed) and the
+    # mount driver picks the DAV path either by --protocol auto's
+    # OPTIONS DAV: header detection or an explicit --protocol dav.
+    # Gated on wsgidav being importable; skipped otherwise.
+    # ========================================================================
+
+    kill $SERVER_PID 2>/dev/null || true
+    wait $SERVER_PID 2>/dev/null || true
+
+    if python3 -c "import wsgidav, cheroot" 2>/dev/null; then
+        info "QEMU" "=== Mount via WebDAV protocol ==="
+
+        DAV_PORT=$((SERVER_PORT + 1))
+        DAV_TEST_DIR=$(mktemp -d)
+        echo "webdav mount test content" > "$DAV_TEST_DIR/readme.txt"
+        mkdir -p "$DAV_TEST_DIR/tools"
+        echo "tool data via dav" > "$DAV_TEST_DIR/tools/sample.txt"
+
+        python3 "$SCRIPT_DIR/xfer-server.py" --webdav \
+            --root "$DAV_TEST_DIR" --port $DAV_PORT --bind 0.0.0.0 \
+            >/tmp/xfer-dav.log 2>&1 &
+        DAV_PID=$!
+        sleep 1
+
+        for QEMU_ARCH in "${QEMU_ARCHS[@]}"; do
+            ARCH_DIR=$(echo "$QEMU_ARCH" | tr '[:upper:]' '[:lower:]')
+            [ "$ARCH_DIR" = "aarch64" ] && ARCH_DIR="aa64"
+            APP_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/axl-webfs.efi"
+            if [ ! -f "$APP_EFI" ]; then continue; fi
+
+            cp "$APP_EFI" "$DAV_TEST_DIR/TestApp.efi"
+
+            DAV_NSH=$(mktemp --suffix=.nsh)
+            cat > "$DAV_NSH" <<NSHEOF
+@echo -off
+echo === axl-webfs WebDAV Mount Test ===
+fs0:
+axl-webfs.efi mount --protocol dav http://10.0.2.2:${DAV_PORT}/
+map -r
+echo === TEST: ls mounted volume ===
+ls fs1:\\
+echo === TEST: read file ===
+type fs1:\\readme.txt
+echo === TEST: write file ===
+echo "written via dav" > fs0:\\dav_write.txt
+cp fs0:\\dav_write.txt fs1:\\from_uefi_dav.txt
+echo === TEST: read subdir ===
+ls fs1:\\tools\\
+echo === TEST: umount ===
+axl-webfs.efi umount
+echo === TESTS COMPLETE ===
+reset -s
+NSHEOF
+
+            SERIAL_LOG=$(mktemp)
+            info "QEMU" "$QEMU_ARCH dav: Booting mount test..."
+            "$RUN_QEMU_SH" --arch "$QEMU_ARCH" --timeout 30 --raw --net \
+                --nsh "$DAV_NSH" \
+                --serial-log "$SERIAL_LOG" \
+                "$APP_EFI" > /dev/null 2>&1 || true
+            rm -f "$DAV_NSH"
+
+            if [ ! -s "$SERIAL_LOG" ]; then
+                fail "$QEMU_ARCH dav: serial log" "no output captured"
+                rm -f "$SERIAL_LOG"
+                continue
+            fi
+
+            grep -qE "axl-webfs-mount: wire protocol = WebDAV" \
+                "$SERIAL_LOG" 2>/dev/null && \
+                pass "$QEMU_ARCH dav: mount selected WebDAV protocol" || \
+                fail "$QEMU_ARCH dav: protocol selection" \
+                     "no 'wire protocol = WebDAV' line in serial log"
+
+            grep -qE "axl-webfs-mount: mounted" "$SERIAL_LOG" 2>/dev/null && \
+                pass "$QEMU_ARCH dav: mount connected to xfer-server (WebDAV)" || \
+                fail "$QEMU_ARCH dav: mount" "driver did not report success"
+
+            grep -q "readme.txt" "$SERIAL_LOG" 2>/dev/null && \
+                pass "$QEMU_ARCH dav: PROPFIND listing shows readme.txt" || \
+                fail "$QEMU_ARCH dav: PROPFIND" "readme.txt not found"
+
+            grep -q "webdav mount test content" "$SERIAL_LOG" 2>/dev/null && \
+                pass "$QEMU_ARCH dav: GET reads remote file content" || \
+                fail "$QEMU_ARCH dav: GET" "file content not found"
+
+            [ -f "$DAV_TEST_DIR/from_uefi_dav.txt" ] && \
+                pass "$QEMU_ARCH dav: PUT wrote file to workstation" || \
+                fail "$QEMU_ARCH dav: PUT" "from_uefi_dav.txt not on workstation"
+
+            grep -q "sample.txt" "$SERIAL_LOG" 2>/dev/null && \
+                pass "$QEMU_ARCH dav: subdir PROPFIND works" || \
+                fail "$QEMU_ARCH dav: subdir" "sample.txt not found"
+
+            grep -qE "axl-webfs-mount: unmounted" \
+                "$SERIAL_LOG" 2>/dev/null && \
+                pass "$QEMU_ARCH dav: umount succeeded" || \
+                fail "$QEMU_ARCH dav: umount" "no unmount line"
+
+            rm -f "$SERIAL_LOG" "$DAV_TEST_DIR/from_uefi_dav.txt"
+        done
+
+        kill $DAV_PID 2>/dev/null || true
+        wait $DAV_PID 2>/dev/null || true
+        rm -rf "$DAV_TEST_DIR"
+    else
+        skip "WebDAV mount tests: wsgidav/cheroot not installed (pip install wsgidav cheroot)"
+    fi
+
+    # ========================================================================
     # Serve integration tests (QEMU runs axl-webfs serve, host curls)
     # ========================================================================
 
@@ -927,6 +1040,115 @@ NSHEOF
                     "$SERIAL_LOG" 2>/dev/null && \
                     pass "serve: console feedback for PUT" || \
                     fail "serve: console feedback" "no PUT line in serial log"
+
+                # ----------------------------------------------------
+                # WebDAV class-1 + MOVE smoke (axl_http_server_add_webdav
+                # adapter at /dav). The SDK has full unit + integration
+                # coverage of the WebDAV protocol layer; here we only
+                # verify the axl-webfs adapter wires the FtVolume tree
+                # correctly: PROPFIND lists volumes, PUT/GET/MOVE/DELETE
+                # round-trip, MKCOL creates a collection. Uses curl with
+                # raw WebDAV methods (no cadaver dependency).
+                # ----------------------------------------------------
+
+                # PROPFIND on the WebDAV root must enumerate volumes
+                # (fs0 at minimum -- run-qemu provides a single FAT
+                # volume). The SDK emits 207 Multi-Status XML with one
+                # <D:response> per child plus the self entry.
+                PROPFIND_OUT=$(curl -s -X PROPFIND -H "Depth: 1" \
+                    -w "HTTP:%{http_code}" "$BASE/dav/" 2>/dev/null || true)
+                if echo "$PROPFIND_OUT" | grep -q "HTTP:207" && \
+                   echo "$PROPFIND_OUT" | grep -q "fs0"; then
+                    pass "serve dav: PROPFIND / lists fs0 (207 + fs0 entry)"
+                else
+                    fail "serve dav: PROPFIND /" \
+                         "expected 207 with fs0 entry, got: $PROPFIND_OUT"
+                fi
+
+                # PUT via WebDAV (same upload-route streaming path as
+                # the REST surface, just under /dav).
+                HTTP_CODE=$(echo -n "dav content" | \
+                    curl -s -o /dev/null -w "%{http_code}" \
+                    -T - "$BASE/dav/fs0/dav-put.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && \
+                    pass "serve dav: PUT /dav/fs0/dav-put.txt returns 201" || \
+                    fail "serve dav: PUT" "expected 201, got $HTTP_CODE"
+
+                # GET round-trip: bytes survive PROPFIND/MOVE/etc.
+                CONTENT=$(curl -sf "$BASE/dav/fs0/dav-put.txt" 2>/dev/null)
+                [ "$CONTENT" = "dav content" ] && \
+                    pass "serve dav: GET round-trip preserves bytes" || \
+                    fail "serve dav: GET" "expected 'dav content', got '$CONTENT'"
+
+                # MKCOL creates a collection.
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    -X MKCOL "$BASE/dav/fs0/dav-dir" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && \
+                    pass "serve dav: MKCOL /dav/fs0/dav-dir returns 201" || \
+                    fail "serve dav: MKCOL" "expected 201, got $HTTP_CODE"
+
+                # MOVE same-directory (rename). axl_file_rename's
+                # atomic-on-FAT path inside axl_file_move.
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    -X MOVE -H "Destination: $BASE/dav/fs0/dav-renamed.txt" \
+                    "$BASE/dav/fs0/dav-put.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && \
+                    pass "serve dav: MOVE (same-dir rename) returns 201" || \
+                    fail "serve dav: MOVE" "expected 201, got $HTTP_CODE"
+
+                # Verify the rename landed: new path serves the
+                # original bytes, old path 404s.
+                CONTENT=$(curl -sf "$BASE/dav/fs0/dav-renamed.txt" 2>/dev/null)
+                [ "$CONTENT" = "dav content" ] && \
+                    pass "serve dav: MOVE destination has original bytes" || \
+                    fail "serve dav: MOVE destination" "got '$CONTENT'"
+
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    "$BASE/dav/fs0/dav-put.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "404" ] && \
+                    pass "serve dav: MOVE source 404s after rename" || \
+                    fail "serve dav: MOVE source" "expected 404, got $HTTP_CODE"
+
+                # MOVE cross-directory. axl_file_move falls back to
+                # chunked stream copy + source delete when rename
+                # refuses the cross-directory request. This is the
+                # case the WebDAV adapter couldn't handle before
+                # axl-sdk landed axl_file_move.
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    -X MOVE -H "Destination: $BASE/dav/fs0/dav-dir/moved.txt" \
+                    "$BASE/dav/fs0/dav-renamed.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && \
+                    pass "serve dav: MOVE (cross-dir, copy+delete) returns 201" || \
+                    fail "serve dav: MOVE cross-dir" "expected 201, got $HTTP_CODE"
+
+                CONTENT=$(curl -sf "$BASE/dav/fs0/dav-dir/moved.txt" 2>/dev/null)
+                [ "$CONTENT" = "dav content" ] && \
+                    pass "serve dav: cross-dir MOVE preserves bytes" || \
+                    fail "serve dav: cross-dir MOVE bytes" "got '$CONTENT'"
+
+                # PROPFIND on a real file: getlastmodified should
+                # appear now that AxlDirEntry/AxlFileInfo carry
+                # mtime_unix.
+                PROPFIND_FILE=$(curl -s -X PROPFIND -H "Depth: 0" \
+                    "$BASE/dav/fs0/dav-dir/moved.txt" 2>/dev/null || true)
+                echo "$PROPFIND_FILE" | grep -q "getlastmodified" && \
+                    pass "serve dav: PROPFIND emits getlastmodified" || \
+                    fail "serve dav: PROPFIND mtime" \
+                         "getlastmodified missing from PROPFIND XML"
+
+                # DELETE the moved file, then the empty collection.
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    -X DELETE "$BASE/dav/fs0/dav-dir/moved.txt" 2>/dev/null \
+                    || true)
+                { [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; } && \
+                    pass "serve dav: DELETE file returns 2xx" || \
+                    fail "serve dav: DELETE file" "expected 2xx, got $HTTP_CODE"
+
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    -X DELETE "$BASE/dav/fs0/dav-dir" 2>/dev/null || true)
+                { [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; } && \
+                    pass "serve dav: DELETE empty collection returns 2xx" || \
+                    fail "serve dav: DELETE collection" "expected 2xx, got $HTTP_CODE"
             else
                 fail "serve: driver did not start within 30s"
             fi

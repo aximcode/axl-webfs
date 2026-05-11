@@ -23,6 +23,7 @@
 #  include <axl/axl-net.h>
 #  include <axl/axl-url.h>
 #  include "mount/webfs-internal.h"
+#  include "mount/webfs-protocol.h"
 #  include "net/network.h"
 #endif
 
@@ -33,6 +34,8 @@ const AxlConfigDesc mount_descs[] = {
       offsetof(MountOpts, url),       sizeof(const char *) },
     { "read-only", AXL_CFG_BOOL,   "false", "Mount read-only",
       offsetof(MountOpts, read_only), sizeof(bool) },
+    { "protocol",  AXL_CFG_STRING, "auto",  "Wire protocol: auto, json, dav",
+      offsetof(MountOpts, protocol),  sizeof(const char *) },
     { 0 }
 };
 
@@ -172,22 +175,60 @@ mount_setup(AxlLoop *loop, void *user)
         return AXL_ERR;
     }
 
-    /* Validate server with GET /info before publishing the protocol
-       handle (so a misconfigured URL doesn't leave a broken FSn:
-       lying around). */
-    char info_url[320];
-    axl_snprintf(info_url, sizeof(info_url), "%s/info", priv->base_url);
-    AxlHttpClientResponse *info_resp = NULL;
-    int info_ret = axl_http_get(priv->http_client, info_url, &info_resp);
-    if (info_ret != 0 || info_resp == NULL || info_resp->status_code != 200) {
-        axl_printf("axl-webfs-mount: server validation failed\n");
-        if (info_resp != NULL) axl_http_client_response_free(info_resp);
+    /* AxlCache owns slot allocation, eviction policy, and TTL. The
+       hand-rolled find/put/invalidate that lived here previously was
+       a near-duplicate of the SDK primitive. */
+    priv->dir_cache = axl_cache_new(DIR_CACHE_MAX_SLOTS,
+                                    sizeof(DirCacheSlot),
+                                    DIR_CACHE_TTL_MS);
+    if (priv->dir_cache == NULL) {
         axl_http_client_free(priv->http_client);
         network_cleanup();
         axl_free(priv);
         return AXL_ERR;
     }
-    axl_http_client_response_free(info_resp);
+
+    /* Pick the wire protocol. With --protocol=auto (the default),
+       probe DAV first via OPTIONS / DAV: header and fall back to
+       JSON's GET /info; an explicit json/dav override skips probing.
+       Either probe doubles as the server-validation check, so a
+       misconfigured URL fails here before we publish the FSn:
+       handle. */
+    const char *proto_cfg = (m->protocol != NULL) ? m->protocol : "auto";
+    priv->protocol = WEBFS_PROTO_JSON;
+    bool probed_ok = false;
+
+    if (axl_streql(proto_cfg, "dav")) {
+        if (webfs_proto_dav.probe(priv) == 0) {
+            priv->protocol = WEBFS_PROTO_DAV;
+            probed_ok = true;
+        }
+    } else if (axl_streql(proto_cfg, "json")) {
+        if (webfs_proto_json.probe(priv) == 0) {
+            priv->protocol = WEBFS_PROTO_JSON;
+            probed_ok = true;
+        }
+    } else {
+        if (webfs_proto_dav.probe(priv) == 0) {
+            priv->protocol = WEBFS_PROTO_DAV;
+            probed_ok = true;
+        } else if (webfs_proto_json.probe(priv) == 0) {
+            priv->protocol = WEBFS_PROTO_JSON;
+            probed_ok = true;
+        }
+    }
+
+    if (!probed_ok) {
+        axl_printf("axl-webfs-mount: server validation failed "
+                   "(no %s endpoint reachable)\n", proto_cfg);
+        axl_http_client_free(priv->http_client);
+        network_cleanup();
+        axl_free(priv);
+        return AXL_ERR;
+    }
+
+    axl_printf("axl-webfs-mount: wire protocol = %s\n",
+               priv->protocol == WEBFS_PROTO_DAV ? "WebDAV" : "JSON");
 
     priv->simple_fs.Revision = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_REVISION;
     priv->simple_fs.OpenVolume = WebFsOpenVolume;
@@ -238,6 +279,9 @@ mount_teardown(void *user)
     if (priv->fs_handle != NULL) {
         axl_protocol_unregister(priv->fs_handle, "simple-fs", &priv->simple_fs);
         axl_protocol_unregister(priv->fs_handle, "device-path", priv->device_path);
+    }
+    if (priv->dir_cache != NULL) {
+        axl_cache_free(priv->dir_cache);
     }
     if (priv->http_client != NULL) {
         axl_http_client_free(priv->http_client);

@@ -25,9 +25,22 @@
 #  include <axl/axl-net.h>
 #  include <axl/axl-pubsub.h>
 #  include <axl/axl-url.h>
+#  include <axl/axl-cache.h>
+#  include <axl/axl-digest.h>
 #  include "net/network.h"
 #  include "serve/upload-asset.h"
+#  include "serve/webfs-dav.h"
 #  include "transfer/file-transfer.h"
+
+#  define DIGEST_CACHE_SLOTS   16
+#  define DIGEST_CACHE_TTL_MS  (5 * 60 * 1000)   /* 5 minutes */
+
+typedef struct {
+    uint64_t file_size;
+    char     hex[65];   ///< 64 hex chars + NUL
+} DigestSlot;
+
+static AxlCache *m_digest_cache;
 
 /* Pub/sub topic for non-GET request notifications. The default
    subscriber is the in-process console printer registered in
@@ -115,6 +128,70 @@ parse_volume_path(const char *url_path, FtVolume *volume,
         sub_path[1] = '\0';
     }
 
+    return 0;
+}
+
+/* Compute (or recall) the SHA-256 of @p sub_path on @p volume.
+   Result is cached by full path with the file size embedded — a
+   size change invalidates the cached entry. Returns 0 on success
+   with 64 lowercase hex chars + NUL written to @p out_hex; -1 on
+   any failure (open, read, OOM). Callers that fail silently skip
+   emitting the Digest header. Cache TTL is 5 minutes so write-then-
+   read patterns refresh promptly. */
+static int
+compute_file_digest(FtVolume *volume, const char *sub_path,
+                    uint64_t file_size, char *out_hex)
+{
+    char cache_key[640];
+    axl_snprintf(cache_key, sizeof(cache_key), "%s:%s",
+                 volume->name, sub_path);
+
+    DigestSlot slot;
+    if (m_digest_cache != NULL &&
+        axl_cache_get(m_digest_cache, cache_key, &slot) == AXL_OK &&
+        slot.file_size == file_size) {
+        axl_memcpy(out_hex, slot.hex, 65);
+        return 0;
+    }
+
+    AxlChecksum *cs = axl_checksum_new(AXL_CHECKSUM_SHA256);
+    if (cs == NULL) return -1;
+
+    FtReadCtx rctx;
+    if (ft_open_read(volume, sub_path, 0, NULL, NULL, &rctx) != 0) {
+        axl_checksum_free(cs);
+        return -1;
+    }
+
+    /* Hash the file in 64 KiB chunks. axl_fopen + axl_fread
+       (via ft_read_chunk) keep memory bounded; sub-second for a
+       few hundred MB on a typical UEFI FAT volume. */
+    uint8_t buf[64 * 1024];
+    while (true) {
+        size_t got = 0;
+        if (ft_read_chunk(&rctx, buf, sizeof(buf), &got) != 0) {
+            ft_close_read(&rctx);
+            axl_checksum_free(cs);
+            return -1;
+        }
+        if (got == 0) break;
+        axl_checksum_update(cs, buf, got);
+    }
+    ft_close_read(&rctx);
+
+    const char *hex = axl_checksum_get_string(cs);
+    if (hex == NULL) {
+        axl_checksum_free(cs);
+        return -1;
+    }
+    axl_memcpy(out_hex, hex, 65);
+    axl_checksum_free(cs);
+
+    if (m_digest_cache != NULL) {
+        slot.file_size = file_size;
+        axl_memcpy(slot.hex, out_hex, 65);
+        axl_cache_put(m_digest_cache, cache_key, &slot);
+    }
     return 0;
 }
 
@@ -365,6 +442,41 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         return 0;
     }
 
+    /* Built-in SHA-256 integrity is OPT-IN per RFC 3230: the client
+       sends `Want-Digest: sha-256` (or `sha256`) when it wants the
+       server to emit a Digest header. Computing it on every GET
+       would force a full-file read+hash that most clients never
+       look at — measured ~3 minutes of overhead across the test
+       suite when always-on. Mount clients ask explicitly; curl /
+       browser GETs don't and pay nothing extra. */
+    bool want_digest = false;
+    const char *wd_hdr = (const char *)
+        axl_hash_table_lookup(req->headers, "want-digest");
+    if (wd_hdr != NULL) {
+        if (axl_strcasestr(wd_hdr, "sha-256") != NULL ||
+            axl_strcasestr(wd_hdr, "sha256") != NULL) {
+            want_digest = true;
+        }
+    }
+
+    char digest_hex[65];
+    bool have_digest = false;
+    if (want_digest) {
+        have_digest =
+            compute_file_digest(&volume, sub_path, file_size, digest_hex)
+                == 0;
+    }
+
+    /* HEAD: emit metadata only, no body. The Digest insertion below
+       still runs through the post-Range path so the table exists. */
+    bool is_head = axl_streql(req->method, "HEAD");
+    if (is_head) {
+        axl_http_response_set_status(resp, 200);
+        /* Set Content-Length so HEAD clients can size their reads,
+           per RFC 9110 §15.4.5. Don't install a streamer — the SDK's
+           HEAD path skips bodies. */
+    }
+
     /* Range support: open at the requested start offset and bound
        the streamer to the slice length. The 206-status + the
        Content-Range header come from us; the SDK's
@@ -404,16 +516,44 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     }
     sctx->remaining = slice_len;
 
-    axl_http_response_set_streamer(resp, get_streamer_pull, sctx,
-                                   get_streamer_close,
-                                   (size_t)slice_len,
-                                   "application/octet-stream");
-    if (is_range) {
-        axl_http_response_set_content_range(resp, start_offset,
-                                            range_end, file_size);
-        axl_http_response_set_status(resp, 206);
+    if (is_head) {
+        /* HEAD: tear down the streamer ctx and emit just headers.
+           Closing the FtReadCtx now is safe — the streamer would
+           have done it on EOF or reset_connection. */
+        ft_close_read(&sctx->ctx);
+        axl_free(sctx);
     } else {
-        axl_http_response_set_status(resp, 200);
+        axl_http_response_set_streamer(resp, get_streamer_pull, sctx,
+                                       get_streamer_close,
+                                       (size_t)slice_len,
+                                       "application/octet-stream");
+        if (is_range) {
+            axl_http_response_set_content_range(resp, start_offset,
+                                                range_end, file_size);
+            axl_http_response_set_status(resp, 206);
+        } else {
+            axl_http_response_set_status(resp, 200);
+        }
+    }
+
+    /* Digest: must be inserted AFTER set_content_range so the SDK
+       lazy-allocates resp->headers with its own free-func contract
+       (str-table-with-free; see axl_http_parse_headers). Inserting
+       into a NULL or differently-shaped table earlier silently
+       loses the entry. */
+    if (have_digest) {
+        if (resp->headers == NULL) {
+            /* No Range path ran (full-file GET or HEAD) — match the
+               SDK's contract by allocating the same shape. */
+            resp->headers = axl_hash_table_new_str();
+        }
+        if (resp->headers != NULL) {
+            char digest_val[80];
+            axl_snprintf(digest_val, sizeof(digest_val),
+                         "sha-256=%s", digest_hex);
+            axl_hash_table_insert(resp->headers, "Digest",
+                                  axl_strdup(digest_val));
+        }
     }
     return 0;
 }
@@ -630,6 +770,13 @@ serve_setup(AxlLoop *loop, void *user)
         return AXL_ERR;
     }
 
+    /* SHA-256 digest cache for GET responses. Capped at 16 slots
+       with a 5-minute TTL — recomputes promptly after writes
+       without spending CPU on a freshly-hashed file every request. */
+    m_digest_cache = axl_cache_new(DIGEST_CACHE_SLOTS,
+                                   sizeof(DigestSlot),
+                                   DIGEST_CACHE_TTL_MS);
+
     o->server = axl_http_server_new((uint16_t)o->port);
     if (o->server == NULL) {
         network_cleanup();
@@ -656,6 +803,9 @@ serve_setup(AxlLoop *loop, void *user)
                               handle_get_upload_js, NULL);
     axl_http_server_add_route(o->server, "GET",    "/",  handle_get_root,    NULL);
     axl_http_server_add_route(o->server, "GET",    "/*", handle_get_path,    o);
+    /* HEAD routes to the same handler — emits Digest + status without
+       a body. Mount clients use this to fetch SHA-256 on Open. */
+    axl_http_server_add_route(o->server, "HEAD",   "/*", handle_get_path,    o);
     /* PUT goes through the streaming upload route so multi-GB
        uploads bypass body_limit and never materialize the whole
        request body in RAM. */
@@ -663,6 +813,16 @@ serve_setup(AxlLoop *loop, void *user)
                                      handle_put_chunk, o);
     axl_http_server_add_route(o->server, "DELETE", "/*", handle_delete_path, o);
     axl_http_server_add_route(o->server, "POST",   "/*", handle_post_path,   o);
+
+    /* WebDAV class-1 + MOVE under /dav. Modern clients (Finder,
+       Explorer, davfs2, cadaver) mount this directly. The SDK owns
+       all protocol bits; webfs-dav.c just wires AxlWebDavOps onto
+       the ft_* helpers. Registered after the catch-all wildcard
+       routes so the SDK's prefix matcher routes /dav/... to the
+       WebDAV dispatcher and leaves /<vol>/... on the REST surface.
+       Read-only / write-only enforcement composes through
+       permission_middleware (SDK 1eb3fc0). */
+    webfs_dav_register(o->server, "/dav");
 
     if (axl_http_server_start(o->server, loop) != AXL_OK) {
         axl_http_server_free(o->server);
@@ -711,6 +871,10 @@ serve_teardown(void *user)
     if (o->server != NULL) {
         axl_http_server_free(o->server);
         o->server = NULL;
+    }
+    if (m_digest_cache != NULL) {
+        axl_cache_free(m_digest_cache);
+        m_digest_cache = NULL;
     }
     network_cleanup();
 

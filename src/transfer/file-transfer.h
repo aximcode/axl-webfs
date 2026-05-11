@@ -61,8 +61,12 @@ int    ft_write_chunk(FtWriteCtx *wctx, const void *data, size_t len);
 void   ft_close_write(FtWriteCtx *wctx);
 
 int    ft_delete(FtVolume *vol, const char *path);
+int    ft_rmdir(FtVolume *vol, const char *path);
 int    ft_mkdir(FtVolume *vol, const char *path);
+int    ft_move(FtVolume *src_vol, const char *src_path,
+               FtVolume *dst_vol, const char *dst_path);
 int    ft_get_file_size(FtVolume *vol, const char *path, uint64_t *size);
 int    ft_is_dir(FtVolume *vol, const char *path, bool *is_dir);
+int    ft_stat(FtVolume *vol, const char *path, AxlFileInfo *info);
 
 #endif

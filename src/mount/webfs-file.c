@@ -10,6 +10,9 @@
 **/
 
 #include "webfs-internal.h"
+#include "webfs-protocol.h"
+
+AXL_LOG_DOMAIN("webfs-mount-file");
 
 
 // ---------------------------------------------------------------------------
@@ -158,37 +161,20 @@ WebFsOpen(
             return EFI_NOT_FOUND;
         }
 
-        // Create file or directory
+        // Create file or directory via the active protocol.
+        const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
+        size_t op_status = 0;
         if (Attributes & EFI_FILE_DIRECTORY) {
-            // POST /files/<path>?mkdir
-            char mkdir_path[MAX_PATH_LEN];
-            axl_snprintf(mkdir_path, sizeof(mkdir_path), "/files%s?mkdir", resolved);
-
-            AxlHttpClientResponse *resp = NULL;
-            int ret = webfs_http_request(
-                priv, "POST", mkdir_path, NULL, NULL, 0, &resp);
-            if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
-
-            size_t mkdir_status = resp->status_code;
-            axl_http_client_response_free(resp);
-            if (mkdir_status != 201 && mkdir_status != 200) {
+            if (ops->mkdir(priv, resolved, &op_status) != 0)
                 return EFI_DEVICE_ERROR;
-            }
-
+            if (op_status != 201 && op_status != 200)
+                return EFI_DEVICE_ERROR;
             dir_cache_invalidate(priv, parent_dir);
             entry.is_dir = true;
             entry.size = 0;
         } else {
-            // PUT /files/<path> with empty body
-            char file_path[MAX_PATH_LEN];
-            axl_snprintf(file_path, sizeof(file_path), "/files%s", resolved);
-
-            AxlHttpClientResponse *resp = NULL;
-            int ret = webfs_http_request(
-                priv, "PUT", file_path, NULL, "", 0, &resp);
-            if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
-            axl_http_client_response_free(resp);
-
+            if (ops->create_empty(priv, resolved, &op_status) != 0)
+                return EFI_DEVICE_ERROR;
             dir_cache_invalidate(priv, parent_dir);
             entry.is_dir = false;
             entry.size = 0;
@@ -199,6 +185,15 @@ WebFsOpen(
     WebFsFileCtx *new_fh = webfs_create_file_handle(
         priv, resolved, entry.is_dir, entry.size);
     if (new_fh == NULL) return EFI_OUT_OF_RESOURCES;
+
+    /* Built-in integrity check (best-effort). Mark "want digest" so
+       the first sequential Read can pick the `Digest:` header out of
+       the Range response — no extra round-trip on Open. Once we have
+       the header, digest_active flips on and reads accumulate into
+       digest_ctx. Mismatch latches EFI_VOLUME_CORRUPTED on Close. */
+    if (!entry.is_dir) {
+        new_fh->digest_want = true;
+    }
 
     *NewHandle = &new_fh->file;
     return EFI_SUCCESS;
@@ -215,6 +210,34 @@ WebFsClose(
 )
 {
     WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
+    EFI_STATUS    rc  = EFI_SUCCESS;
+
+    /* Integrity verification at end-of-handle:
+       - active + !failed + the whole file was read sequentially
+         from 0 to file_size: compare the streaming hash to the
+         expected digest the server reported on Open.
+       - mismatch: surface as EFI_VOLUME_CORRUPTED. The caller (Shell
+         cp, LoadImage, ...) propagates this; for cp it means the
+         resulting destination is suspect and the user knows.
+       - partial reads / seeks / no digest: silently skip. The
+         best-effort contract is documented in webfs-internal.h. */
+    if (fh->digest_active && fh->digest_ctx != NULL) {
+        if (!fh->digest_failed && fh->digest_consumed == fh->file_size) {
+            const char *got = axl_checksum_get_string(fh->digest_ctx);
+            if (got == NULL ||
+                axl_strcasecmp(got, fh->digest_expected) != 0) {
+                axl_error("digest mismatch on %s: expected %s, got %s",
+                          fh->path, fh->digest_expected,
+                          got ? got : "(null)");
+                rc = EFI_VOLUME_CORRUPTED;
+            } else {
+                axl_info("digest verified: %s sha-256=%s",
+                         fh->path, got);
+            }
+        }
+        axl_checksum_free(fh->digest_ctx);
+        fh->digest_ctx = NULL;
+    }
 
     if (fh->read_ahead_buf != NULL) {
         axl_free(fh->read_ahead_buf);
@@ -223,12 +246,37 @@ WebFsClose(
         axl_free(fh->dir_entries);
     }
     axl_free(fh);
-    return EFI_SUCCESS;
+    return rc;
 }
 
 // ---------------------------------------------------------------------------
 // EFI_FILE_PROTOCOL: Read
 // ---------------------------------------------------------------------------
+
+/// Feed exactly the bytes a successful Read returned to the user
+/// into the streaming digest, but only if the position right before
+/// the Read was the expected next sequential offset. Any non-
+/// sequential read (post-seek, partial-then-resume) latches
+/// digest_failed and disables further accumulation.
+static void
+digest_consume(WebFsFileCtx *fh, uint64_t pre_read_position,
+               const void *bytes, size_t len)
+{
+    if (!fh->digest_active || fh->digest_failed) return;
+    /* Sequential invariant: position before this read must equal the
+       number of bytes already hashed. Track via axl_checksum's own
+       state — we know that's the case iff pre_read_position equals
+       the running total we've fed, which equals the consumed
+       position. Simpler: validate against the file's own running
+       cursor. We only get here in the read path, so position has
+       been updated post-copy; pass the pre-read value in. */
+    if (pre_read_position != fh->digest_consumed) {
+        fh->digest_failed = true;
+        return;
+    }
+    axl_checksum_update(fh->digest_ctx, bytes, len);
+    fh->digest_consumed += len;
+}
 
 /// Read from a file (with read-ahead buffer).
 static EFI_STATUS
@@ -249,6 +297,7 @@ read_file(
     if (fh->position + wanted > fh->file_size) {
         wanted = (size_t)(fh->file_size - fh->position);
     }
+    uint64_t pre_read_position = fh->position;
 
     // Check read-ahead buffer
     if (fh->read_ahead_buf != NULL && fh->read_ahead_len > 0 &&
@@ -258,64 +307,72 @@ read_file(
         size_t avail = fh->read_ahead_len - offset;
         size_t to_copy = (wanted < avail) ? wanted : avail;
         axl_memcpy(Buffer, fh->read_ahead_buf + offset, to_copy);
+        digest_consume(fh, pre_read_position, Buffer, to_copy);
         fh->position += to_copy;
         *BufferSize = to_copy;
         return EFI_SUCCESS;
     }
 
-    // Read-ahead miss -- fetch from server.
-    // Small reads use the 64KB read-ahead buffer; large reads (LoadImage
-    // pulling a whole PE in one shot) bypass it and go straight to the
-    // caller's buffer so we never under-deliver.
-    bool use_readahead = (fh->read_ahead_buf != NULL && wanted < READAHEAD_BUF_SIZE);
+    // Read-ahead miss — pull bytes via the active protocol.
+    // Small reads use the 64KB read-ahead buffer; large reads
+    // (LoadImage pulling a whole PE) bypass it and write directly
+    // into the caller's buffer so we never under-deliver.
+    bool use_readahead = (fh->read_ahead_buf != NULL &&
+                          wanted < READAHEAD_BUF_SIZE);
     size_t fetch_size = use_readahead ? READAHEAD_BUF_SIZE : wanted;
     if (fh->position + fetch_size > fh->file_size) {
         fetch_size = (size_t)(fh->file_size - fh->position);
     }
 
-    // Build Range header
-    char range_val[64];
-    axl_snprintf(range_val, sizeof(range_val), "bytes=%llu-%llu",
-                 (unsigned long long)fh->position,
-                 (unsigned long long)(fh->position + fetch_size - 1));
-    AxlHashTable *range_hdrs = axl_hash_table_new_str();
-    if (range_hdrs == NULL) return EFI_OUT_OF_RESOURCES;
-    axl_hash_table_insert(range_hdrs, "range", axl_strdup(range_val));
-
-    char file_path[MAX_PATH_LEN];
-    axl_snprintf(file_path, sizeof(file_path), "/files%s", fh->path);
-
-    AxlHttpClientResponse *resp = NULL;
-    int ret = webfs_http_request(
-        priv, "GET", file_path, range_hdrs, NULL, 0, &resp);
-    axl_free(axl_hash_table_lookup(range_hdrs, "range"));
-    axl_hash_table_free(range_hdrs);
-    if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
-    if (resp->status_code != 200 && resp->status_code != 206) {
-        axl_http_client_response_free(resp);
+    const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
+    void *dst = use_readahead ? fh->read_ahead_buf : Buffer;
+    size_t got = 0;
+    /* Ask the protocol layer to capture the response's
+       `Digest: sha-256=<hex>` header on this Range GET — once digest
+       is in hand and we're reading sequentially from offset 0, the
+       integrity check is live for the rest of the handle's life. */
+    char *digest_slot = NULL;
+    size_t digest_slot_size = 0;
+    if (fh->digest_want && !fh->digest_active && !fh->digest_failed &&
+        fh->position == 0) {
+        digest_slot = fh->digest_expected;
+        digest_slot_size = sizeof(fh->digest_expected);
+        fh->digest_expected[0] = '\0';
+    }
+    if (ops->read_range(priv, fh->path, fh->position, fetch_size,
+                        dst, &got,
+                        digest_slot, digest_slot_size) != 0) {
         *BufferSize = 0;
         return EFI_DEVICE_ERROR;
     }
-
-    size_t total_read = resp->body_size;
-    if (total_read > fetch_size) total_read = fetch_size;
+    if (digest_slot != NULL && fh->digest_expected[0] != '\0') {
+        fh->digest_ctx = axl_checksum_new(AXL_CHECKSUM_SHA256);
+        if (fh->digest_ctx != NULL) {
+            fh->digest_active   = true;
+            fh->digest_consumed = 0;
+        }
+        fh->digest_want = false;  // one-shot
+    } else if (digest_slot != NULL) {
+        /* Server didn't advertise a digest — skip validation for
+           this handle. */
+        fh->digest_want = false;
+    }
 
     if (use_readahead) {
-        axl_memcpy(fh->read_ahead_buf, resp->body, total_read);
         fh->read_ahead_start = fh->position;
-        fh->read_ahead_len = total_read;
-        size_t user_copy = (wanted < total_read) ? wanted : total_read;
+        fh->read_ahead_len   = got;
+        size_t user_copy = (wanted < got) ? wanted : got;
         axl_memcpy(Buffer, fh->read_ahead_buf, user_copy);
+        digest_consume(fh, pre_read_position, Buffer, user_copy);
         fh->position += user_copy;
         *BufferSize = user_copy;
     } else {
-        axl_memcpy(Buffer, resp->body, total_read);
-        fh->position += total_read;
-        *BufferSize = total_read;
-        // Invalidate read-ahead -- direct read may overlap stale region
+        digest_consume(fh, pre_read_position, Buffer, got);
+        fh->position += got;
+        *BufferSize = got;
+        // Direct read may overlap stale read-ahead region; invalidate.
         fh->read_ahead_len = 0;
     }
-    axl_http_client_response_free(resp);
 
     return EFI_SUCCESS;
 }
@@ -431,17 +488,14 @@ WebFsWrite(
     if (fh->is_dir) return EFI_UNSUPPORTED;
     if (priv->read_only) return EFI_WRITE_PROTECTED;
 
-    char file_path[MAX_PATH_LEN];
-    axl_snprintf(file_path, sizeof(file_path), "/files%s", fh->path);
-
-    AxlHttpClientResponse *resp = NULL;
-    int ret = webfs_http_request(
-        priv, "PUT", file_path, NULL, Buffer, *BufferSize, &resp);
-    if (ret != 0 || resp == NULL) return EFI_DEVICE_ERROR;
-
-    size_t write_status = resp->status_code;
-    axl_http_client_response_free(resp);
-    if (write_status != 201 && write_status != 200) {
+    const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
+    size_t write_status = 0;
+    if (ops->write_full(priv, fh->path, Buffer, *BufferSize,
+                        &write_status) != 0) {
+        return EFI_DEVICE_ERROR;
+    }
+    if (write_status != 201 && write_status != 200 &&
+        write_status != 204) {
         return EFI_DEVICE_ERROR;
     }
 
@@ -477,15 +531,9 @@ WebFsDelete(
         return EFI_WARN_DELETE_FAILURE;
     }
 
-    char file_path[MAX_PATH_LEN];
-    axl_snprintf(file_path, sizeof(file_path), "/files%s", fh->path);
-
-    AxlHttpClientResponse *resp = NULL;
-    int ret = webfs_http_request(
-        priv, "DELETE", file_path, NULL, NULL, 0, &resp);
-
-    size_t del_status = (resp != NULL) ? resp->status_code : 0;
-    if (resp != NULL) axl_http_client_response_free(resp);
+    const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
+    size_t del_status = 0;
+    int ret = ops->remove(priv, fh->path, &del_status);
 
     char parent_dir[MAX_PATH_LEN];
     get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
@@ -494,7 +542,11 @@ WebFsDelete(
     // Close (free) the file handle per spec
     WebFsClose(This);
 
-    if (ret != 0 || (del_status != 200 && del_status != 404)) {
+    /* 200/204 = removed cleanly; 404 = already gone (treat as
+       success per the JSON path's historical behavior). 204 added
+       for WebDAV servers that prefer it. */
+    if (ret != 0 ||
+        (del_status != 200 && del_status != 204 && del_status != 404)) {
         return EFI_WARN_DELETE_FAILURE;
     }
 
@@ -563,8 +615,15 @@ WebFsGetInfo(
         axl_memset(fs_info, 0, needed);
         fs_info->Size = needed;
         fs_info->ReadOnly = priv->read_only;
-        fs_info->VolumeSize = 0;
-        fs_info->FreeSpace = 0;
+        /* The backing filesystem lives on the workstation; we don't
+           ask the server how much free space it has. Reporting zero
+           free space here makes UEFI Shell's cp refuse to write
+           ("insufficient capacity on destination media") before it
+           even attempts a single Write call. Advertise a large
+           synthetic free-space value so cp proceeds and the actual
+           Write/PUT exchange determines success or failure. */
+        fs_info->VolumeSize = (UINT64)-1;
+        fs_info->FreeSpace  = (UINT64)-1;
         fs_info->BlockSize = 512;
         axl_wcscpy(fs_info->VolumeLabel, VOLUME_LABEL, label_len + 1);
 
@@ -627,18 +686,14 @@ WebFsSetInfo(
         return EFI_SUCCESS;  // No name change
     }
 
-    // Build rename request: POST /files/<oldpath>?rename=<newname>
-    char rename_path[MAX_PATH_LEN];
-    axl_snprintf(rename_path, sizeof(rename_path), "/files%s?rename=%s", fh->path, new_name8);
+    // Rename via the active protocol.
+    const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
+    size_t rename_status = 0;
+    int ret = ops->rename(priv, fh->path, new_name8, &rename_status);
 
-    AxlHttpClientResponse *resp = NULL;
-    int ret = webfs_http_request(
-        priv, "POST", rename_path, NULL, NULL, 0, &resp);
-
-    size_t rename_status = (resp != NULL) ? resp->status_code : 0;
-    if (resp != NULL) axl_http_client_response_free(resp);
-
-    if (ret != 0 || (rename_status != 200 && rename_status != 201)) {
+    if (ret != 0 ||
+        (rename_status != 200 && rename_status != 201 &&
+         rename_status != 204)) {
         return EFI_DEVICE_ERROR;
     }
 
@@ -684,6 +739,13 @@ WebFsSetPosition(
             return EFI_SUCCESS;
         }
         return EFI_UNSUPPORTED;
+    }
+
+    /* Any seek breaks the sequential-read invariant the digest
+       accumulator depends on. Latch failed; Close will skip
+       validation. */
+    if (fh->digest_active) {
+        fh->digest_failed = true;
     }
 
     if (Position == UINT64_MAX) {

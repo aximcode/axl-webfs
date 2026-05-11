@@ -322,6 +322,8 @@ src/
                                AXL_SERVICE_BUILD_DRIVER
     webfs-serve.h              Public extern decls (ServeOpts, webfs_serve)
     upload-asset.c/.h          Embedded upload UI assets (driver-only)
+    webfs-dav.c/.h             WebDAV class-1 + MOVE adapter onto ft_*
+                               (driver-only; mounts /dav)
   mount/                       Mount service (single-file dual-compile)
     webfs-mount.c              AxlService descriptor + setup/teardown,
                                gated on AXL_SERVICE_BUILD_DRIVER
@@ -377,6 +379,22 @@ run immediately in UEFI Shell.
 The mount driver uses plain HTTP with JSON directory listings instead
 of full WebDAV XML. Avoids XML parsing on the UEFI side. We control
 both sides (xfer-server.py + axl-webfs-mount-dxe).
+
+### WebDAV on the Serve Side
+Serve mode exposes the volume tree twice: as the curl-friendly
+REST surface under `/<vol>/<path>` (HTML/JSON listings,
+`POST ?mkdir`, etc.) AND as RFC 4918 class-1 WebDAV (plus MOVE)
+under `/dav` for Finder, Explorer, davfs2, and cadaver clients.
+The WebDAV layer lives entirely in axl-sdk
+(`axl_http_server_add_webdav`); axl-webfs supplies an
+`AxlWebDavOps` adapter (`src/serve/webfs-dav.c`) that maps the
+12 callbacks onto the existing `ft_*` helpers. The mount root
+enumerates volumes as virtual collections; everything under
+`/dav/<vol>/` maps onto the matching `FtVolume`. MOVE goes
+through `axl_file_move`: atomic rename on the same-directory
+path and chunked stream copy + source delete on the cross-
+directory path. PROPFIND populates `<D:getlastmodified>` from
+`AxlDirEntry.mtime_unix` so Finder caches stay coherent.
 
 ### Two AxlServices, One Launcher Binary
 `mount` and `serve` both need a persistent protocol that survives
@@ -435,7 +453,6 @@ from `get_streamer_pull` and finalizes via `get_streamer_close`
 on EOF, error, or connection reset, so the FtReadCtx never
 leaks). Range requests open the file at `range.start` and bound
 the streamer to the slice length.)*
-- WebDAV serve mode (PROPFIND, MKCOL, MOVE, COPY for network drive mount)
 - WebDAV client for mount (mount standard WebDAV servers without xfer-server.py)
 - TLS support (SDK has `axl_http_client_set("tls.verify", ...)`)
 - IPv6 support

@@ -32,7 +32,9 @@ Two commands:
 - **`mount <url>`** — mount a workstation directory as a UEFI volume
   (`FSn:`). The Shell can read, write, and execute files in real time.
 - **`serve`** — run an HTTP file server on the UEFI host, exposing
-  local volumes to `curl`, browsers, or network drive mounts.
+  local volumes to `curl`, browsers, or network drive mounts. The
+  same server publishes a WebDAV class-1 surface at `/dav` for
+  Finder, Explorer, davfs2, or cadaver clients.
 
 Plus `umount` and `list-nics`.
 

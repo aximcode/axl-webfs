@@ -12,6 +12,8 @@
 #define WEBFS_INTERNAL_H_
 
 #include <axl.h>
+#include <axl/axl-cache.h>
+#include <axl/axl-digest.h>
 #include <axl/axl-json.h>
 #include <axl/axl-net.h>
 #include <axl/axl-log.h>
@@ -50,13 +52,12 @@ typedef struct {
     char       modified[32];   ///< ISO 8601 timestamp from server.
 } DirEntry;
 
-/// A cached directory listing.
+/// One cached directory listing. Stored in axl-sdk's AxlCache
+/// (TTL + LRU eviction); webfs-cache.c just wraps the SDK with the
+/// listing-fetch glue.
 typedef struct {
-    char       path[MAX_PATH_LEN];
-    uint64_t   timestamp_ms;
     DirEntry   entries[DIR_CACHE_MAX_ENTRIES];
     size_t     entry_count;
-    bool       valid;
 } DirCacheSlot;
 
 // ---------------------------------------------------------------------------
@@ -79,9 +80,15 @@ typedef struct WebFsPrivate {
     char                                base_path[256];
     char                                base_url[280];
     bool                                read_only;
+    /// Wire protocol; resolved at mount_setup (probe + override).
+    /// WEBFS_PROTO_JSON is the historical default. Value is the
+    /// integer index into the protocol vtable (see webfs-protocol.h).
+    int                                 protocol;
 
-    /// Directory cache.
-    DirCacheSlot                        dir_cache[DIR_CACHE_MAX_SLOTS];
+    /// Directory listing cache (TTL + LRU). axl-sdk's AxlCache
+    /// owns slot allocation, eviction, and TTL checks; webfs-cache.c
+    /// just builds DirCacheSlot values and looks them up by path.
+    AxlCache                           *dir_cache;
 } WebFsPrivate;
 
 #define WEBFS_PRIVATE_FROM_SIMPLE_FS(a) \
@@ -112,6 +119,21 @@ typedef struct {
     uint8_t              *read_ahead_buf;
     uint64_t             read_ahead_start;
     size_t               read_ahead_len;
+
+    /// Built-in SHA-256 integrity check (best-effort). Set up on
+    /// Open if the server advertises a `Digest: sha-256=<hex>` header.
+    /// digest_ctx is fed bytes as long as reads stay strictly
+    /// sequential from offset 0; any seek or out-of-order Read
+    /// latches digest_failed and disables validation. On Close, if
+    /// the file was read end-to-end sequentially and the accumulated
+    /// hash matches digest_expected, the transfer is verified; on
+    /// mismatch the close path returns EFI_VOLUME_CORRUPTED.
+    AxlChecksum          *digest_ctx;
+    char                 digest_expected[65];  // 64 hex + NUL
+    uint64_t             digest_consumed;       // bytes fed so far
+    bool                 digest_want;           // set on Open for files
+    bool                 digest_active;
+    bool                 digest_failed;
 } WebFsFileCtx;
 
 #define WEBFS_FILE_FROM_FILE_PROTOCOL(a) \
@@ -146,5 +168,12 @@ void dir_cache_invalidate(WebFsPrivate *priv, const char *path);
 /// Issue an HTTP request with automatic reconnect on connection error.
 /// Caller must free *response with axl_http_client_response_free().
 int webfs_http_request(WebFsPrivate *priv, const char *method, const char *path, AxlHashTable *extra_headers, const void *body, size_t body_len, AxlHttpClientResponse **response);
+
+/// Extract the SHA-256 hex digest from a parsed `Digest:` header value
+/// per RFC 3230 (e.g. `sha-256=<64-hex>` or
+/// `md5=<hex>, sha-256=<hex>`). Returns 0 on success and copies
+/// 64 lowercase hex chars + NUL into @p out_hex. Returns -1 if the
+/// header is missing or carries no sha-256 fragment.
+int webfs_digest_parse_sha256(const char *header_value, char *out_hex, size_t hex_size);
 
 #endif // WEBFS_INTERNAL_H_

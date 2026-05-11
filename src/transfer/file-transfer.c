@@ -181,11 +181,32 @@ int ft_delete(FtVolume *vol, const char *path)
     return axl_file_delete(full);
 }
 
+int ft_rmdir(FtVolume *vol, const char *path)
+{
+    char full[512];
+    build_path(vol, path, full, sizeof(full));
+    return axl_dir_rmdir(full);
+}
+
 int ft_mkdir(FtVolume *vol, const char *path)
 {
     char full[512];
     build_path(vol, path, full, sizeof(full));
     return axl_dir_mkdir(full);
+}
+
+/* WebDAV MOVE. Thin wrapper around axl_file_move: same-directory
+   on-volume is an atomic rename; cross-directory falls back to
+   chunked stream copy + source delete inside the SDK. Cross-volume
+   is also supported via the copy path. */
+int ft_move(FtVolume *src_vol, const char *src_path,
+            FtVolume *dst_vol, const char *dst_path)
+{
+    char src_full[512];
+    char dst_full[512];
+    build_path(src_vol, src_path, src_full, sizeof(src_full));
+    build_path(dst_vol, dst_path, dst_full, sizeof(dst_full));
+    return axl_file_move(src_full, dst_full);
 }
 
 int ft_get_file_size(FtVolume *vol, const char *path, uint64_t *size)
@@ -208,4 +229,11 @@ int ft_is_dir(FtVolume *vol, const char *path, bool *is_dir)
         return -1;
     *is_dir = fi.is_dir;
     return 0;
+}
+
+int ft_stat(FtVolume *vol, const char *path, AxlFileInfo *info)
+{
+    char full[512];
+    build_path(vol, path, full, sizeof(full));
+    return axl_file_info(full, info);
 }
