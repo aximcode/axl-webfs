@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -38,13 +39,16 @@ class XferServer(HTTPServer):
     root_dir: str
     read_only: bool
     digest_cache: dict[str, tuple[int, float, str]]
+    basic_auth: str | None   # "user:password" or None to disable
 
     def __init__(self, server_address: tuple[str, int],
                  handler: type[BaseHTTPRequestHandler],
-                 root_dir: str, read_only: bool) -> None:
+                 root_dir: str, read_only: bool,
+                 basic_auth: str | None = None) -> None:
         super().__init__(server_address, handler)
         self.root_dir = root_dir
         self.read_only = read_only
+        self.basic_auth = basic_auth
         # Per-(path,size,mtime) SHA-256 cache so repeated GETs and
         # HEAD-then-GET chains don't re-hash multi-hundred-MB files.
         self.digest_cache = {}
@@ -100,6 +104,31 @@ class XferHandler(BaseHTTPRequestHandler):
         """Override to use cleaner log format."""
         sys.stderr.write(f"  {self.address_string()} {format % args}\n")
 
+    def _check_auth(self) -> bool:
+        """Validate Authorization: Basic against the configured creds.
+
+        Returns True when the request is allowed to proceed. On
+        failure, emits a 401 with WWW-Authenticate and returns False,
+        so handlers should `if not self._check_auth(): return`.
+
+        No-op when --basic-auth was not set."""
+        creds = self.xfer_server.basic_auth
+        if creds is None:
+            return True
+        hdr = self.headers.get("Authorization", "")
+        if hdr.startswith("Basic "):
+            try:
+                got = base64.b64decode(hdr[6:]).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                got = ""
+            if got == creds:
+                return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="xfer-server"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
     def _resolve_path(self, url_path: str) -> str | None:
         """Resolve URL path to local filesystem path, preventing traversal."""
         clean = unquote(url_path).replace("\\", "/")
@@ -135,6 +164,8 @@ class XferHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
+        if not self._check_auth():
+            return
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
@@ -187,6 +218,8 @@ class XferHandler(BaseHTTPRequestHandler):
         """HEAD on a file path: emit the headers a GET would, with
         no body. Mount clients use this to fetch the file's SHA-256
         from the Digest header before reading via Range."""
+        if not self._check_auth():
+            return
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         if path.startswith("/files"):
@@ -268,6 +301,8 @@ class XferHandler(BaseHTTPRequestHandler):
                 remaining -= len(chunk)
 
     def do_PUT(self) -> None:
+        if not self._check_auth():
+            return
         if self.xfer_server.read_only:
             self._send_error(403, "Server is read-only")
             return
@@ -331,6 +366,8 @@ class XferHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_DELETE(self) -> None:
+        if not self._check_auth():
+            return
         if self.xfer_server.read_only:
             self._send_error(403, "Server is read-only")
             return
@@ -360,6 +397,8 @@ class XferHandler(BaseHTTPRequestHandler):
         self._send_json({"deleted": os.path.basename(local)})
 
     def do_POST(self) -> None:
+        if not self._check_auth():
+            return
         if self.xfer_server.read_only:
             self._send_error(403, "Server is read-only")
             return
@@ -473,6 +512,10 @@ def main() -> None:
     parser.add_argument("--webdav", action="store_true",
                         help="Speak RFC 4918 WebDAV instead of the "
                              "bespoke JSON protocol (requires wsgidav).")
+    parser.add_argument("--basic-auth", default=None,
+                        help="Require HTTP Basic Auth: USER:PASSWORD. "
+                             "Unauthenticated requests get 401. JSON mode "
+                             "only — WebDAV mode uses wsgidav's auth.")
     args = parser.parse_args()
 
     root = os.path.realpath(args.root)
@@ -492,7 +535,8 @@ def main() -> None:
         run_webdav(root, args.bind, args.port, args.read_only)
         return
 
-    server = XferServer((args.bind, args.port), XferHandler, root, args.read_only)
+    server = XferServer((args.bind, args.port), XferHandler, root,
+                        args.read_only, args.basic_auth)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

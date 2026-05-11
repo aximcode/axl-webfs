@@ -42,6 +42,14 @@ typedef struct {
     /// Probe issues OPTIONS / and picks DAV when the server returns
     /// a DAV: header, otherwise JSON.
     const char *protocol;
+    /// HTTP authentication spec. Empty / NULL disables auth.
+    /// Formats:
+    ///   "basic:<user>:<password-or-token>" → Authorization: Basic <b64>
+    ///   "bearer:<token>"                   → Authorization: Bearer <token>
+    /// Visible in UEFI Shell `history`; for token-typed protocols
+    /// (Jenkins, GitHub, NextCloud personal-access-tokens) the
+    /// "leak" is bounded to that token's per-user scope.
+    const char *auth;
 
 #ifdef AXL_SERVICE_BUILD_DRIVER
     /* Driver-side runtime — owned by setup, freed by teardown. */

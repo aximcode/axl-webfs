@@ -497,6 +497,90 @@ NSHEOF
     rm -rf "$QEMU_TEST_DIR"
 
     # ========================================================================
+    # Basic-Auth mount test
+    #
+    # xfer-server.py launched with --basic-auth requires the mount
+    # client to send Authorization: Basic <b64>. mount --auth
+    # basic:user:token sets header.Authorization on the AxlHttpClient
+    # so every probe / list / read / write request inherits it.
+    # ========================================================================
+
+    kill $SERVER_PID 2>/dev/null || true
+    wait $SERVER_PID 2>/dev/null || true
+
+    info "QEMU" "=== Mount with HTTP Basic Auth ==="
+
+    AUTH_PORT=$((SERVER_PORT + 2))
+    AUTH_TEST_DIR=$(mktemp -d)
+    echo "auth gated content" > "$AUTH_TEST_DIR/secret.txt"
+
+    python3 "$SCRIPT_DIR/xfer-server.py" \
+        --root "$AUTH_TEST_DIR" --port $AUTH_PORT --bind 0.0.0.0 \
+        --basic-auth alice:s3cret \
+        >/tmp/xfer-auth.log 2>&1 &
+    AUTH_PID=$!
+    sleep 1
+
+    APP_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs.efi"
+    if [ -f "$APP_EFI" ]; then
+        # First: confirm the server *does* reject anonymous mount.
+        AUTH_NSH=$(mktemp --suffix=.nsh)
+        cat > "$AUTH_NSH" <<NSHEOF
+@echo -off
+fs0:
+echo === ANON MOUNT (should fail) ===
+axl-webfs.efi mount http://10.0.2.2:${AUTH_PORT}/
+echo === AUTH MOUNT (should succeed) ===
+axl-webfs.efi mount --auth basic:alice:s3cret http://10.0.2.2:${AUTH_PORT}/
+map -r
+echo === AUTH LS ===
+ls fs1:\\
+echo === AUTH TYPE ===
+type fs1:\\secret.txt
+echo === UMOUNT ===
+axl-webfs.efi umount
+echo === TESTS COMPLETE ===
+reset -s
+NSHEOF
+
+        SERIAL_LOG=$(mktemp)
+        info "QEMU" "X64 auth: Booting mount test..."
+        "$RUN_QEMU_SH" --arch X64 --timeout 30 --raw --net \
+            --nsh "$AUTH_NSH" \
+            --serial-log "$SERIAL_LOG" \
+            "$APP_EFI" > /dev/null 2>&1 || true
+        rm -f "$AUTH_NSH"
+
+        grep -qE "no .* endpoint reachable|mount failed" \
+            "$SERIAL_LOG" 2>/dev/null && \
+            pass "auth: anonymous mount rejected (server demands 401)" || \
+            fail "auth: anonymous" "expected mount-failed line"
+
+        # Same banner the existing tests use — proves --auth let us
+        # past the 401 and the rest of the mount succeeded.
+        grep -qE "axl-webfs-mount: mounted" \
+            "$SERIAL_LOG" 2>/dev/null && \
+            pass "auth: authenticated mount succeeded" || \
+            fail "auth: authenticated mount" "no 'mounted' line"
+
+        grep -q "secret.txt" "$SERIAL_LOG" 2>/dev/null && \
+            pass "auth: ls fs1 shows secret.txt (listing auth'd)" || \
+            fail "auth: ls" "secret.txt not in listing"
+
+        grep -q "auth gated content" "$SERIAL_LOG" 2>/dev/null && \
+            pass "auth: type fs1:\\secret.txt returns gated content" || \
+            fail "auth: type" "gated content not found"
+
+        rm -f "$SERIAL_LOG"
+    else
+        skip "auth: axl-webfs.efi not built"
+    fi
+
+    kill $AUTH_PID 2>/dev/null || true
+    wait $AUTH_PID 2>/dev/null || true
+    rm -rf "$AUTH_TEST_DIR"
+
+    # ========================================================================
     # WebDAV mount test (parallel-protocol parity)
     #
     # Same shape as the JSON mount test above, but the workstation

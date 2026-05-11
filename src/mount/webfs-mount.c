@@ -36,6 +36,8 @@ const AxlConfigDesc mount_descs[] = {
       offsetof(MountOpts, read_only), sizeof(bool) },
     { "protocol",  AXL_CFG_STRING, "auto",  "Wire protocol: auto, json, dav",
       offsetof(MountOpts, protocol),  sizeof(const char *) },
+    { "auth",      AXL_CFG_STRING, "",      "HTTP auth (basic:user:token | bearer:token)",
+      offsetof(MountOpts, auth),      sizeof(const char *) },
     { 0 }
 };
 
@@ -173,6 +175,44 @@ mount_setup(AxlLoop *loop, void *user)
         network_cleanup();
         axl_free(priv);
         return AXL_ERR;
+    }
+
+    /* Optional HTTP auth (Jenkins API tokens, SharePoint personal-
+       access-tokens, plain Basic, etc.). axl_http_client_set with
+       `header.Authorization` installs the value as a default header
+       on every request the client issues, so all protocol traffic
+       (HEAD probes, PROPFIND, Range GETs, PUTs) inherits it without
+       per-call plumbing. Format parsed here:
+         basic:<user>:<password>   → base64 the user:pw pair
+         bearer:<token>            → token used verbatim
+       Empty / unset → no auth. */
+    if (m->auth != NULL && m->auth[0] != '\0') {
+        char header[1024];
+        header[0] = '\0';
+        if (axl_strncmp(m->auth, "basic:", 6) == 0) {
+            const char *creds = m->auth + 6;
+            char *encoded = axl_base64_encode((const uint8_t *)creds,
+                                              axl_strlen(creds));
+            if (encoded != NULL) {
+                axl_snprintf(header, sizeof(header), "Basic %s", encoded);
+                axl_free(encoded);
+            }
+        } else if (axl_strncmp(m->auth, "bearer:", 7) == 0) {
+            axl_snprintf(header, sizeof(header), "Bearer %s",
+                         m->auth + 7);
+        } else {
+            axl_printf("axl-webfs-mount: --auth must be "
+                       "'basic:user:token' or 'bearer:token'; got '%s'\n",
+                       m->auth);
+            axl_http_client_free(priv->http_client);
+            network_cleanup();
+            axl_free(priv);
+            return AXL_ERR;
+        }
+        if (header[0] != '\0') {
+            axl_http_client_set(priv->http_client,
+                                "header.Authorization", header);
+        }
     }
 
     /* AxlCache owns slot allocation, eviction policy, and TTL. The

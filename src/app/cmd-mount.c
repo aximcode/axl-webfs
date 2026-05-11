@@ -51,6 +51,8 @@ const AxlArgDesc webfs_mount_flags[] = {
       .help = "Mount read-only" },
     { .name = "protocol", .short_name = 'p', .type = AXL_ARG_STRING,
       .help = "Wire protocol: auto (default), json, or dav" },
+    { .name = "auth", .short_name = 'a', .type = AXL_ARG_STRING,
+      .help = "HTTP auth: basic:user:token | bearer:token" },
     {0}
 };
 
@@ -68,6 +70,9 @@ webfs_mount_handler(AxlArgs *a)
     g_mount_opts.protocol  = axl_args_get_string(a, "protocol");
     if (g_mount_opts.protocol == NULL || g_mount_opts.protocol[0] == '\0')
         g_mount_opts.protocol = "auto";
+    g_mount_opts.auth      = axl_args_get_string(a, "auth");
+    if (g_mount_opts.auth == NULL)
+        g_mount_opts.auth = "";
 
     AxlServiceDeploy deploy = mount_make_deploy();
 
