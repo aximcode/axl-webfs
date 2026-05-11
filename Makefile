@@ -36,7 +36,6 @@ AXL_CC   = $(AXL_SDK)/bin/axl-cc
 APP_SRCS = src/app/main.c \
            src/app/cmd-serve.c \
            src/app/cmd-mount.c \
-           src/net/network.c \
            src/serve/webfs-serve.c \
            src/mount/webfs-mount.c
 
@@ -48,15 +47,13 @@ MOUNT_DRV_SRCS = src/mount/webfs-mount.c \
                  src/mount/webfs-file.c \
                  src/mount/webfs-cache.c \
                  src/mount/webfs-protocol-json.c \
-                 src/mount/webfs-protocol-dav.c \
-                 src/net/network.c
+                 src/mount/webfs-protocol-dav.c
 
 # Serve driver image. -DAXL_SERVICE_BUILD_DRIVER pulls in setup,
 # teardown, route handlers, and the AXL_SERVICE_DRIVER entry point
 # from webfs-serve.c.
 SERVE_DRV_SRCS = src/serve/webfs-serve.c \
                  src/serve/webfs-dav.c \
-                 src/net/network.c \
                  src/serve/upload-asset.c \
                  src/transfer/file-transfer.c \
                  src/transfer/dir-list.c

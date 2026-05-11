@@ -21,10 +21,10 @@
 
 #ifdef AXL_SERVICE_BUILD_DRIVER
 #  include <axl/axl-net.h>
+#  include <axl/axl-net-opts.h>
 #  include <axl/axl-url.h>
 #  include "mount/webfs-internal.h"
 #  include "mount/webfs-protocol.h"
-#  include "net/network.h"
 #endif
 
 MountOpts g_mount_opts;
@@ -38,11 +38,18 @@ const AxlConfigDesc mount_descs[] = {
       offsetof(MountOpts, protocol),  sizeof(const char *) },
     { "auth",      AXL_CFG_STRING, "",      "HTTP auth (basic:user:token | bearer:token)",
       offsetof(MountOpts, auth),      sizeof(const char *) },
-    { "nic",       AXL_CFG_UINT,   "18446744073709551615", /* (uint64_t)-1 = auto */
+    /* AXL_NET_OPT_CLIENT preset spelled out: --nic + --source-ip.
+       The SDK ships `axl_config_descs_net` to emit this group at
+       runtime, but axl-webfs's webfs_mount AxlService initializer
+       wants a compile-time-const mount_descs[] (cross-binary ABI
+       rule — see header), so we spell the entries here and use the
+       SDK's canonical defaults (AXL_NET_NIC_AUTO_STR for the auto
+       sentinel) to stay aligned with other consumers. */
+    { "nic",       AXL_CFG_UINT,   AXL_NET_NIC_AUTO_STR,
                                             "NIC index (auto if unset)",
-      offsetof(MountOpts, nic_index), sizeof(uint64_t) },
-    { "static-ip", AXL_CFG_STRING, "",      "Static IPv4 for the NIC instead of DHCP",
-      offsetof(MountOpts, static_ip), sizeof(const char *) },
+      offsetof(MountOpts, net.nic_index), sizeof(uint64_t) },
+    { "source-ip", AXL_CFG_STRING, "",      "IPv4 to bind the outbound socket to (empty = auto)",
+      offsetof(MountOpts, net.local_ip),   sizeof(const char *) },
     { 0 }
 };
 
@@ -168,24 +175,13 @@ mount_setup(AxlLoop *loop, void *user)
                priv->server_addr[2], priv->server_addr[3],
                priv->server_port, priv->base_path);
 
-    /* --static-ip is the lever for "use this IPv4 instead of DHCP."
-       Distinct from serve's --source (which binds the LISTEN socket
-       to an existing local IP) — mount has no listen socket, so the
-       analogous knob here is interface-level addressing. axl_ipv4_
-       parse rejects malformed input loudly so a typo doesn't
-       silently fall back to DHCP. */
-    uint8_t static_ip_buf[4];
-    const uint8_t *static_ip = NULL;
-    if (m->static_ip != NULL && m->static_ip[0] != '\0') {
-        if (axl_ipv4_parse(m->static_ip, static_ip_buf) != 0) {
-            axl_printf("axl-webfs-mount: invalid --static-ip %s\n",
-                       m->static_ip);
-            axl_free(priv);
-            return AXL_ERR;
-        }
-        static_ip = static_ip_buf;
-    }
-    if (network_init(m->nic_index, static_ip, 10) != 0) {
+    /* DHCP bring-up on the chosen NIC. AXL_NET_NIC_AUTO selects
+       the first usable NIC; numeric values pick a specific index.
+       Static-IP-on-the-NIC (mutating IP4Config2 policy) is not a
+       mount-side option — that's the firmware's `ifconfig` layer;
+       users who genuinely need a static IPv4 install it ahead of
+       time via UEFI Shell `ifconfig` or axl_net_set_static_ip. */
+    if (axl_net_init_from_opts(&m->net, 10) != AXL_OK) {
         axl_printf("axl-webfs-mount: network init failed\n");
         axl_free(priv);
         return AXL_ERR;
@@ -194,9 +190,19 @@ mount_setup(AxlLoop *loop, void *user)
     priv->http_client = axl_http_client_new();
     if (priv->http_client == NULL) {
         axl_printf("axl-webfs-mount: failed to create HTTP client\n");
-        network_cleanup();
         axl_free(priv);
         return AXL_ERR;
+    }
+
+    /* --source-ip → axl_http_client's `source.ip`, so outbound
+       connect()s bind to the named station IP. Empty leaves the
+       stack on auto-select (typical: pick the NIC's primary IP).
+       AxlNetOpts.local_ip serves as both source-IP (clients,
+       here) and listen-IP (servers, see webfs-serve.c) — same
+       bind(2), role inferred from what we do next. */
+    if (m->net.local_ip != NULL && m->net.local_ip[0] != '\0') {
+        axl_http_client_set(priv->http_client, "source.ip",
+                            m->net.local_ip);
     }
 
     /* Optional HTTP auth (Jenkins API tokens, SharePoint personal-
@@ -227,7 +233,6 @@ mount_setup(AxlLoop *loop, void *user)
                        "'basic:user:token' or 'bearer:token'; got '%s'\n",
                        m->auth);
             axl_http_client_free(priv->http_client);
-            network_cleanup();
             axl_free(priv);
             return AXL_ERR;
         }
@@ -245,7 +250,6 @@ mount_setup(AxlLoop *loop, void *user)
                                     DIR_CACHE_TTL_MS);
     if (priv->dir_cache == NULL) {
         axl_http_client_free(priv->http_client);
-        network_cleanup();
         axl_free(priv);
         return AXL_ERR;
     }
@@ -284,7 +288,6 @@ mount_setup(AxlLoop *loop, void *user)
         axl_printf("axl-webfs-mount: server validation failed "
                    "(no %s endpoint reachable)\n", proto_cfg);
         axl_http_client_free(priv->http_client);
-        network_cleanup();
         axl_free(priv);
         return AXL_ERR;
     }
@@ -298,7 +301,6 @@ mount_setup(AxlLoop *loop, void *user)
     WebFsDevicePath *dev_path = axl_malloc(sizeof(WebFsDevicePath));
     if (dev_path == NULL) {
         axl_http_client_free(priv->http_client);
-        network_cleanup();
         axl_free(priv);
         return AXL_ERR;
     }
@@ -314,7 +316,6 @@ mount_setup(AxlLoop *loop, void *user)
         axl_printf("axl-webfs-mount: protocol install failed\n");
         axl_free(dev_path);
         axl_http_client_free(priv->http_client);
-        network_cleanup();
         axl_free(priv);
         return AXL_ERR;
     }
@@ -352,7 +353,6 @@ mount_teardown(void *user)
         axl_free(priv->device_path);
     }
     axl_free(priv);
-    network_cleanup();
 
     m->priv = NULL;
     axl_printf("axl-webfs-mount: unmounted\n");

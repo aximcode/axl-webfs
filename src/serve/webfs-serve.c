@@ -27,7 +27,6 @@
 #  include <axl/axl-url.h>
 #  include <axl/axl-cache.h>
 #  include <axl/axl-digest.h>
-#  include "net/network.h"
 #  include "serve/upload-asset.h"
 #  include "serve/webfs-dav.h"
 #  include "transfer/file-transfer.h"
@@ -65,20 +64,30 @@ static WebfsRequestEvent m_req_event;
 ServeOpts g_serve_opts;
 
 const AxlConfigDesc serve_descs[] = {
-    { "port",     AXL_CFG_UINT,   "9876",       "Listen port (aligned with DEFAULT_SERVER_PORT / xfer-server.py)",
-      offsetof(ServeOpts, port),             sizeof(uint64_t) },
-    { "nic",      AXL_CFG_UINT,   "18446744073709551615", /* (uint64_t)-1 = auto */
+    /* AXL_NET_OPT_SERVER preset spelled out: --nic + --listen-ip +
+       --port. As with mount, we spell the entries inline (not via
+       runtime axl_config_descs_net) because the AxlService
+       initializer requires a compile-time-const serve_descs[]. The
+       canonical defaults come from <axl/axl-net-opts.h>:
+       AXL_NET_NIC_AUTO_STR for the auto-NIC sentinel; default port
+       9876 (the cross-tool default we settled on). NOTE: serve uses
+       net.local_ip as the LISTEN-bind address; mount uses the same
+       field as the outbound source IP — same bind(2) syscall, role
+       implied by what the consumer does next. */
+    { "nic",       AXL_CFG_UINT,   AXL_NET_NIC_AUTO_STR,
                                               "NIC index (auto if unset)",
-      offsetof(ServeOpts, nic_index),        sizeof(uint64_t) },
-    { "timeout",  AXL_CFG_UINT,   "0",          "Idle timeout in seconds (0 = none)",
+      offsetof(ServeOpts, net.nic_index), sizeof(uint64_t) },
+    { "listen-ip", AXL_CFG_STRING, "",           "Bind listen socket to this IPv4 (auto if empty)",
+      offsetof(ServeOpts, net.local_ip),  sizeof(const char *) },
+    { "port",      AXL_CFG_UINT,   "9876",       "Listen port (aligned with DEFAULT_SERVER_PORT / xfer-server.py)",
+      offsetof(ServeOpts, net.port),      sizeof(uint16_t) },
+    { "timeout",   AXL_CFG_UINT,   "0",          "Idle timeout in seconds (0 = none)",
       offsetof(ServeOpts, idle_timeout_sec), sizeof(uint64_t) },
-    { "verbose",  AXL_CFG_BOOL,   "false",      "Verbose logging",
+    { "verbose",   AXL_CFG_BOOL,   "false",      "Verbose logging",
       offsetof(ServeOpts, verbose),          sizeof(bool) },
-    { "mode",     AXL_CFG_STRING, "read-write", "Permission mode",
+    { "mode",      AXL_CFG_STRING, "read-write", "Permission mode",
       offsetof(ServeOpts, mode),             sizeof(const char *) },
-    { "source",   AXL_CFG_STRING, "",           "Bind to interface with this IPv4 (auto if empty)",
-      offsetof(ServeOpts, source),           sizeof(const char *) },
-    { "log",      AXL_CFG_STRING, "",           "Log file path (empty = console only)",
+    { "log",       AXL_CFG_STRING, "",           "Log file path (empty = console only)",
       offsetof(ServeOpts, log_path),         sizeof(const char *) },
     { 0 }
 };
@@ -760,13 +769,21 @@ serve_setup(AxlLoop *loop, void *user)
     o->read_only  = axl_streql(o->mode, "read-only");
     o->write_only = axl_streql(o->mode, "write-only");
 
-    if (network_init(o->nic_index, NULL, 10) != 0) {
+    if (axl_net_init_from_opts(&o->net, 10) != AXL_OK) {
         return AXL_ERR;
     }
-    network_get_address(o->addr);
+    /* Cache the bound IPv4 for the banner line below.
+       axl_net_get_ip_address returns the first configured NIC's
+       address — exactly what we want post-DHCP. AxlIPv4Address.addr
+       is uint8_t[4] so the memcpy is a same-layout copy. */
+    {
+        AxlIPv4Address tmp;
+        if (axl_net_get_ip_address(&tmp) == AXL_OK) {
+            axl_memcpy(o->addr, tmp.addr, sizeof(o->addr));
+        }
+    }
 
     if (ft_init() != 0) {
-        network_cleanup();
         return AXL_ERR;
     }
 
@@ -777,14 +794,14 @@ serve_setup(AxlLoop *loop, void *user)
                                    sizeof(DigestSlot),
                                    DIGEST_CACHE_TTL_MS);
 
-    o->server = axl_http_server_new((uint16_t)o->port);
+    /* net.port is already uint16_t — no truncation cast needed. */
+    o->server = axl_http_server_new(o->net.port);
     if (o->server == NULL) {
-        network_cleanup();
         return AXL_ERR;
     }
 
-    if (o->source != NULL && o->source[0] != '\0') {
-        axl_http_server_set(o->server, "listen.ip", o->source);
+    if (o->net.local_ip != NULL && o->net.local_ip[0] != '\0') {
+        axl_http_server_set(o->server, "listen.ip", o->net.local_ip);
     }
 
     axl_http_server_set_body_limit(o->server, 128 * 1024 * 1024);  /* 128 MB */
@@ -827,7 +844,6 @@ serve_setup(AxlLoop *loop, void *user)
     if (axl_http_server_start(o->server, loop) != AXL_OK) {
         axl_http_server_free(o->server);
         o->server = NULL;
-        network_cleanup();
         return AXL_ERR;
     }
 
@@ -842,9 +858,9 @@ serve_setup(AxlLoop *loop, void *user)
 
     /* Recognizable single-line banner; goes through axl_info so the
        file log handler captures it when --log is set. */
-    axl_info("listening on %d.%d.%d.%d:%llu (mode %s)",
+    axl_info("listening on %d.%d.%d.%d:%u (mode %s)",
              o->addr[0], o->addr[1], o->addr[2], o->addr[3],
-             (unsigned long long)o->port, o->mode);
+             (unsigned)o->net.port, o->mode);
 
     /* Volume list -- ft_init has run by now. */
     size_t vcount = ft_get_volume_count();
@@ -876,7 +892,6 @@ serve_teardown(void *user)
         axl_cache_free(m_digest_cache);
         m_digest_cache = NULL;
     }
-    network_cleanup();
 
     /* Flush + close the log file before image unload (NULL-safe
        no-op when --log wasn't used). Symmetric with the

@@ -34,7 +34,7 @@ AXL_EMBED_DECLARE(axl_webfs_serve_dxe);
 
 const AxlArgDesc webfs_serve_flags[] = {
     { .name = "port",       .short_name = 'p', .type = AXL_ARG_U16,
-      .default_value = "8080", .help = "Listen port" },
+      .default_value = "9876", .help = "Listen port" },
     { .name = "nic",        .short_name = 'n', .type = AXL_ARG_U32,
       .help = "NIC index (default: auto)" },
     { .name = "timeout",    .short_name = 't', .type = AXL_ARG_U32,
@@ -47,7 +47,7 @@ const AxlArgDesc webfs_serve_flags[] = {
               "(block PUT/POST/DELETE), or write-only (block GET)" },
     { .name = "verbose",    .short_name = 'v', .type = AXL_ARG_BOOL,
       .help = "Verbose logging" },
-    { .name = "source",                        .type = AXL_ARG_STRING,
+    { .name = "listen-ip",                     .type = AXL_ARG_STRING,
       .help = "Bind listener to interface with this station IPv4 (auto if unset)" },
     { .name = "log",        .short_name = 'l', .type = AXL_ARG_STRING,
       .help = "Log file path (e.g. fs0:\\webfs.log; default: console only)" },
@@ -89,14 +89,16 @@ webfs_serve_stop_handler(AxlArgs *a)
 int
 webfs_serve_handler(AxlArgs *a)
 {
-    g_serve_opts.port             = axl_args_get_uint(a, "port");
-    g_serve_opts.nic_index        = axl_args_get_string(a, "nic") != NULL
+    g_serve_opts.net.port         = (uint16_t)axl_args_get_uint(a, "port");
+    g_serve_opts.net.nic_index    = axl_args_get_string(a, "nic") != NULL
                                   ? axl_args_get_uint(a, "nic")
-                                  : (uint64_t)-1;
+                                  : AXL_NET_NIC_AUTO;
+    g_serve_opts.net.local_ip     = axl_args_get_string(a, "listen-ip");
+    if (g_serve_opts.net.local_ip == NULL)
+        g_serve_opts.net.local_ip = "";
     g_serve_opts.idle_timeout_sec = axl_args_get_uint(a, "timeout");
     g_serve_opts.verbose          = axl_args_get_bool(a, "verbose");
     g_serve_opts.mode             = axl_args_get_string(a, "mode");
-    g_serve_opts.source           = axl_args_get_string(a, "source");
     g_serve_opts.log_path         = axl_args_get_string(a, "log");
 
     AxlServiceDeploy deploy = {

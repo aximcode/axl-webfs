@@ -19,6 +19,7 @@
 #define AXL_WEBFS_MOUNT_H_
 
 #include <axl.h>
+#include <axl/axl-net-opts.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -42,15 +43,15 @@ typedef struct {
     /// Probe issues OPTIONS / and picks DAV when the server returns
     /// a DAV: header, otherwise JSON.
     const char *protocol;
-    /// NIC index to bring up. (uint64_t)-1 means "auto-detect".
-    uint64_t    nic_index;
-    /// Static IPv4 to assign to the chosen NIC (e.g. "192.168.1.50")
-    /// instead of acquiring one via DHCP. Empty string means DHCP.
-    /// NOTE: deliberately NOT named "source" — serve's --source binds
-    /// the LISTEN socket, which is the wrong semantic for a client.
-    /// Mount has no listen socket; the analogous knob here is the
-    /// interface's address (static vs DHCP).
-    const char *static_ip;
+    /// Canonical AXL networking opts (NIC index + outbound source
+    /// IP). mount uses AXL_NET_OPT_CLIENT — `net.nic_index` selects
+    /// which NIC to DHCP on; `net.local_ip` pins the local end of
+    /// the outbound socket via the HTTP client's `source.ip`. v1 of
+    /// this struct carried a `static_ip` field with a comment
+    /// claiming "mount has no listen socket" — the comment was
+    /// wrong: the outbound bind IS the analogous knob, and it's
+    /// what `--source-ip` configures now.
+    AxlNetOpts  net;
     /// HTTP authentication spec. Empty / NULL disables auth.
     /// Formats:
     ///   "basic:<user>:<password-or-token>" → Authorization: Basic <b64>

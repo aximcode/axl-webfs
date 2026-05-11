@@ -21,29 +21,35 @@
 #define AXL_WEBFS_SERVE_H_
 
 #include <axl.h>
+#include <axl/axl-net-opts.h>
 #include <stddef.h>
 #include <stdint.h>
 
 /// Configuration + runtime state for the serve service.
 ///
-/// The leading fields up through @ref source are populated by AxlConfig
-/// auto-apply from @ref serve_descs (foreground from CLI args, driver
-/// from LoadOptions). String fields are `const char *` per AxlConfig's
-/// AXL_CFG_STRING contract — auto-apply assigns a pointer, not a copy,
-/// so a buffer would silently truncate.
+/// The leading fields up through @ref log_path are populated by
+/// AxlConfig auto-apply from @ref serve_descs (foreground from CLI
+/// args, driver from LoadOptions). @ref net is the canonical
+/// AxlNetOpts sub-struct (NIC / listen-IP / port). String fields
+/// are `const char *` per AxlConfig's AXL_CFG_STRING contract —
+/// auto-apply assigns a pointer, not a copy, so a buffer would
+/// silently truncate.
 ///
 /// The trailing fields (@ref read_only ... @ref addr) are derived /
 /// runtime, populated by @ref webfs_serve.setup. They live in the same
 /// struct so route handlers and middleware can reach them via the
 /// single `void *user` the AxlService threads through.
 typedef struct {
+    /* Canonical AXL networking opts (NIC + listen-IP + port). serve
+       uses AXL_NET_OPT_SERVER — net.nic_index, net.local_ip (==
+       listen address; same bind(2) syscall as mount's outbound
+       source-IP), net.port. */
+    AxlNetOpts  net;
+
     /* AxlConfig auto-apply targets */
-    uint64_t    port;
-    uint64_t    nic_index;             /* (uint64_t)-1 == auto */
     uint64_t    idle_timeout_sec;
     bool        verbose;
     const char *mode;                  /* "read-write" | "read-only" | "write-only" */
-    const char *source;                /* bind IPv4, NULL/empty = auto */
     const char *log_path;              /* file path, empty = console only */
 
     /* Derived / runtime, set by serve_setup */
