@@ -512,10 +512,19 @@ def main() -> None:
     parser.add_argument("--webdav", action="store_true",
                         help="Speak RFC 4918 WebDAV instead of the "
                              "bespoke JSON protocol (requires wsgidav).")
-    parser.add_argument("--basic-auth", default=None,
-                        help="Require HTTP Basic Auth: USER:PASSWORD. "
-                             "Unauthenticated requests get 401. JSON mode "
-                             "only — WebDAV mode uses wsgidav's auth.")
+    auth_group = parser.add_mutually_exclusive_group()
+    auth_group.add_argument("--basic-auth", default=None,
+                            metavar="USER:PASSWORD",
+                            help="Require HTTP Basic Auth. "
+                                 "Convenience for dev; the credential lands "
+                                 "in shell history and `ps` output — prefer "
+                                 "--basic-auth-file for routine use.")
+    auth_group.add_argument("--basic-auth-file", default=None,
+                            metavar="PATH",
+                            help="Like --basic-auth but reads USER:PASSWORD "
+                                 "from PATH (single line, trailing newline "
+                                 "stripped). Keeps the credential off the "
+                                 "command line.")
     args = parser.parse_args()
 
     root = os.path.realpath(args.root)
@@ -523,9 +532,37 @@ def main() -> None:
         print(f"Error: {root} is not a directory", file=sys.stderr)
         sys.exit(1)
 
+    # Resolve the auth credential up-front so a bad --basic-auth-file
+    # fails before we print the banner / open the listening socket.
+    # argparse's mutex group means at most one of the two flags is
+    # set; treat them as a single string the rest of the code sees.
+    basic_auth = args.basic_auth
+    if args.basic_auth_file is not None:
+        try:
+            with open(args.basic_auth_file, encoding="utf-8") as f:
+                basic_auth = f.read().strip()
+        except OSError as e:
+            print(f"Error reading --basic-auth-file: {e}", file=sys.stderr)
+            sys.exit(1)
+        if ":" not in basic_auth:
+            print(f"Error: {args.basic_auth_file} must contain USER:PASSWORD",
+                  file=sys.stderr)
+            sys.exit(1)
+        # World-readable credential files are a footgun. curl prints a
+        # similar warning for --netrc-file; do the same.
+        try:
+            file_mode = os.stat(args.basic_auth_file).st_mode
+            if file_mode & 0o077:
+                print(f"Warning: {args.basic_auth_file} is accessible to "
+                      f"other users (mode {file_mode & 0o777:o}); restrict "
+                      f"with `chmod 600`.", file=sys.stderr)
+        except OSError:
+            pass
+
     mode = "read-only" if args.read_only else "read-write"
     proto = "WebDAV" if args.webdav else "JSON"
-    print(f"xfer-server v{VERSION} ({proto})")
+    auth_note = " (Basic Auth required)" if basic_auth else ""
+    print(f"xfer-server v{VERSION} ({proto}){auth_note}")
     print(f"Serving {root} on {args.bind}:{args.port}")
     print(f"Mode: {mode}")
     print("Ready for axl-webfs mount connections.")
@@ -536,7 +573,7 @@ def main() -> None:
         return
 
     server = XferServer((args.bind, args.port), XferHandler, root,
-                        args.read_only, args.basic_auth)
+                        args.read_only, basic_auth)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
