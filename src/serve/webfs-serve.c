@@ -137,8 +137,11 @@ parse_volume_path(const char *url_path, FtVolume *volume,
    with 64 lowercase hex chars + NUL written to @p out_hex; -1 on
    any failure (open, read, OOM). Callers that fail silently skip
    emitting the Digest header. Cache TTL is 5 minutes so write-then-
-   read patterns refresh promptly. */
-static int
+   read patterns refresh promptly.
+
+   Non-static so webfs-dav.c (the AxlWebDavOps.digest adapter) can
+   reuse the same cache across the REST and /dav surfaces. */
+int
 compute_file_digest(FtVolume *volume, const char *sub_path,
                     uint64_t file_size, char *out_hex)
 {

@@ -1070,6 +1070,21 @@ NSHEOF
                 HTTP_CODE=$(echo -n "dav content" | \
                     curl -s -o /dev/null -w "%{http_code}" \
                     -T - "$BASE/dav/fs0/dav-put.txt" 2>/dev/null || true)
+                # Built-in SHA-256 integrity on /dav (SDK c14abbc). The
+                # adapter's dav_digest callback resolves the path via
+                # parse_dav_path and reuses webfs-serve.c's
+                # compute_file_digest cache. Expect the response to
+                # carry `Digest: sha-256=<64-hex>` when the request
+                # opts in with Want-Digest.
+                DAV_DIGEST=$(curl -sI -H "Want-Digest: sha-256" \
+                    "$BASE/dav/fs0/dav-put.txt" 2>/dev/null \
+                    | grep -i "^Digest:" || true)
+                if echo "$DAV_DIGEST" | grep -qE "sha-256=[0-9a-f]{64}"; then
+                    pass "serve dav: Want-Digest sha-256 → response Digest"
+                else
+                    fail "serve dav: Want-Digest" \
+                         "expected sha-256=<hex>, got: $DAV_DIGEST"
+                fi
                 [ "$HTTP_CODE" = "201" ] && \
                     pass "serve dav: PUT /dav/fs0/dav-put.txt returns 201" || \
                     fail "serve dav: PUT" "expected 201, got $HTTP_CODE"

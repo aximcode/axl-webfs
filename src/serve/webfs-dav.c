@@ -27,6 +27,12 @@
 
 AXL_LOG_DOMAIN("webfs-dav");
 
+/* Forward decl into webfs-serve.c — both files are compiled into the
+   serve DXE driver, so the linker resolves this without a header.
+   Sharing keeps the SHA-256 cache (m_digest_cache) in one place. */
+extern int compute_file_digest(FtVolume *volume, const char *sub_path,
+                               uint64_t file_size, char *out_hex);
+
 // ----------------------------------------------------------------------------
 // Path parsing
 // ----------------------------------------------------------------------------
@@ -323,6 +329,38 @@ dav_remove(void *user, const char *path)
     return rc == 0 ? AXL_OK : AXL_ERR;
 }
 
+/* SHA-256 (RFC 3230 Want-Digest) — closes the WebDAV-side gap so
+   mount clients pointing at /dav get the same end-to-end integrity
+   validation the REST surface already provides. SDK c14abbc owns
+   the Want-Digest parsing + response-header formatting; we just
+   supply hex bytes. axl-webfs caches results in m_digest_cache (in
+   webfs-serve.c) so the REST and /dav surfaces share one compute
+   per (path, size). */
+static int
+dav_digest(void *user, const char *path, const char *algo,
+           char *out_hex, size_t hex_size)
+{
+    (void)user;
+    if (!axl_streql(algo, "sha-256") && !axl_streql(algo, "sha256"))
+        return AXL_ERR;
+    if (hex_size < 65) return AXL_ERR;
+
+    FtVolume vol;
+    char     sub[512];
+    if (parse_dav_path(path, &vol, sub, sizeof(sub)) != PATH_OBJECT)
+        return AXL_ERR;
+
+    uint64_t size = 0;
+    bool     is_dir = false;
+    if (ft_is_dir(&vol, sub, &is_dir) != 0 || is_dir)
+        return AXL_ERR;
+    if (ft_get_file_size(&vol, sub, &size) != 0)
+        return AXL_ERR;
+
+    return compute_file_digest(&vol, sub, size, out_hex) == 0
+           ? AXL_OK : AXL_ERR;
+}
+
 static int
 dav_move(void *user, const char *src, const char *dst, bool overwrite)
 {
@@ -363,6 +401,7 @@ static const AxlWebDavOps webfs_dav_ops = {
     .mkdir        = dav_mkdir,
     .remove       = dav_remove,
     .move         = dav_move,
+    .digest       = dav_digest,
     /* copy left NULL — modern clients fall back to GET+PUT. */
 };
 
