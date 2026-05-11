@@ -32,6 +32,15 @@ from urllib.parse import unquote, urlparse, parse_qs
 
 VERSION = "1.0"
 
+# Default credential file. Looked up automatically when neither
+# --basic-auth nor --basic-auth-file is given on the command line.
+# Path follows the XDG Base Dir spec for user config; falls back to
+# ~/.config/axl-webfs/auth on systems without XDG_CONFIG_HOME.
+def _default_auth_file_path() -> str:
+    cfg = os.environ.get("XDG_CONFIG_HOME") \
+        or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(cfg, "axl-webfs", "auth")
+
 
 class XferServer(HTTPServer):
     """HTTPServer subclass with typed attributes for root_dir and read_only."""
@@ -521,10 +530,18 @@ def main() -> None:
                                  "--basic-auth-file for routine use.")
     auth_group.add_argument("--basic-auth-file", default=None,
                             metavar="PATH",
-                            help="Like --basic-auth but reads USER:PASSWORD "
-                                 "from PATH (single line, trailing newline "
-                                 "stripped). Keeps the credential off the "
-                                 "command line.")
+                            help="Read USER:PASSWORD from PATH (single line, "
+                                 "trailing newline stripped). When neither "
+                                 "this nor --basic-auth is given the server "
+                                 "auto-loads $XDG_CONFIG_HOME/axl-webfs/auth "
+                                 "(default ~/.config/axl-webfs/auth) if it "
+                                 "exists; otherwise the server runs without "
+                                 "authentication and warns at startup.")
+    parser.add_argument("--no-auth", action="store_true",
+                        help="Skip the default auth-file lookup and run "
+                             "anonymous without a warning. Use when you "
+                             "explicitly want a public-read share on a "
+                             "trusted network.")
     args = parser.parse_args()
 
     root = os.path.realpath(args.root)
@@ -532,28 +549,53 @@ def main() -> None:
         print(f"Error: {root} is not a directory", file=sys.stderr)
         sys.exit(1)
 
-    # Resolve the auth credential up-front so a bad --basic-auth-file
-    # fails before we print the banner / open the listening socket.
-    # argparse's mutex group means at most one of the two flags is
-    # set; treat them as a single string the rest of the code sees.
+    # Resolve credentials with explicit > file-arg > default-file >
+    # nothing precedence. A bad explicit file is fatal; the default
+    # file path missing is just silently treated as "no auth" (and
+    # surfaced via the no-auth warning further down). argparse's mutex
+    # group keeps at most one of the explicit flags set.
     basic_auth = args.basic_auth
+    auth_source = "--basic-auth" if basic_auth else None
+    auth_file_used: str | None = None
+
     if args.basic_auth_file is not None:
+        # Explicit file: fail loudly if unreadable.
         try:
             with open(args.basic_auth_file, encoding="utf-8") as f:
                 basic_auth = f.read().strip()
         except OSError as e:
             print(f"Error reading --basic-auth-file: {e}", file=sys.stderr)
             sys.exit(1)
-        if ":" not in basic_auth:
-            print(f"Error: {args.basic_auth_file} must contain USER:PASSWORD",
-                  file=sys.stderr)
-            sys.exit(1)
-        # World-readable credential files are a footgun. curl prints a
-        # similar warning for --netrc-file; do the same.
+        auth_file_used = args.basic_auth_file
+        auth_source = f"--basic-auth-file {args.basic_auth_file}"
+    elif basic_auth is None and not args.no_auth:
+        # Implicit lookup: try the default config path. Missing file is
+        # not an error — it just means "fall through to no-auth and
+        # warn".
+        default_path = _default_auth_file_path()
+        if os.path.isfile(default_path):
+            try:
+                with open(default_path, encoding="utf-8") as f:
+                    basic_auth = f.read().strip()
+                auth_file_used = default_path
+                auth_source = f"default file {default_path}"
+            except OSError as e:
+                print(f"Warning: default auth file {default_path} "
+                      f"is present but unreadable: {e}", file=sys.stderr)
+
+    if basic_auth is not None and ":" not in basic_auth:
+        src = auth_file_used or "--basic-auth"
+        print(f"Error: {src} must contain USER:PASSWORD",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # World-readable credential files are a footgun. curl prints a
+    # similar warning for --netrc-file; do the same.
+    if auth_file_used is not None:
         try:
-            file_mode = os.stat(args.basic_auth_file).st_mode
+            file_mode = os.stat(auth_file_used).st_mode
             if file_mode & 0o077:
-                print(f"Warning: {args.basic_auth_file} is accessible to "
+                print(f"Warning: {auth_file_used} is accessible to "
                       f"other users (mode {file_mode & 0o777:o}); restrict "
                       f"with `chmod 600`.", file=sys.stderr)
         except OSError:
@@ -561,14 +603,59 @@ def main() -> None:
 
     mode = "read-only" if args.read_only else "read-write"
     proto = "WebDAV" if args.webdav else "JSON"
+
+    # Build the user-visible access URL. Pick an instructive host: if
+    # binding to a wildcard interface (0.0.0.0 / ::), substitute a
+    # concrete reachable address — try the primary outbound IP, fall
+    # back to the hostname, fall back to the literal bind.
+    display_host = args.bind
+    if args.bind in ("0.0.0.0", "::", ""):
+        try:
+            # No traffic actually sent — UDP connect(2) on a non-
+            # routable address picks the OS's preferred source IP.
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("10.255.255.255", 1))
+                display_host = s.getsockname()[0]
+            finally:
+                s.close()
+        except OSError:
+            try:
+                import socket
+                display_host = socket.gethostname()
+            except OSError:
+                display_host = "localhost"
+
+    access_url = f"http://{display_host}:{args.port}/"
+
     auth_note = " (Basic Auth required)" if basic_auth else ""
     print(f"xfer-server v{VERSION} ({proto}){auth_note}")
-    print(f"Serving {root} on {args.bind}:{args.port}")
-    print(f"Mode: {mode}")
+    print(f"Serving {root}")
+    print(f"  URL:   {access_url}")
+    print(f"  Mode:  {mode}")
+    if basic_auth is not None:
+        print(f"  Auth:  Basic ({auth_source})")
+    elif args.no_auth:
+        print("  Auth:  none (--no-auth)")
+    else:
+        # Be loud about no-auth so trusted-network assumptions are
+        # visible. The user can suppress with --no-auth if intentional.
+        print("  Auth:  ANONYMOUS — anyone reachable on the network "
+              "can read/write")
+        print(f"         Drop USER:PASSWORD into "
+              f"{_default_auth_file_path()} (chmod 600) to require auth, "
+              f"or pass --no-auth to silence this message.")
     print("Ready for axl-webfs mount connections.")
     print("Press Ctrl-C to stop.\n")
 
     if args.webdav:
+        if basic_auth is not None:
+            print("Note: --webdav uses wsgidav's anonymous auth provider; "
+                  "Basic-Auth gating applies only to the JSON path. "
+                  "For authenticated WebDAV use the JSON path + a WebDAV "
+                  "client that speaks both, or configure wsgidav directly.",
+                  file=sys.stderr)
         run_webdav(root, args.bind, args.port, args.read_only)
         return
 

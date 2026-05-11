@@ -46,13 +46,70 @@ On the workstation, serve a directory:
 ./scripts/xfer-server.py --root /path/to/efi/tools
 ```
 
+The server prints the access URL on startup:
+
+```
+xfer-server v1.0 (JSON)
+Serving /path/to/efi/tools
+  URL:   http://192.168.1.50:8080/
+  Mode:  read-write
+  Auth:  ANONYMOUS — anyone reachable on the network can read/write
+         Drop USER:PASSWORD into /home/you/.config/axl-webfs/auth
+         (chmod 600) to require auth, or pass --no-auth to silence
+         this message.
+Ready for axl-webfs mount connections.
+```
+
 In the UEFI Shell, mount it and run something off it:
 
 ```
-FS0:\> axl-webfs.efi mount http://10.0.0.5:8080/
+FS0:\> axl-webfs.efi mount http://192.168.1.50:8080/
 FS0:\> ls fs1:
 FS0:\> fs1:\IpmiTool.efi
 ```
+
+### Authentication
+
+The server resolves credentials in this order, highest precedence first:
+
+| Source | Notes |
+|---|---|
+| `--basic-auth USER:PASSWORD` | Convenience for one-off dev sessions. The credential lands in shell history and `ps` output, so prefer one of the file options for routine use. |
+| `--basic-auth-file PATH` | Read `USER:PASSWORD` from `PATH` (single line). Mutually exclusive with `--basic-auth`. |
+| `$XDG_CONFIG_HOME/axl-webfs/auth` *(default: `~/.config/axl-webfs/auth`)* | Auto-loaded when neither flag is given. Recommended for routine use — drop one line, `chmod 600`, and every subsequent invocation requires auth. |
+| *(none of the above)* | Server runs anonymous and prints an `Auth: ANONYMOUS` warning at startup. Pass `--no-auth` to suppress the warning when an anonymous share is intentional. |
+
+Set it up once:
+
+```bash
+mkdir -p ~/.config/axl-webfs
+echo "$USER:$(openssl rand -hex 16)" > ~/.config/axl-webfs/auth
+chmod 600 ~/.config/axl-webfs/auth
+```
+
+Then mount with the corresponding `--auth`:
+
+```
+FS0:\> axl-webfs.efi mount --auth basic:user:hexpassword http://192.168.1.50:8080/
+```
+
+The server emits a `Warning: ... is accessible to other users` message
+if the auth file isn't `chmod 600`-style restrictive (curl does the
+same for `--netrc-file`).
+
+### WebDAV mode
+
+Add `--webdav` to expose the directory as an RFC 4918 WebDAV server
+(via `wsgidav`, install with `pip install wsgidav cheroot`). Same
+URL banner, same on-disk root — clients like Windows Explorer,
+Finder, and `davfs2` can mount it as a network drive natively.
+
+```bash
+./scripts/xfer-server.py --webdav --root /path/to/efi/tools
+```
+
+`--webdav` mode delegates auth to `wsgidav`'s anonymous provider —
+the `--basic-auth*` flags apply only to the JSON path.
 
 ## Install
 
