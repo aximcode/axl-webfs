@@ -373,6 +373,17 @@ if [ "$RUN_QEMU" = true ]; then
     echo "tool data" > "$QEMU_TEST_DIR/tools/sample.txt"
     python3 -c "print('large file line\\n' * 3000, end='')" > "$QEMU_TEST_DIR/large.txt"
 
+    # Multi-chunk PUT regression source: a deterministic-content
+    # ~256 KB file lives on the ESP and gets cp'd to fs1: via the
+    # mount. UEFI Shell's `cp` chunks anything past its internal
+    # 64 KB read at minimum; before WebFsWrite buffered, each Write
+    # produced a fresh PUT-overwrite and the destination ended up
+    # containing only the last chunk. The post-QEMU md5 compare
+    # pins byte-for-byte correctness.
+    MULTI_CHUNK_SRC=$(mktemp --suffix=.bin)
+    python3 -c "import sys; sys.stdout.buffer.write((b'multichunk regression payload - ' * 8192)[:262144])" > "$MULTI_CHUNK_SRC"
+    MULTI_CHUNK_MD5=$(md5sum "$MULTI_CHUNK_SRC" | awk '{print $1}')
+
     python3 "$SCRIPT_DIR/xfer-server.py" --root "$QEMU_TEST_DIR" --port $SERVER_PORT --bind 0.0.0.0 &
     SERVER_PID=$!
     sleep 0.5
@@ -413,6 +424,8 @@ type fs1:\\readme.txt
 echo === TEST: write file ===
 echo "written from uefi" > fs0:\\write_test.txt
 cp fs0:\\write_test.txt fs1:\\from_uefi.txt
+echo === TEST: multi-chunk PUT ===
+cp fs0:\\multichunk.bin fs1:\\multichunk-uploaded.bin
 echo === TEST: read subdir ===
 ls fs1:\\tools\\
 echo === TEST: exec from mount ===
@@ -428,10 +441,19 @@ NSHEOF
         SERIAL_LOG=$(mktemp)
         info "QEMU" "$QEMU_ARCH: Booting mount test..."
 
+        # Stage the multi-chunk source on the ESP so the NSH's
+        # `cp fs0:\multichunk.bin fs1:\multichunk-uploaded.bin`
+        # round-trips through the mount client. --extra files end
+        # up at the ESP root with their basename, hence
+        # fs0:\multichunk.bin.
+        MULTI_CHUNK_STAGE="$(dirname "$MULTI_CHUNK_SRC")/multichunk.bin"
+        cp "$MULTI_CHUNK_SRC" "$MULTI_CHUNK_STAGE"
         "$RUN_QEMU_SH" --arch "$QEMU_ARCH" --timeout 30 --raw --net \
             --nsh "$MOUNT_NSH" \
+            --extra "$MULTI_CHUNK_STAGE" \
             --serial-log "$SERIAL_LOG" \
             "$APP_EFI" > /dev/null 2>&1 || true
+        rm -f "$MULTI_CHUNK_STAGE"
 
         rm -f "$MOUNT_NSH"
 
@@ -471,6 +493,26 @@ NSHEOF
             pass "$QEMU_ARCH: cp wrote file to workstation" || \
             fail "$QEMU_ARCH: write" "from_uefi.txt not on workstation"
 
+        # Multi-chunk PUT regression check: compare the uploaded file's
+        # md5 against the source. UEFI Shell's cp internally chunks
+        # large files; without WebFsWrite's staging buffer this would
+        # arrive at the workstation containing only the last chunk's
+        # bytes (mismatch, fail). With the buffer the bytes compose
+        # into a single PUT and md5 matches.
+        if [ -f "$QEMU_TEST_DIR/multichunk-uploaded.bin" ]; then
+            GOT_MD5=$(md5sum "$QEMU_TEST_DIR/multichunk-uploaded.bin" \
+                      | awk '{print $1}')
+            if [ "$GOT_MD5" = "$MULTI_CHUNK_MD5" ]; then
+                pass "$QEMU_ARCH: multi-chunk PUT round-trips (md5 match)"
+            else
+                fail "$QEMU_ARCH: multi-chunk PUT" \
+                     "md5 mismatch: got $GOT_MD5, want $MULTI_CHUNK_MD5"
+            fi
+        else
+            fail "$QEMU_ARCH: multi-chunk PUT" \
+                 "multichunk-uploaded.bin not on workstation"
+        fi
+
         grep -q "sample.txt" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: ls subdir shows remote files" || \
             fail "$QEMU_ARCH: ls subdir" "sample.txt not found"
@@ -491,10 +533,12 @@ NSHEOF
             pass "$QEMU_ARCH: all Shell commands completed" || \
             fail "$QEMU_ARCH: completion" "startup.nsh did not finish"
 
-        rm -f "$SERIAL_LOG" "$QEMU_TEST_DIR/from_uefi.txt"
+        rm -f "$SERIAL_LOG" "$QEMU_TEST_DIR/from_uefi.txt" \
+              "$QEMU_TEST_DIR/multichunk-uploaded.bin"
     done
 
     rm -rf "$QEMU_TEST_DIR"
+    rm -f "$MULTI_CHUNK_SRC"
 
     # ========================================================================
     # Basic-Auth mount test

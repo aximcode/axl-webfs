@@ -384,8 +384,11 @@ static int
 proto_write_full(WebFsPrivate *priv, const char *path,
                  const void *body, size_t len, size_t *out_status)
 {
+    /* Stream the body — see the matching JSON impl for the rationale. */
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "PUT", path, NULL, body, len, &resp);
+    int rc = webfs_http_request_buf_streaming(
+        priv, "PUT", path, NULL, body, len,
+        "application/octet-stream", &resp);
     if (rc != 0 || resp == NULL) return -1;
     *out_status = resp->status_code;
     axl_http_client_response_free(resp);

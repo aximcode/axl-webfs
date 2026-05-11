@@ -53,6 +53,73 @@ webfs_http_request(
 }
 
 // ----------------------------------------------------------------------------
+// Streaming-PUT helper (buffer-drain producer over axl_http_request_streaming)
+// ----------------------------------------------------------------------------
+
+typedef struct {
+    const uint8_t *bytes;
+    size_t         total;
+    size_t         pos;
+} PutDrainCtx;
+
+static int
+put_drain(void *ctx, void *out_buf, size_t out_size, size_t *out_count)
+{
+    PutDrainCtx *d = ctx;
+    size_t remaining = d->total - d->pos;
+    size_t n = remaining < out_size ? remaining : out_size;
+    if (n > 0) {
+        axl_memcpy(out_buf, d->bytes + d->pos, n);
+        d->pos += n;
+    }
+    *out_count = n;
+    return AXL_OK;
+}
+
+int
+webfs_http_request_buf_streaming(
+    WebFsPrivate          *priv,
+    const char            *method,
+    const char            *path,
+    AxlHashTable          *extra_headers,
+    const void            *body,
+    size_t                 body_len,
+    const char            *content_type,
+    AxlHttpClientResponse **response
+)
+{
+    /* URL-encode path identically to webfs_http_request — same
+       split/encode-path / keep-query-raw rule so consumers can
+       pass /files/<path>?something safely. */
+    char encoded_path[MAX_PATH_LEN * 3];
+    const char *query = path;
+    while (*query && *query != '?') query++;
+    if (*query == '\0') query = NULL;
+    if (query != NULL) {
+        char path_only[MAX_PATH_LEN];
+        size_t plen = (size_t)(query - path);
+        if (plen >= sizeof(path_only)) plen = sizeof(path_only) - 1;
+        axl_memcpy(path_only, path, plen);
+        path_only[plen] = '\0';
+        char enc_part[MAX_PATH_LEN * 3];
+        axl_url_encode(path_only, enc_part, sizeof(enc_part));
+        axl_snprintf(encoded_path, sizeof(encoded_path), "%s%s",
+                     enc_part, query);
+    } else {
+        axl_url_encode(path, encoded_path, sizeof(encoded_path));
+    }
+    char url[MAX_PATH_LEN * 3 + 280];
+    axl_snprintf(url, sizeof(url), "%s%s", priv->base_url, encoded_path);
+
+    PutDrainCtx d = { .bytes = body, .total = body_len, .pos = 0 };
+    return axl_http_request_streaming(
+        priv->http_client, method, url,
+        put_drain, &d, NULL,
+        body_len, content_type,
+        extra_headers, response);
+}
+
+// ----------------------------------------------------------------------------
 // Directory listing cache
 // ----------------------------------------------------------------------------
 

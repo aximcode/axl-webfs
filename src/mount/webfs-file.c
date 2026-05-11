@@ -14,6 +14,12 @@
 
 AXL_LOG_DOMAIN("webfs-mount-file");
 
+/* WebFsClose calls flush_put_buf to drain any buffered Writes; the
+   helper itself lives down by WebFsWrite where the buffer state is
+   manipulated. Forward-declare to keep the spec-ordered Open / Close
+   / Read block intact at the top of the file. */
+static EFI_STATUS flush_put_buf(WebFsFileCtx *fh);
+
 
 // ---------------------------------------------------------------------------
 // Path helpers -- thin wrappers around AXL SDK path functions
@@ -211,6 +217,14 @@ WebFsClose(
 {
     WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
     EFI_STATUS    rc  = EFI_SUCCESS;
+
+    /* Drain any buffered Writes before teardown. flush_put_buf
+       resets buffer state regardless of outcome so we never leak
+       put_buf even on PUT failure. */
+    if (fh->put_dirty) {
+        EFI_STATUS flush_rc = flush_put_buf(fh);
+        if (flush_rc != EFI_SUCCESS) rc = flush_rc;
+    }
 
     /* Integrity verification at end-of-handle:
        - active + !failed + the whole file was read sequentially
@@ -474,6 +488,45 @@ WebFsRead(
 // EFI_FILE_PROTOCOL: Write
 // ---------------------------------------------------------------------------
 
+/* Drain the buffered PUT body to the server in a single request.
+   Called from WebFsClose (via the umbrella close path) and
+   WebFsFlush. Resets put_buf state whether or not the PUT
+   succeeded — the buffer can't survive the call because the
+   close/flush sites assume cleanup happened. Returns
+   EFI_DEVICE_ERROR on network / 4xx-5xx response, EFI_SUCCESS
+   otherwise. Empty buffer (no Writes happened since last flush)
+   is a no-op success. */
+static EFI_STATUS
+flush_put_buf(WebFsFileCtx *fh)
+{
+    if (!fh->put_dirty) return EFI_SUCCESS;
+
+    WebFsPrivate *priv = fh->private_data;
+    const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
+    size_t status = 0;
+    int rc = ops->write_full(priv, fh->path, fh->put_buf,
+                             fh->put_buf_used, &status);
+
+    /* Reset buffer state regardless of outcome. */
+    axl_free(fh->put_buf);
+    fh->put_buf = NULL;
+    fh->put_buf_cap = 0;
+    fh->put_buf_used = 0;
+    fh->put_dirty = false;
+
+    if (rc != 0 ||
+        (status != 200 && status != 201 && status != 204)) {
+        return EFI_DEVICE_ERROR;
+    }
+
+    /* Server view changed — drop the parent listing's cached
+       entry so the next ls reflects the new size / mtime. */
+    char parent_dir[MAX_PATH_LEN];
+    get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
+    dir_cache_invalidate(priv, parent_dir);
+    return EFI_SUCCESS;
+}
+
 EFI_STATUS
 EFIAPI
 WebFsWrite(
@@ -487,27 +540,44 @@ WebFsWrite(
 
     if (fh->is_dir) return EFI_UNSUPPORTED;
     if (priv->read_only) return EFI_WRITE_PROTECTED;
+    if (*BufferSize == 0) return EFI_SUCCESS;
 
-    const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
-    size_t write_status = 0;
-    if (ops->write_full(priv, fh->path, Buffer, *BufferSize,
-                        &write_status) != 0) {
-        return EFI_DEVICE_ERROR;
-    }
-    if (write_status != 201 && write_status != 200 &&
-        write_status != 204) {
-        return EFI_DEVICE_ERROR;
+    /* Lazy-allocate the staging buffer on the first Write. */
+    if (!fh->put_dirty) {
+        fh->put_buf = axl_malloc(PUT_BUF_INITIAL);
+        if (fh->put_buf == NULL) return EFI_OUT_OF_RESOURCES;
+        fh->put_buf_cap  = PUT_BUF_INITIAL;
+        fh->put_buf_used = 0;
+        fh->put_dirty    = true;
+        /* The file is changing; the SHA-256 we got at Open no
+           longer reflects what's on the server. Disable the
+           integrity check so Close doesn't report a spurious
+           mismatch. */
+        if (fh->digest_active) fh->digest_failed = true;
     }
 
+    /* Grow the buffer geometrically up to the cap. */
+    size_t need = fh->put_buf_used + *BufferSize;
+    if (need > PUT_BUF_MAX) return EFI_VOLUME_FULL;
+    if (need > fh->put_buf_cap) {
+        size_t new_cap = fh->put_buf_cap * 2;
+        while (new_cap < need) new_cap *= 2;
+        if (new_cap > PUT_BUF_MAX) new_cap = PUT_BUF_MAX;
+        uint8_t *nb = axl_realloc(fh->put_buf, new_cap);
+        if (nb == NULL) return EFI_OUT_OF_RESOURCES;
+        fh->put_buf = nb;
+        fh->put_buf_cap = new_cap;
+    }
+
+    axl_memcpy(fh->put_buf + fh->put_buf_used, Buffer, *BufferSize);
+    fh->put_buf_used += *BufferSize;
     fh->position += *BufferSize;
     if (fh->position > fh->file_size) {
         fh->file_size = fh->position;
     }
-
-    // Invalidate parent dir cache and read-ahead
-    char parent_dir[MAX_PATH_LEN];
-    get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
-    dir_cache_invalidate(priv, parent_dir);
+    /* Future Reads on this handle would race against the buffered
+       writes; invalidate the read-ahead so any subsequent Read
+       triggers a fresh fetch (post-flush). */
     fh->read_ahead_len = 0;
 
     return EFI_SUCCESS;
@@ -763,6 +833,12 @@ WebFsFlush(
     EFI_FILE_PROTOCOL *This
 )
 {
-    (void)This;
+    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
+    /* UEFI Shell's `cp` / many callers Flush before Close. Drain
+       the staging buffer here so the bytes are on the server
+       before the next operation observes the file. */
+    if (fh->put_dirty) {
+        return flush_put_buf(fh);
+    }
     return EFI_SUCCESS;
 }

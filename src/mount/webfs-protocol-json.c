@@ -162,9 +162,14 @@ proto_write_full(WebFsPrivate *priv, const char *path,
     char file_path[MAX_PATH_LEN];
     axl_snprintf(file_path, sizeof(file_path), "/files%s", path);
 
+    /* Stream the body through axl_http_request_streaming (SDK
+       14cef93) so the client doesn't materialize a second
+       body-sized buffer. For multi-hundred-MB cp from UEFI Shell
+       this halves peak RSS. */
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "PUT", file_path, NULL, body, len,
-                                &resp);
+    int rc = webfs_http_request_buf_streaming(
+        priv, "PUT", file_path, NULL, body, len,
+        "application/octet-stream", &resp);
     if (rc != 0 || resp == NULL) return -1;
     *out_status = resp->status_code;
     axl_http_client_response_free(resp);

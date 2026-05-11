@@ -38,6 +38,21 @@
 #define HTTP_BODY_BUF_SIZE           4096
 #define DEFAULT_SERVER_PORT          8080
 
+/* PUT body staging. Each WebFsWrite call appends to a heap buffer
+   instead of issuing an immediate PUT; WebFsClose / WebFsFlush
+   drain the buffer in one PUT so the destination receives the full
+   composed body. Without this, UEFI Shell's `cp` (which writes in
+   sub-file chunks) produced destinations that contained only the
+   last chunk's bytes.
+   - INITIAL is a small starting cap; the buffer grows geometrically.
+   - MAX bounds peak memory so a runaway write doesn't OOM the
+     UEFI image. 256 MB is generous for typical UEFI Shell `cp`
+     of diagnostic files; multi-GB transfers need future temp-file-
+     backed staging or true producer-driven streaming via the SDK's
+     axl_http_request_streaming. */
+#define PUT_BUF_INITIAL              (64 * 1024)
+#define PUT_BUF_MAX                  (256u * 1024u * 1024u)
+
 #define VOLUME_LABEL                 L"XferMount"
 
 // ---------------------------------------------------------------------------
@@ -120,6 +135,20 @@ typedef struct {
     uint64_t             read_ahead_start;
     size_t               read_ahead_len;
 
+    /// Buffered PUT body. WebFsWrite appends here so multi-chunk
+    /// Writes from UEFI Shell `cp` compose into a single PUT at
+    /// WebFsClose / WebFsFlush time. Without this, each Write
+    /// would PUT-overwrite the destination with just that chunk.
+    /// Lifetime: NULL → not dirty (no Writes happened); allocated
+    /// on first Write, freed on flush (Close OR Flush). Position
+    /// always matches put_buf_used (sequential append model);
+    /// SetPosition / non-sequential Writes are flagged but the
+    /// model breaks gracefully (last buffered window wins).
+    uint8_t              *put_buf;
+    size_t               put_buf_cap;
+    size_t               put_buf_used;
+    bool                 put_dirty;
+
     /// Built-in SHA-256 integrity check (best-effort). Set up on
     /// Open if the server advertises a `Digest: sha-256=<hex>` header.
     /// digest_ctx is fed bytes as long as reads stay strictly
@@ -168,6 +197,17 @@ void dir_cache_invalidate(WebFsPrivate *priv, const char *path);
 /// Issue an HTTP request with automatic reconnect on connection error.
 /// Caller must free *response with axl_http_client_response_free().
 int webfs_http_request(WebFsPrivate *priv, const char *method, const char *path, AxlHashTable *extra_headers, const void *body, size_t body_len, AxlHttpClientResponse **response);
+
+/// Streaming-PUT/POST variant: builds the URL exactly like
+/// webfs_http_request, then ships the body in chunks through
+/// axl-sdk's axl_http_request_streaming (SDK 14cef93) so the
+/// client never materializes a second body-sized buffer for the
+/// send. Body comes from @p body / @p body_len — the helper wraps
+/// it with a tiny producer-callback that drains the buffer at
+/// whatever chunk size the SDK pulls. For consumers that have a
+/// real producer (future temp-file-backed staging), use
+/// axl_http_request_streaming directly with a custom callback.
+int webfs_http_request_buf_streaming(WebFsPrivate *priv, const char *method, const char *path, AxlHashTable *extra_headers, const void *body, size_t body_len, const char *content_type, AxlHttpClientResponse **response);
 
 /// Extract the SHA-256 hex digest from a parsed `Digest:` header value
 /// per RFC 3230 (e.g. `sha-256=<64-hex>` or
