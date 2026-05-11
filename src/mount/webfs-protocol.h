@@ -64,11 +64,19 @@ typedef struct {
                       void *buf, size_t *out_got,
                       char *out_digest_hex, size_t digest_size);
 
-    /// Upload (or overwrite) a file with @p len bytes of @p body.
+    /// Upload (or overwrite) a file with @p len bytes of @p body
+    /// via axl_http_request_streaming. The body is pulled from
+    /// @p body in 8 KiB chunks on the wire, so the SDK doesn't
+    /// duplicate it on the network side. When @p digest_hex is
+    /// non-NULL, the caller has already computed SHA-256 of the
+    /// body; the impl emits `Content-Digest: sha-256=<hex>` so
+    /// the server's PUT-side validation (SDK 28d488d) can verify.
+    ///
     /// On success @p out_status is set to the server's status code
     /// (201 created, 200 overwrite, etc.) for caller diagnostics.
     int (*write_full)(WebFsPrivate *priv, const char *path,
                       const void *body, size_t len,
+                      const char *digest_hex,
                       size_t *out_status);
 
     /// Create an empty file (PUT with zero-length body). Separate

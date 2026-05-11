@@ -1223,6 +1223,42 @@ NSHEOF
                     pass "serve dav: GET round-trip preserves bytes" || \
                     fail "serve dav: GET" "expected 'dav content', got '$CONTENT'"
 
+                # PUT-side Content-Digest validation (SDK 28d488d).
+                # Mismatch → 400 + file is cleaned up (no stale bytes
+                # left on the volume). Use a wrong hex; the right one
+                # would be sha256("digest-body") =
+                # 5e524c54... but we don't care — just need ANY
+                # 64-hex that doesn't match.
+                HTTP_CODE=$(echo -n "digest-body" | curl -s -o /dev/null \
+                    -w "%{http_code}" \
+                    -H "Content-Digest: sha-256=0000000000000000000000000000000000000000000000000000000000000000" \
+                    -T - "$BASE/dav/fs0/digest-bad.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "400" ] && \
+                    pass "serve dav: Content-Digest mismatch → 400" || \
+                    fail "serve dav: Content-Digest mismatch" \
+                         "expected 400, got $HTTP_CODE"
+
+                # The bad PUT should have left no file behind.
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    "$BASE/dav/fs0/digest-bad.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "404" ] && \
+                    pass "serve dav: rejected PUT leaves no stale file" || \
+                    fail "serve dav: rejected PUT cleanup" \
+                         "expected 404, got $HTTP_CODE"
+
+                # Matching digest → 201. Pre-compute the SHA-256 of
+                # "digest-body" externally to keep the test
+                # deterministic.
+                DIGEST_OK=$(printf '%s' "digest-body" | sha256sum | cut -d' ' -f1)
+                HTTP_CODE=$(echo -n "digest-body" | curl -s -o /dev/null \
+                    -w "%{http_code}" \
+                    -H "Content-Digest: sha-256=$DIGEST_OK" \
+                    -T - "$BASE/dav/fs0/digest-ok.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && \
+                    pass "serve dav: Content-Digest match → 201" || \
+                    fail "serve dav: Content-Digest match" \
+                         "expected 201, got $HTTP_CODE"
+
                 # MKCOL creates a collection.
                 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
                     -X MKCOL "$BASE/dav/fs0/dav-dir" 2>/dev/null || true)

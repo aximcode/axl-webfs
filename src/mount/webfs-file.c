@@ -503,9 +503,35 @@ flush_put_buf(WebFsFileCtx *fh)
 
     WebFsPrivate *priv = fh->private_data;
     const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
+
+    /* Compute SHA-256 of the accumulator so the server can verify
+       end-to-end on PUT (SDK 28d488d's Content-Digest validation
+       reuses the same hex format the response-side Want-Digest
+       returns). Cheap relative to the network transfer; one hash
+       across the consolidated body, never per-chunk. axl_compute_
+       checksum_digest writes 32 raw bytes — convert to lowercase
+       hex inline for the header. */
+    char digest_hex[65];
+    uint8_t digest_raw[32];
+    if (axl_compute_checksum_digest(AXL_CHECKSUM_SHA256,
+                                    fh->put_buf, fh->put_buf_used,
+                                    digest_raw, sizeof(digest_raw))
+            == AXL_OK) {
+        static const char hex[] = "0123456789abcdef";
+        for (size_t i = 0; i < 32; i++) {
+            digest_hex[i * 2]     = hex[digest_raw[i] >> 4];
+            digest_hex[i * 2 + 1] = hex[digest_raw[i] & 0xF];
+        }
+        digest_hex[64] = '\0';
+    } else {
+        digest_hex[0] = '\0';
+    }
+
     size_t status = 0;
     int rc = ops->write_full(priv, fh->path, fh->put_buf,
-                             fh->put_buf_used, &status);
+                             fh->put_buf_used,
+                             digest_hex[0] != '\0' ? digest_hex : NULL,
+                             &status);
 
     /* Reset buffer state regardless of outcome. */
     axl_free(fh->put_buf);

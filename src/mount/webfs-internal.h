@@ -135,6 +135,7 @@ typedef struct {
     uint64_t             read_ahead_start;
     size_t               read_ahead_len;
 
+
     /// Buffered PUT body. WebFsWrite appends here so multi-chunk
     /// Writes from UEFI Shell `cp` compose into a single PUT at
     /// WebFsClose / WebFsFlush time. Without this, each Write

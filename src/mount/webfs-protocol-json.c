@@ -157,19 +157,36 @@ proto_read_range(WebFsPrivate *priv, const char *path,
 
 static int
 proto_write_full(WebFsPrivate *priv, const char *path,
-                 const void *body, size_t len, size_t *out_status)
+                 const void *body, size_t len,
+                 const char *digest_hex, size_t *out_status)
 {
     char file_path[MAX_PATH_LEN];
     axl_snprintf(file_path, sizeof(file_path), "/files%s", path);
 
+    /* Build extra headers when the caller passed a digest. Lifetime
+       follows the existing pattern: strdup the value, free it after
+       the request, then free the table. */
+    AxlHashTable *hdrs = NULL;
+    if (digest_hex != NULL) {
+        hdrs = axl_hash_table_new_str();
+        if (hdrs == NULL) return -1;
+        char dv[80];
+        axl_snprintf(dv, sizeof(dv), "sha-256=%s", digest_hex);
+        axl_hash_table_insert(hdrs, "content-digest", axl_strdup(dv));
+    }
+
     /* Stream the body through axl_http_request_streaming (SDK
-       14cef93) so the client doesn't materialize a second
-       body-sized buffer. For multi-hundred-MB cp from UEFI Shell
-       this halves peak RSS. */
+       14cef93). For multi-hundred-MB cp from UEFI Shell this halves
+       peak RSS vs the contiguous body path. */
     AxlHttpClientResponse *resp = NULL;
     int rc = webfs_http_request_buf_streaming(
-        priv, "PUT", file_path, NULL, body, len,
+        priv, "PUT", file_path, hdrs, body, len,
         "application/octet-stream", &resp);
+
+    if (hdrs != NULL) {
+        axl_free(axl_hash_table_lookup(hdrs, "content-digest"));
+        axl_hash_table_free(hdrs);
+    }
     if (rc != 0 || resp == NULL) return -1;
     *out_status = resp->status_code;
     axl_http_client_response_free(resp);
@@ -182,7 +199,7 @@ proto_create_empty(WebFsPrivate *priv, const char *path, size_t *out_status)
     /* JSON variant historically sent an empty-string body. Keep that
        shape (it's how xfer-server.py distinguishes "client knew it
        was empty" from "client forgot Content-Length"). */
-    return proto_write_full(priv, path, "", 0, out_status);
+    return proto_write_full(priv, path, "", 0, NULL, out_status);
 }
 
 // ----------------------------------------------------------------------------

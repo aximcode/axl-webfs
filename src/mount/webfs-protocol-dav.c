@@ -382,13 +382,28 @@ proto_read_range(WebFsPrivate *priv, const char *path,
 
 static int
 proto_write_full(WebFsPrivate *priv, const char *path,
-                 const void *body, size_t len, size_t *out_status)
+                 const void *body, size_t len,
+                 const char *digest_hex, size_t *out_status)
 {
+    AxlHashTable *hdrs = NULL;
+    if (digest_hex != NULL) {
+        hdrs = axl_hash_table_new_str();
+        if (hdrs == NULL) return -1;
+        char dv[80];
+        axl_snprintf(dv, sizeof(dv), "sha-256=%s", digest_hex);
+        axl_hash_table_insert(hdrs, "content-digest", axl_strdup(dv));
+    }
+
     /* Stream the body — see the matching JSON impl for the rationale. */
     AxlHttpClientResponse *resp = NULL;
     int rc = webfs_http_request_buf_streaming(
-        priv, "PUT", path, NULL, body, len,
+        priv, "PUT", path, hdrs, body, len,
         "application/octet-stream", &resp);
+
+    if (hdrs != NULL) {
+        axl_free(axl_hash_table_lookup(hdrs, "content-digest"));
+        axl_hash_table_free(hdrs);
+    }
     if (rc != 0 || resp == NULL) return -1;
     *out_status = resp->status_code;
     axl_http_client_response_free(resp);
@@ -398,7 +413,7 @@ proto_write_full(WebFsPrivate *priv, const char *path,
 static int
 proto_create_empty(WebFsPrivate *priv, const char *path, size_t *out_status)
 {
-    return proto_write_full(priv, path, "", 0, out_status);
+    return proto_write_full(priv, path, "", 0, NULL, out_status);
 }
 
 // ----------------------------------------------------------------------------
