@@ -53,6 +53,11 @@ const AxlArgDesc webfs_mount_flags[] = {
       .help = "Wire protocol: auto (default), json, or dav" },
     { .name = "auth", .short_name = 'a', .type = AXL_ARG_STRING,
       .help = "HTTP auth: basic:user:token | bearer:token" },
+    { .name = "nic", .short_name = 'n', .type = AXL_ARG_U64,
+      .help = "NIC index to bring up (default: auto-detect)" },
+    { .name = "static-ip", .short_name = 's', .type = AXL_ARG_STRING,
+      .help = "Static IPv4 to assign on the chosen NIC instead of "
+              "DHCP (e.g. 192.168.1.50). DHCP if empty/unset." },
     {0}
 };
 
@@ -73,6 +78,18 @@ webfs_mount_handler(AxlArgs *a)
     g_mount_opts.auth      = axl_args_get_string(a, "auth");
     if (g_mount_opts.auth == NULL)
         g_mount_opts.auth = "";
+    /* AxlArgs probe: get_string returns NULL when the flag wasn't
+       passed (regardless of the typed accessor), so we use it to
+       distinguish "user gave --nic 0" from "no --nic at all". The
+       sentinel (uint64_t)-1 lands in mount_descs's default value too
+       so the driver-side AxlConfig auto-apply produces the same
+       result. */
+    g_mount_opts.nic_index = (axl_args_get_string(a, "nic") != NULL)
+                                 ? axl_args_get_uint(a, "nic")
+                                 : (uint64_t)-1;
+    g_mount_opts.static_ip = axl_args_get_string(a, "static-ip");
+    if (g_mount_opts.static_ip == NULL)
+        g_mount_opts.static_ip = "";
 
     AxlServiceDeploy deploy = mount_make_deploy();
 

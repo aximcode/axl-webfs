@@ -26,17 +26,27 @@ static NetworkInfo  mIfaceInfo;
 /* ------------------------------------------------------------------ */
 
 int
-network_init(size_t nic_index, const uint8_t *static_ip, size_t timeout_sec)
+network_init(uint64_t nic_index, const uint8_t *static_ip, size_t timeout_sec)
 {
     if (mInitialized) return -1;
 
     axl_memset(&mIfaceInfo, 0, sizeof(mIfaceInfo));
 
+    /* Sentinel translation in one place: AxlConfig descriptors
+       represent "auto-detect" as (uint64_t)-1 so the value can ride
+       through LoadOptions / AxlArgs unchanged; the SDK's bring_up
+       uses (size_t)-1 for the same meaning. Doing the conversion
+       here keeps every caller out of the sentinel-mapping business
+       (DRY: serve_setup, mount_setup were both doing it). */
+    size_t nic = (nic_index == (uint64_t)-1)
+                 ? (size_t)-1
+                 : (size_t)nic_index;
+
     /* axl_net_bring_up: NULL static_ip -> DHCP; non-NULL -> static
        (default netmask 255.255.255.0, no gateway). Returns the
        acquired address in addr_out. */
     AxlIPv4Address addr;
-    if (axl_net_bring_up(nic_index, static_ip, NULL, NULL,
+    if (axl_net_bring_up(nic, static_ip, NULL, NULL,
                          timeout_sec, &addr) != 0) {
         axl_printf("ERROR: Network init failed\n");
         return -1;

@@ -51,7 +51,7 @@ The server prints the access URL on startup:
 ```
 xfer-server v1.0 (JSON)
 Serving /path/to/efi/tools
-  URL:   http://192.168.1.50:8080/
+  URL:   http://192.168.1.50:9876/
   Mode:  read-write
   Auth:  ANONYMOUS — anyone reachable on the network can read/write
          Drop USER:PASSWORD into /home/you/.config/axl-webfs/auth
@@ -60,10 +60,21 @@ Serving /path/to/efi/tools
 Ready for axl-webfs mount connections.
 ```
 
+When auth is enabled the banner replaces the `Auth:` line with the
+authenticated identity (password never displayed):
+
+```
+xfer-server v1.0 (JSON) (Basic Auth required)
+Serving /path/to/efi/tools
+  URL:   http://192.168.1.50:9876/
+  Mode:  read-write
+  Auth:  Basic — user "mgosha" (default file /home/you/.config/axl-webfs/auth)
+```
+
 In the UEFI Shell, mount it and run something off it:
 
 ```
-FS0:\> axl-webfs.efi mount http://192.168.1.50:8080/
+FS0:\> axl-webfs.efi mount http://192.168.1.50:9876/
 FS0:\> ls fs1:
 FS0:\> fs1:\IpmiTool.efi
 ```
@@ -90,7 +101,7 @@ chmod 600 ~/.config/axl-webfs/auth
 Then mount with the corresponding `--auth`:
 
 ```
-FS0:\> axl-webfs.efi mount --auth basic:user:hexpassword http://192.168.1.50:8080/
+FS0:\> axl-webfs.efi mount --auth basic:user:hexpassword http://192.168.1.50:9876/
 ```
 
 The server emits a `Warning: ... is accessible to other users` message
@@ -219,7 +230,7 @@ axl-webfs.efi serve [-p port] [-n nic] [-t timeout]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-p` | 8080 | Listen port |
+| `-p` | 9876 | Listen port (matches `DEFAULT_SERVER_PORT` on both sides; aligned with `xfer-server.py`) |
 | `-n` | auto | NIC index (use `list-nics` to find) |
 | `-t` | 0 | Idle timeout in seconds (0 = never) |
 | `--mode` | `read-write` | Permission mode: `read-only` blocks PUT/POST/DELETE, `write-only` blocks GET |

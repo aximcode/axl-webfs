@@ -36,7 +36,16 @@
 #define READAHEAD_BUF_SIZE           (64 * 1024)
 #define MAX_PATH_LEN                 512
 #define HTTP_BODY_BUF_SIZE           4096
-#define DEFAULT_SERVER_PORT          8080
+/* axl-webfs's chosen default. Picked to avoid the well-trodden
+   8080 / 3000 / 5000 / 9000 dev-tool zone — those collide with
+   Jenkins, dev servers, SonarQube, Tomcat, etc., especially on
+   corporate laptops. 9876 is IANA-registered to RFC 2974 "sd"
+   (Session Director, practically defunct), nowhere near the
+   ephemeral-port range, and easy to remember. xfer-server.py's
+   default tracks this value so a no-flag mount and a no-flag
+   serve agree out of the box. Override with `--port N` on serve
+   or with `http://host:N/` on mount. */
+#define DEFAULT_SERVER_PORT          9876
 
 /* PUT body staging. Each WebFsWrite call appends to a heap buffer
    instead of issuing an immediate PUT; WebFsClose / WebFsFlush

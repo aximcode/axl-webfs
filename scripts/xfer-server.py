@@ -13,7 +13,7 @@ on-disk root.
 
 Usage:
     ./xfer-server.py                        # JSON protocol, current dir
-    ./xfer-server.py --root /path --port 9090
+    ./xfer-server.py --root /path --port 9876
     ./xfer-server.py --read-only
     ./xfer-server.py --webdav               # WebDAV protocol (needs wsgidav)
 """
@@ -512,8 +512,9 @@ def main() -> None:
         description="xfer-server — Workstation file server for axl-webfs")
     parser.add_argument("--root", default=".",
                         help="Directory to serve (default: current)")
-    parser.add_argument("--port", type=int, default=8080,
-                        help="Listen port (default: 8080)")
+    parser.add_argument("--port", type=int, default=9876,
+                        help="Listen port (default: 9876, matches "
+                             "the UEFI mount client's DEFAULT_SERVER_PORT)")
     parser.add_argument("--bind", default="0.0.0.0",
                         help="Bind address (default: 0.0.0.0)")
     parser.add_argument("--read-only", action="store_true",
@@ -635,7 +636,13 @@ def main() -> None:
     print(f"  URL:   {access_url}")
     print(f"  Mode:  {mode}")
     if basic_auth is not None:
-        print(f"  Auth:  Basic ({auth_source})")
+        # Surface the username so the user knows who they're auth'ing
+        # as without having to grep the credential file. Password is
+        # never displayed. Split on the first ':' so passwords
+        # containing colons stay intact even though we don't print
+        # them.
+        auth_user = basic_auth.split(":", 1)[0]
+        print(f'  Auth:  Basic — user "{auth_user}" ({auth_source})')
     elif args.no_auth:
         print("  Auth:  none (--no-auth)")
     else:

@@ -65,7 +65,7 @@ static WebfsRequestEvent m_req_event;
 ServeOpts g_serve_opts;
 
 const AxlConfigDesc serve_descs[] = {
-    { "port",     AXL_CFG_UINT,   "8080",       "Listen port",
+    { "port",     AXL_CFG_UINT,   "9876",       "Listen port (aligned with DEFAULT_SERVER_PORT / xfer-server.py)",
       offsetof(ServeOpts, port),             sizeof(uint64_t) },
     { "nic",      AXL_CFG_UINT,   "18446744073709551615", /* (uint64_t)-1 = auto */
                                               "NIC index (auto if unset)",
@@ -760,10 +760,7 @@ serve_setup(AxlLoop *loop, void *user)
     o->read_only  = axl_streql(o->mode, "read-only");
     o->write_only = axl_streql(o->mode, "write-only");
 
-    size_t nic = (o->nic_index == (uint64_t)-1)
-                 ? (size_t)-1
-                 : (size_t)o->nic_index;
-    if (network_init(nic, NULL, 10) != 0) {
+    if (network_init(o->nic_index, NULL, 10) != 0) {
         return AXL_ERR;
     }
     network_get_address(o->addr);
