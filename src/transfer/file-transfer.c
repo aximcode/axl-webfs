@@ -77,7 +77,7 @@ int ft_open_read(FtVolume *vol, const char *path, uint64_t offset,
         return -1;
 
     /* Get file size via axl_file_info */
-    AxlFileInfo fi;
+    AxlFsEntry fi;
     if (axl_file_info(full, &fi) != 0) {
         axl_fclose(s);
         return -1;
@@ -213,7 +213,7 @@ int ft_get_file_size(FtVolume *vol, const char *path, uint64_t *size)
 {
     char full[512];
     build_path(vol, path, full, sizeof(full));
-    AxlFileInfo fi;
+    AxlFsEntry fi;
     if (axl_file_info(full, &fi) != 0)
         return -1;
     *size = fi.size;
@@ -224,14 +224,14 @@ int ft_is_dir(FtVolume *vol, const char *path, bool *is_dir)
 {
     char full[512];
     build_path(vol, path, full, sizeof(full));
-    AxlFileInfo fi;
+    AxlFsEntry fi;
     if (axl_file_info(full, &fi) != 0)
         return -1;
-    *is_dir = fi.is_dir;
+    *is_dir = axl_fs_entry_is_dir(&fi);
     return 0;
 }
 
-int ft_stat(FtVolume *vol, const char *path, AxlFileInfo *info)
+int ft_stat(FtVolume *vol, const char *path, AxlFsEntry *info)
 {
     char full[512];
     build_path(vol, path, full, sizeof(full));

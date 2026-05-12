@@ -323,7 +323,7 @@ webfs_read(AxlFsProviderFile *fh, void *buf, size_t *inout_size)
 // ---------------------------------------------------------------------------
 
 static AxlFsStatus
-webfs_read_dir(AxlFsProviderFile *fh, AxlFsProviderInfo *out, bool *out_end)
+webfs_read_dir(AxlFsProviderFile *fh, AxlFsEntry *out, bool *out_end)
 {
     WebFsPrivate *priv = fh->priv;
     if (out == NULL || out_end == NULL) return AXL_FS_ERR_INVALID;
@@ -354,7 +354,7 @@ webfs_read_dir(AxlFsProviderFile *fh, AxlFsProviderInfo *out, bool *out_end)
     fh->dir_read_index++;
 
     out->struct_size = sizeof(*out);
-    out->version     = AXL_FS_PROVIDER_VERSION;
+    out->version     = AXL_FS_ENTRY_VERSION;
     axl_strlcpy(out->name, e->name, sizeof(out->name));
     out->size        = e->size;
     out->mtime_unix  = 0;     /* server's ISO-8601 modified isn't decoded yet */
@@ -517,13 +517,13 @@ webfs_flush(AxlFsProviderFile *fh)
 // ---------------------------------------------------------------------------
 
 static AxlFsStatus
-webfs_get_info(AxlFsProviderFile *fh, AxlFsProviderInfo *out)
+webfs_get_info(AxlFsProviderFile *fh, AxlFsEntry *out)
 {
     WebFsPrivate *priv = fh->priv;
     if (out == NULL) return AXL_FS_ERR_INVALID;
 
     out->struct_size = sizeof(*out);
-    out->version     = AXL_FS_PROVIDER_VERSION;
+    out->version     = AXL_FS_ENTRY_VERSION;
     out->mtime_unix  = 0;
 
     DirEntry entry;
@@ -554,7 +554,7 @@ webfs_get_info(AxlFsProviderFile *fh, AxlFsProviderInfo *out)
 }
 
 static AxlFsStatus
-webfs_set_info(AxlFsProviderFile *fh, const AxlFsProviderInfo *in)
+webfs_set_info(AxlFsProviderFile *fh, const AxlFsEntry *in)
 {
     WebFsPrivate *priv = fh->priv;
     if (in == NULL) return AXL_FS_ERR_INVALID;
@@ -593,7 +593,7 @@ webfs_volume_info(void *backend_ctx, AxlFsProviderVolumeInfo *out)
 {
     WebFsPrivate *priv = backend_ctx;
     out->struct_size = sizeof(*out);
-    out->version     = AXL_FS_PROVIDER_VERSION;
+    out->version     = AXL_FS_ENTRY_VERSION;
     out->read_only   = priv->read_only;
     /* Server backing — we don't query free space. Synthetic huge
        value so UEFI Shell `cp` doesn't refuse the write upfront

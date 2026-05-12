@@ -320,7 +320,7 @@ int ft_list_dir(FtVolume *vol, const char *path, bool as_json, bool read_only,
     }
 
     /* Read directory entries */
-    AxlDirEntry entry;
+    AxlFsEntry entry;
     while (axl_dir_read(dir, &entry)) {
         if (axl_streql(entry.name, ".") || axl_streql(entry.name, ".."))
             continue;
@@ -334,13 +334,13 @@ int ft_list_dir(FtVolume *vol, const char *path, bool as_json, bool read_only,
             APPEND(pos, buf, buf_size,
                 "{\"name\":%s,\"size\":%llu,\"dir\":%s}",
                 esc_name, (unsigned long long)entry.size,
-                entry.is_dir ? "true" : "false");
+                axl_fs_entry_is_dir(&entry) ? "true" : "false");
         } else {
             char url_name[512];
             char name_esc[1536];
             axl_url_encode(entry.name, url_name, sizeof(url_name));
             html_esc(entry.name, name_esc, sizeof(name_esc));
-            if (entry.is_dir) {
+            if (axl_fs_entry_is_dir(&entry)) {
                 APPEND(pos, buf, buf_size,
                     "<tr><td><a href=\"%s/\">%s/</a></td>"
                     "<td class=\"sz\">&mdash;</td>"

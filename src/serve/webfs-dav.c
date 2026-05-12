@@ -95,7 +95,7 @@ parse_dav_path(const char *url, FtVolume *vol,
 // ----------------------------------------------------------------------------
 
 static int
-dav_list_dir(void *user, const char *path, AxlWebDavEntry *out,
+dav_list_dir(void *user, const char *path, AxlFsEntry *out,
              size_t max, size_t *count)
 {
     (void)user;
@@ -116,8 +116,10 @@ dav_list_dir(void *user, const char *path, AxlWebDavEntry *out,
             FtVolume v;
             ft_get_volume(j, &v);
             axl_memset(&out[j], 0, sizeof(out[j]));
+            out[j].struct_size = sizeof(out[j]);
+            out[j].version     = AXL_FS_ENTRY_VERSION;
             axl_strlcpy(out[j].name, v.name, sizeof(out[j].name));
-            out[j].is_dir = true;
+            out[j].attributes  = AXL_FS_ATTR_DIRECTORY;
         }
         *count = n;
         return AXL_OK;
@@ -133,16 +135,12 @@ dav_list_dir(void *user, const char *path, AxlWebDavEntry *out,
     if (dir == NULL)
         return AXL_ERR;
 
-    AxlDirEntry e;
+    AxlFsEntry e;
     size_t n = 0;
     while (n < max && axl_dir_read(dir, &e)) {
         if (axl_streql(e.name, ".") || axl_streql(e.name, ".."))
             continue;
-        axl_memset(&out[n], 0, sizeof(out[n]));
-        axl_strlcpy(out[n].name, e.name, sizeof(out[n].name));
-        out[n].is_dir     = e.is_dir;
-        out[n].size       = e.size;
-        out[n].mtime_unix = e.mtime_unix;
+        out[n] = e;     /* propagate struct_size/version/attributes/etc. */
         n++;
     }
     axl_dir_close(dir);
@@ -151,10 +149,12 @@ dav_list_dir(void *user, const char *path, AxlWebDavEntry *out,
 }
 
 static int
-dav_stat(void *user, const char *path, AxlWebDavEntry *out)
+dav_stat(void *user, const char *path, AxlFsEntry *out)
 {
     (void)user;
     axl_memset(out, 0, sizeof(*out));
+    out->struct_size = sizeof(*out);
+    out->version     = AXL_FS_ENTRY_VERSION;
 
     FtVolume vol;
     char     sub[512];
@@ -163,14 +163,14 @@ dav_stat(void *user, const char *path, AxlWebDavEntry *out)
     switch (kind) {
         case PATH_ROOT:
             /* SDK fills "/" when name is empty for the mount root. */
-            out->is_dir = true;
+            out->attributes = AXL_FS_ATTR_DIRECTORY;
             return AXL_OK;
         case PATH_VOLUME:
             axl_strlcpy(out->name, vol.name, sizeof(out->name));
-            out->is_dir = true;
+            out->attributes = AXL_FS_ATTR_DIRECTORY;
             return AXL_OK;
         case PATH_OBJECT: {
-            AxlFileInfo fi;
+            AxlFsEntry fi;
             if (ft_stat(&vol, sub, &fi) != 0)
                 return AXL_ERR;
             /* basename for name field. */
@@ -178,9 +178,10 @@ dav_stat(void *user, const char *path, AxlWebDavEntry *out)
             for (const char *q = sub; *q; q++)
                 if (*q == '/' && q[1] != '\0')
                     base = q + 1;
+            bool fi_is_dir = axl_fs_entry_is_dir(&fi);
             axl_strlcpy(out->name, base, sizeof(out->name));
-            out->is_dir     = fi.is_dir;
-            out->size       = fi.is_dir ? 0 : fi.size;
+            out->attributes = fi_is_dir ? AXL_FS_ATTR_DIRECTORY : 0u;
+            out->size       = fi_is_dir ? 0 : fi.size;
             out->mtime_unix = fi.mtime_unix;
             return AXL_OK;
         }
