@@ -178,10 +178,13 @@ dav_stat(void *user, const char *path, AxlFsEntry *out)
             for (const char *q = sub; *q; q++)
                 if (*q == '/' && q[1] != '\0')
                     base = q + 1;
-            bool fi_is_dir = axl_fs_entry_is_dir(&fi);
             axl_strlcpy(out->name, base, sizeof(out->name));
-            out->attributes = fi_is_dir ? AXL_FS_ATTR_DIRECTORY : 0u;
-            out->size       = fi_is_dir ? 0 : fi.size;
+            /* Propagate the full attribute bitmask so HIDDEN/SYSTEM/
+               READ_ONLY/ARCHIVE bits surface in PROPFIND. Pre-migration
+               this was a bool collapse and only DIRECTORY round-tripped. */
+            out->attributes = fi.attributes;
+            out->size       = axl_fs_entry_is_dir(&fi) ? 0 : fi.size;
+            out->alloc_size = fi.alloc_size;
             out->mtime_unix = fi.mtime_unix;
             return AXL_OK;
         }

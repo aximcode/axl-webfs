@@ -593,7 +593,7 @@ webfs_volume_info(void *backend_ctx, AxlFsProviderVolumeInfo *out)
 {
     WebFsPrivate *priv = backend_ctx;
     out->struct_size = sizeof(*out);
-    out->version     = AXL_FS_ENTRY_VERSION;
+    out->version     = AXL_FS_PROVIDER_VERSION;
     out->read_only   = priv->read_only;
     /* Server backing — we don't query free space. Synthetic huge
        value so UEFI Shell `cp` doesn't refuse the write upfront
