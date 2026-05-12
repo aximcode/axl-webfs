@@ -373,6 +373,22 @@ if [ "$RUN_QEMU" = true ]; then
     echo "tool data" > "$QEMU_TEST_DIR/tools/sample.txt"
     python3 -c "print('large file line\\n' * 3000, end='')" > "$QEMU_TEST_DIR/large.txt"
 
+    # Non-ASCII filename regression fixture — exercises the
+    # SDK's UCS-2/UTF-8 thunk on EFI_FILE_INFO trailer round-trip.
+    # Pre-Phase-C `axl_utf8_to_ucs2_buf` was a Latin-1 cast that
+    # smeared multi-byte UTF-8 across CHAR16 cells; with the Phase-C
+    # fix the entries should appear in the Shell `ls` listing
+    # byte-for-byte. We assert via a server-side request log probe
+    # (mount client GETs /list/ and the entries it sees in the JSON
+    # response have the correct names) plus a serial-log probe
+    # against the Latin-1 byte produced by OVMF when it prints the
+    # CHAR16 'é' (U+00E9 → byte 0xE9 in the serial console).
+    python3 -c "
+import sys
+open(sys.argv[1] + '/résumé.txt', 'w').write('non-ascii body\n')
+open(sys.argv[1] + '/日本語.bin', 'wb').write(b'JP\n')
+" "$QEMU_TEST_DIR"
+
     # Multi-chunk PUT regression source: a deterministic-content
     # ~256 KB file lives on the ESP and gets cp'd to fs1: via the
     # mount. UEFI Shell's `cp` chunks anything past its internal
@@ -428,6 +444,9 @@ echo === TEST: multi-chunk PUT ===
 cp fs0:\\multichunk.bin fs1:\\multichunk-uploaded.bin
 echo === TEST: read subdir ===
 ls fs1:\\tools\\
+echo === TEST: mkdir ===
+mkdir fs1:\\new-test-dir
+ls fs1:\\
 echo === TEST: exec from mount ===
 fs1:\\TestApp.efi -h
 echo === TEST: large file read ===
@@ -525,6 +544,53 @@ NSHEOF
             pass "$QEMU_ARCH: large file read (50KB)" || \
             fail "$QEMU_ARCH: large file" "content not found"
 
+        # Non-ASCII filename round-trip — the SDK's Phase-C
+        # axl_utf8_to_ucs2_buf decoder fix must propagate
+        # 'résumé.txt' and '日本語.bin' from the JSON listing
+        # through EFI_FILE_INFO trailers into Shell ls output
+        # without the pre-fix Latin-1-cast smearing.
+        #
+        # OVMF's serial console driver renders unprintable CHAR16
+        # cells as the ASCII string `uXXXX` (no backslash) — so a
+        # *correctly* round-tripped 'é' (U+00E9) lands as the
+        # 5-byte ASCII fragment `u00e9` in the captured serial,
+        # surrounded by neighboring file-name characters. The
+        # regression we're guarding against (Latin-1 cast of the
+        # UTF-8 bytes 0xC3 0xA9) would instead produce two cells
+        # 0x00C3 + 0x00A9 → `u00c3u00a9` — present iff the bug is
+        # back. Grep both directions: positive for `ru00e9sum` and
+        # `u65e5u672cu8a9e`, negative for `u00c3u00a9`.
+        if grep -q 'ru00e9sumu00e9' "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: non-ASCII 'résumé.txt' (CHAR16 U+00E9) round-trip"
+        else
+            fail "$QEMU_ARCH: non-ASCII résumé.txt" \
+                 "expected 'ru00e9sumu00e9' fragment in ls output"
+        fi
+        if grep -q 'u65e5u672cu8a9e' "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: non-ASCII '日本語.bin' (3-byte UTF-8) round-trip"
+        else
+            fail "$QEMU_ARCH: non-ASCII 日本語.bin" \
+                 "expected 'u65e5u672cu8a9e' fragment in ls output"
+        fi
+        if grep -q 'u00c3u00a9' "$SERIAL_LOG" 2>/dev/null; then
+            fail "$QEMU_ARCH: UTF-8 Latin-1 cast regression" \
+                 "saw 'u00c3u00a9' — axl_utf8_to_ucs2_buf reverted to byte cast?"
+        else
+            pass "$QEMU_ARCH: no Latin-1-cast smearing (no 'u00c3u00a9')"
+        fi
+
+        # mkdir test — the AxlFsProviderOpen `attributes` arg
+        # (added in Phase C) lets Shell mkdir reach the provider's
+        # mkdir wire path. Pre-Phase-C this was impossible from
+        # the EFI side. Workstation-side check: the directory
+        # appears on the server.
+        if [ -d "$QEMU_TEST_DIR/new-test-dir" ]; then
+            pass "$QEMU_ARCH: Shell mkdir creates directory on server"
+        else
+            fail "$QEMU_ARCH: mkdir" \
+                 "new-test-dir not present on workstation — provider mkdir not invoked?"
+        fi
+
         grep -qE "axl-webfs-mount: unmounted" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: umount succeeded" || \
             fail "$QEMU_ARCH: umount" "axl-webfs-mount: unmounted not found"
@@ -535,6 +601,7 @@ NSHEOF
 
         rm -f "$SERIAL_LOG" "$QEMU_TEST_DIR/from_uefi.txt" \
               "$QEMU_TEST_DIR/multichunk-uploaded.bin"
+        rm -rf "$QEMU_TEST_DIR/new-test-dir"
     done
 
     rm -rf "$QEMU_TEST_DIR"
