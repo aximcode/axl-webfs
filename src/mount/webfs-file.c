@@ -1,9 +1,15 @@
 /** @file
-  axl-webfs-mount -- EFI_FILE_PROTOCOL implementation.
+  axl-webfs-mount -- AxlFsProvider callback implementation.
 
-  Every UEFI file operation translates to HTTP requests against
-  xfer-server.py. Directory listings use GET /list/, file I/O uses
-  GET/PUT /files/, with a 64 KB read-ahead buffer for sequential reads.
+  Speaks pure UTF-8 + AxlFsStatus. Every call translates to one or
+  more HTTP requests against xfer-server.py via webfs-protocol's
+  vtable; the SDK thunks marshal CHAR16 ↔ UTF-8, EFI_FILE_INFO,
+  and EFI_STATUS for UEFI consumers (Shell, LoadImage, Boot
+  Manager) at the boundary in <axl/axl-fs-provider.h>.
+
+  Pre-Phase-C version of this file synthesized 12 EFIAPI thunks
+  inline and hand-rolled the EFI_FILE_INFO trailer + UCS-2
+  conversion. All of that lives in axl-sdk now.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
@@ -14,18 +20,15 @@
 
 AXL_LOG_DOMAIN("webfs-mount-file");
 
-/* WebFsClose calls flush_put_buf to drain any buffered Writes; the
-   helper itself lives down by WebFsWrite where the buffer state is
-   manipulated. Forward-declare to keep the spec-ordered Open / Close
-   / Read block intact at the top of the file. */
-static EFI_STATUS flush_put_buf(WebFsFileCtx *fh);
-
+/* Forward decl — webfs_close drains buffered Writes via this helper
+   that lives down by webfs_write where the buffer state is touched. */
+static AxlFsStatus flush_put_buf(AxlFsProviderFile *fh);
 
 // ---------------------------------------------------------------------------
-// Path helpers -- thin wrappers around AXL SDK path functions
+// Path helpers — thin wrappers around AXL SDK path primitives.
 // ---------------------------------------------------------------------------
 
-/// Copy dirname of path into stack buffer parent.
+/// Copy dirname of @p path into @p parent.
 static void
 get_parent_path(const char *path, char *parent, size_t parent_size)
 {
@@ -38,13 +41,12 @@ get_parent_path(const char *path, char *parent, size_t parent_size)
     }
 }
 
-/// Return basename of path (pointer into static buffer -- single-threaded UEFI).
+/// Return basename of @p path (pointer into a single-threaded
+/// static buffer — fine for UEFI).
 static const char *
 get_file_name(const char *path)
 {
     char *base = axl_path_get_basename(path);
-    /* axl_path_get_basename allocates, but callers expect a borrowed pointer.
-       Use a static buffer for simplicity (single-threaded UEFI). */
     static char s_base_name[256];
     if (base != NULL) {
         axl_strlcpy(s_base_name, base, sizeof(s_base_name));
@@ -55,186 +57,137 @@ get_file_name(const char *path)
     return s_base_name;
 }
 
-/// Resolve a CHAR16 filename relative to a base char path.
-static int
-resolve_path(
-    const char           *base_path,
-    const unsigned short *file_name,
-    char                 *resolved,
-    size_t                resolved_size
-)
-{
-    // Convert CHAR16 filename to UTF-8
-    char *name_utf8 = axl_ucs2_to_utf8(file_name);
-    if (name_utf8 == NULL) return -1;
-
-    // Replace backslashes with forward slashes
-    for (char *p = name_utf8; *p; p++) {
-        if (*p == '\\') *p = '/';
-    }
-
-    int rc = axl_path_resolve(base_path, name_utf8, resolved, resolved_size);
-    axl_free(name_utf8);
-    return rc;
-}
-
 // ---------------------------------------------------------------------------
-// File handle creation
+// File-handle allocation
 // ---------------------------------------------------------------------------
 
-WebFsFileCtx *
-webfs_create_file_handle(
-    WebFsPrivate *priv,
-    const char      *path,
-    bool             is_dir,
-    uint64_t         file_size
-)
+static AxlFsProviderFile *
+webfs_alloc_file(WebFsPrivate *priv, const char *path,
+                 bool is_dir, uint64_t file_size)
 {
-    WebFsFileCtx *fh = axl_calloc(1, sizeof(WebFsFileCtx));
+    AxlFsProviderFile *fh = axl_calloc(1, sizeof(*fh));
     if (fh == NULL) return NULL;
-
-    fh->signature = WEBFS_FILE_SIGNATURE;
-    fh->private_data = priv;
-    axl_strlcpy(fh->path, path, MAX_PATH_LEN);
-    fh->is_dir = is_dir;
+    fh->priv = priv;
+    axl_strlcpy(fh->path, path, sizeof(fh->path));
+    fh->is_dir    = is_dir;
     fh->file_size = file_size;
 
-    fh->file.Revision = EFI_FILE_PROTOCOL_REVISION;
-    fh->file.Open = WebFsOpen;
-    fh->file.Close = WebFsClose;
-    fh->file.Delete = WebFsDelete;
-    fh->file.Read = WebFsRead;
-    fh->file.Write = WebFsWrite;
-    fh->file.GetPosition = WebFsGetPosition;
-    fh->file.SetPosition = WebFsSetPosition;
-    fh->file.GetInfo = WebFsGetInfo;
-    fh->file.SetInfo = WebFsSetInfo;
-    fh->file.Flush = WebFsFlush;
-
-    // Allocate read-ahead buffer for files
     if (!is_dir) {
         fh->read_ahead_buf = axl_malloc(READAHEAD_BUF_SIZE);
-        // NULL is OK -- we'll just skip read-ahead
+        /* NULL is fine — we just skip read-ahead. */
     }
-
     return fh;
 }
 
 // ---------------------------------------------------------------------------
-// EFI_FILE_PROTOCOL: Open
+// open
 // ---------------------------------------------------------------------------
 
-EFI_STATUS
-EFIAPI
-WebFsOpen(
-    EFI_FILE_PROTOCOL  *This,
-    EFI_FILE_PROTOCOL **NewHandle,
-    CHAR16             *FileName,
-    UINT64              OpenMode,
-    UINT64              Attributes
-)
+static AxlFsStatus
+webfs_open(
+    void               *backend_ctx,
+    const char         *path,
+    unsigned            mode,
+    unsigned            attributes,
+    AxlFsProviderFile **out,
+    bool               *out_is_dir
+    )
 {
-    WebFsFileCtx *self = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
-    WebFsPrivate *priv = self->private_data;
-
-    // Handle opening "." -- return a new handle to the same path
-    if (axl_wcseql(FileName, L".") || axl_wcseql(FileName, L"")) {
-        WebFsFileCtx *new_fh = webfs_create_file_handle(
-            priv, self->path, self->is_dir, self->file_size);
-        if (new_fh == NULL) return EFI_OUT_OF_RESOURCES;
-        new_fh->is_root = self->is_root;
-        *NewHandle = &new_fh->file;
-        return EFI_SUCCESS;
+    WebFsPrivate *priv = backend_ctx;
+    if (path == NULL || out == NULL || out_is_dir == NULL) {
+        return AXL_FS_ERR_INVALID;
     }
 
-    // Resolve the target path
-    char resolved[MAX_PATH_LEN];
-    int status = resolve_path(self->path, (const unsigned short *)FileName,
-                              resolved, sizeof(resolved));
-    if (status != 0) return EFI_INVALID_PARAMETER;
+    /* Root open. The SDK calls us with "/" from OpenVolume; child
+       opens come pre-resolved by the SDK against the parent's
+       cached path, so we always see an absolute UTF-8 path with
+       '/' separators. */
+    bool is_root = (path[0] == '/' && path[1] == '\0');
+    if (is_root) {
+        AxlFsProviderFile *fh = webfs_alloc_file(priv, "/", true, 0);
+        if (fh == NULL) return AXL_FS_ERR_NO_MEMORY;
+        fh->is_root = true;
+        *out = fh;
+        *out_is_dir = true;
+        return AXL_FS_OK;
+    }
 
-    // Look up the entry in the parent directory
+    /* Non-root: look up the entry in the parent directory. */
     char parent_dir[MAX_PATH_LEN];
-    get_parent_path(resolved, parent_dir, sizeof(parent_dir));
-    const char *entry_name = get_file_name(resolved);
+    get_parent_path(path, parent_dir, sizeof(parent_dir));
+    const char *entry_name = get_file_name(path);
 
     DirEntry entry;
-    int lookup_ret = dir_cache_lookup_entry(priv, parent_dir, entry_name, &entry);
+    int lookup_ret = dir_cache_lookup_entry(priv, parent_dir,
+                                            entry_name, &entry);
 
     if (lookup_ret != 0) {
-        // Not found -- check if CREATE mode
-        if (!(OpenMode & EFI_FILE_MODE_CREATE)) {
-            return EFI_NOT_FOUND;
+        if (!(mode & AXL_FS_OPEN_CREATE)) {
+            return AXL_FS_ERR_NOT_FOUND;
         }
-
-        // Create file or directory via the active protocol.
+        if (priv->read_only) {
+            return AXL_FS_ERR_WRITE_PROTECTED;
+        }
+        /* CREATE: file or directory per EFI Attributes (translated by
+           the SDK thunk into AXL_FS_ATTR_DIRECTORY in `attributes`). */
         const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
         size_t op_status = 0;
-        if (Attributes & EFI_FILE_DIRECTORY) {
-            if (ops->mkdir(priv, resolved, &op_status) != 0)
-                return EFI_DEVICE_ERROR;
-            if (op_status != 201 && op_status != 200)
-                return EFI_DEVICE_ERROR;
-            dir_cache_invalidate(priv, parent_dir);
+        if (attributes & AXL_FS_ATTR_DIRECTORY) {
+            if (ops->mkdir(priv, path, &op_status) != 0) {
+                return AXL_FS_ERR_IO;
+            }
+            if (op_status != 200 && op_status != 201) {
+                return AXL_FS_ERR_IO;
+            }
             entry.is_dir = true;
-            entry.size = 0;
+            entry.size   = 0;
         } else {
-            if (ops->create_empty(priv, resolved, &op_status) != 0)
-                return EFI_DEVICE_ERROR;
-            dir_cache_invalidate(priv, parent_dir);
+            if (ops->create_empty(priv, path, &op_status) != 0) {
+                return AXL_FS_ERR_IO;
+            }
             entry.is_dir = false;
-            entry.size = 0;
+            entry.size   = 0;
         }
+        dir_cache_invalidate(priv, parent_dir);
     }
 
-    // Create file handle
-    WebFsFileCtx *new_fh = webfs_create_file_handle(
-        priv, resolved, entry.is_dir, entry.size);
-    if (new_fh == NULL) return EFI_OUT_OF_RESOURCES;
+    AxlFsProviderFile *fh = webfs_alloc_file(priv, path,
+                                             entry.is_dir, entry.size);
+    if (fh == NULL) return AXL_FS_ERR_NO_MEMORY;
 
-    /* Built-in integrity check (best-effort). Mark "want digest" so
-       the first sequential Read can pick the `Digest:` header out of
-       the Range response — no extra round-trip on Open. Once we have
-       the header, digest_active flips on and reads accumulate into
-       digest_ctx. Mismatch latches EFI_VOLUME_CORRUPTED on Close. */
+    /* Best-effort integrity check: mark "want digest" so the first
+       sequential Read can pick the `Digest: sha-256=<hex>` header
+       out of the Range response — no extra round-trip on Open.
+       Once we have the header, digest_active flips on and reads
+       accumulate into digest_ctx. Mismatch latches
+       AXL_FS_ERR_VOLUME_CORRUPTED on Close. */
     if (!entry.is_dir) {
-        new_fh->digest_want = true;
+        fh->digest_want = true;
     }
 
-    *NewHandle = &new_fh->file;
-    return EFI_SUCCESS;
+    *out = fh;
+    *out_is_dir = entry.is_dir;
+    return AXL_FS_OK;
 }
 
 // ---------------------------------------------------------------------------
-// EFI_FILE_PROTOCOL: Close
+// close
 // ---------------------------------------------------------------------------
 
-EFI_STATUS
-EFIAPI
-WebFsClose(
-    EFI_FILE_PROTOCOL *This
-)
+static AxlFsStatus
+webfs_close(AxlFsProviderFile *fh)
 {
-    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
-    EFI_STATUS    rc  = EFI_SUCCESS;
+    AxlFsStatus rc = AXL_FS_OK;
 
-    /* Drain any buffered Writes before teardown. flush_put_buf
-       resets buffer state regardless of outcome so we never leak
-       put_buf even on PUT failure. */
+    /* Drain buffered Writes before teardown. flush_put_buf resets
+       buffer state regardless of outcome so we never leak put_buf
+       even on PUT failure. */
     if (fh->put_dirty) {
-        EFI_STATUS flush_rc = flush_put_buf(fh);
-        if (flush_rc != EFI_SUCCESS) rc = flush_rc;
+        AxlFsStatus flush_rc = flush_put_buf(fh);
+        if (flush_rc != AXL_FS_OK) rc = flush_rc;
     }
 
-    /* Integrity verification at end-of-handle:
-       - active + !failed + the whole file was read sequentially
-         from 0 to file_size: compare the streaming hash to the
-         expected digest the server reported on Open.
-       - mismatch: surface as EFI_VOLUME_CORRUPTED. The caller (Shell
-         cp, LoadImage, ...) propagates this; for cp it means the
-         resulting destination is suspect and the user knows.
-       - partial reads / seeks / no digest: silently skip. The
-         best-effort contract is documented in webfs-internal.h. */
+    /* Integrity verification at end-of-handle. */
     if (fh->digest_active && fh->digest_ctx != NULL) {
         if (!fh->digest_failed && fh->digest_consumed == fh->file_size) {
             const char *got = axl_checksum_get_string(fh->digest_ctx);
@@ -243,7 +196,7 @@ WebFsClose(
                 axl_error("digest mismatch on %s: expected %s, got %s",
                           fh->path, fh->digest_expected,
                           got ? got : "(null)");
-                rc = EFI_VOLUME_CORRUPTED;
+                rc = AXL_FS_ERR_VOLUME_CORRUPTED;
             } else {
                 axl_info("digest verified: %s sha-256=%s",
                          fh->path, got);
@@ -253,37 +206,24 @@ WebFsClose(
         fh->digest_ctx = NULL;
     }
 
-    if (fh->read_ahead_buf != NULL) {
-        axl_free(fh->read_ahead_buf);
-    }
-    if (fh->dir_entries != NULL) {
-        axl_free(fh->dir_entries);
-    }
+    if (fh->read_ahead_buf != NULL) axl_free(fh->read_ahead_buf);
+    if (fh->dir_entries    != NULL) axl_free(fh->dir_entries);
     axl_free(fh);
     return rc;
 }
 
 // ---------------------------------------------------------------------------
-// EFI_FILE_PROTOCOL: Read
+// read (regular files only)
 // ---------------------------------------------------------------------------
 
-/// Feed exactly the bytes a successful Read returned to the user
-/// into the streaming digest, but only if the position right before
-/// the Read was the expected next sequential offset. Any non-
-/// sequential read (post-seek, partial-then-resume) latches
-/// digest_failed and disables further accumulation.
+/// Feed the freshly-read bytes into the streaming digest, but only
+/// if the position right before the read was the expected next
+/// sequential offset. Any non-sequential read latches digest_failed.
 static void
-digest_consume(WebFsFileCtx *fh, uint64_t pre_read_position,
+digest_consume(AxlFsProviderFile *fh, uint64_t pre_read_position,
                const void *bytes, size_t len)
 {
     if (!fh->digest_active || fh->digest_failed) return;
-    /* Sequential invariant: position before this read must equal the
-       number of bytes already hashed. Track via axl_checksum's own
-       state — we know that's the case iff pre_read_position equals
-       the running total we've fed, which equals the consumed
-       position. Simpler: validate against the file's own running
-       cursor. We only get here in the read path, so position has
-       been updated post-copy; pass the pre-read value in. */
     if (pre_read_position != fh->digest_consumed) {
         fh->digest_failed = true;
         return;
@@ -292,45 +232,39 @@ digest_consume(WebFsFileCtx *fh, uint64_t pre_read_position,
     fh->digest_consumed += len;
 }
 
-/// Read from a file (with read-ahead buffer).
-static EFI_STATUS
-read_file(
-    WebFsFileCtx *fh,
-    UINTN           *BufferSize,
-    VOID            *Buffer
-)
+static AxlFsStatus
+webfs_read(AxlFsProviderFile *fh, void *buf, size_t *inout_size)
 {
-    WebFsPrivate *priv = fh->private_data;
+    WebFsPrivate *priv = fh->priv;
+    if (buf == NULL || inout_size == NULL) return AXL_FS_ERR_INVALID;
+    if (fh->is_dir) return AXL_FS_ERR_IS_DIR;
 
     if (fh->position >= fh->file_size) {
-        *BufferSize = 0;
-        return EFI_SUCCESS;
+        *inout_size = 0;
+        return AXL_FS_OK;
     }
 
-    size_t wanted = *BufferSize;
+    size_t wanted = *inout_size;
     if (fh->position + wanted > fh->file_size) {
         wanted = (size_t)(fh->file_size - fh->position);
     }
     uint64_t pre_read_position = fh->position;
 
-    // Check read-ahead buffer
+    /* Read-ahead hit. */
     if (fh->read_ahead_buf != NULL && fh->read_ahead_len > 0 &&
         fh->position >= fh->read_ahead_start &&
         fh->position < fh->read_ahead_start + fh->read_ahead_len) {
-        size_t offset = (size_t)(fh->position - fh->read_ahead_start);
-        size_t avail = fh->read_ahead_len - offset;
+        size_t offset  = (size_t)(fh->position - fh->read_ahead_start);
+        size_t avail   = fh->read_ahead_len - offset;
         size_t to_copy = (wanted < avail) ? wanted : avail;
-        axl_memcpy(Buffer, fh->read_ahead_buf + offset, to_copy);
-        digest_consume(fh, pre_read_position, Buffer, to_copy);
+        axl_memcpy(buf, fh->read_ahead_buf + offset, to_copy);
+        digest_consume(fh, pre_read_position, buf, to_copy);
         fh->position += to_copy;
-        *BufferSize = to_copy;
-        return EFI_SUCCESS;
+        *inout_size = to_copy;
+        return AXL_FS_OK;
     }
 
-    // Read-ahead miss — pull bytes via the active protocol.
-    // Small reads use the 64KB read-ahead buffer; large reads
-    // (LoadImage pulling a whole PE) bypass it and write directly
-    // into the caller's buffer so we never under-deliver.
+    /* Read-ahead miss — pull bytes via the active protocol. */
     bool use_readahead = (fh->read_ahead_buf != NULL &&
                           wanted < READAHEAD_BUF_SIZE);
     size_t fetch_size = use_readahead ? READAHEAD_BUF_SIZE : wanted;
@@ -339,25 +273,21 @@ read_file(
     }
 
     const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
-    void *dst = use_readahead ? fh->read_ahead_buf : Buffer;
+    void  *dst = use_readahead ? fh->read_ahead_buf : buf;
     size_t got = 0;
-    /* Ask the protocol layer to capture the response's
-       `Digest: sha-256=<hex>` header on this Range GET — once digest
-       is in hand and we're reading sequentially from offset 0, the
-       integrity check is live for the rest of the handle's life. */
-    char *digest_slot = NULL;
+    char  *digest_slot = NULL;
     size_t digest_slot_size = 0;
     if (fh->digest_want && !fh->digest_active && !fh->digest_failed &&
         fh->position == 0) {
-        digest_slot = fh->digest_expected;
+        digest_slot      = fh->digest_expected;
         digest_slot_size = sizeof(fh->digest_expected);
         fh->digest_expected[0] = '\0';
     }
     if (ops->read_range(priv, fh->path, fh->position, fetch_size,
                         dst, &got,
                         digest_slot, digest_slot_size) != 0) {
-        *BufferSize = 0;
-        return EFI_DEVICE_ERROR;
+        *inout_size = 0;
+        return AXL_FS_ERR_IO;
     }
     if (digest_slot != NULL && fh->digest_expected[0] != '\0') {
         fh->digest_ctx = axl_checksum_new(AXL_CHECKSUM_SHA256);
@@ -365,10 +295,9 @@ read_file(
             fh->digest_active   = true;
             fh->digest_consumed = 0;
         }
-        fh->digest_want = false;  // one-shot
+        fh->digest_want = false;
     } else if (digest_slot != NULL) {
-        /* Server didn't advertise a digest — skip validation for
-           this handle. */
+        /* Server didn't advertise a digest — skip validation. */
         fh->digest_want = false;
     }
 
@@ -376,142 +305,78 @@ read_file(
         fh->read_ahead_start = fh->position;
         fh->read_ahead_len   = got;
         size_t user_copy = (wanted < got) ? wanted : got;
-        axl_memcpy(Buffer, fh->read_ahead_buf, user_copy);
-        digest_consume(fh, pre_read_position, Buffer, user_copy);
+        axl_memcpy(buf, fh->read_ahead_buf, user_copy);
+        digest_consume(fh, pre_read_position, buf, user_copy);
         fh->position += user_copy;
-        *BufferSize = user_copy;
+        *inout_size = user_copy;
     } else {
-        digest_consume(fh, pre_read_position, Buffer, got);
+        digest_consume(fh, pre_read_position, buf, got);
         fh->position += got;
-        *BufferSize = got;
-        // Direct read may overlap stale read-ahead region; invalidate.
+        *inout_size = got;
         fh->read_ahead_len = 0;
     }
-
-    return EFI_SUCCESS;
+    return AXL_FS_OK;
 }
 
-/// Build an EFI_FILE_INFO from a DirEntry, converting name to UCS-2.
-static size_t
-build_file_info(
-    DirEntry       *entry,
-    EFI_FILE_INFO  *Info,
-    size_t          buf_size
-)
+// ---------------------------------------------------------------------------
+// read_dir
+// ---------------------------------------------------------------------------
+
+static AxlFsStatus
+webfs_read_dir(AxlFsProviderFile *fh, AxlFsProviderInfo *out, bool *out_end)
 {
-    // Calculate needed size
-    size_t name_len = axl_strlen(entry->name);
-    size_t needed = SIZE_OF_EFI_FILE_INFO + (name_len + 1) * sizeof(CHAR16);
+    WebFsPrivate *priv = fh->priv;
+    if (out == NULL || out_end == NULL) return AXL_FS_ERR_INVALID;
+    if (!fh->is_dir) return AXL_FS_ERR_NOT_DIR;
 
-    if (Info == NULL || buf_size < needed) return needed;
-
-    axl_memset(Info, 0, needed);
-    Info->Size = needed;
-    Info->FileSize = entry->size;
-    Info->PhysicalSize = entry->size;
-    if (entry->is_dir) {
-        Info->Attribute = EFI_FILE_DIRECTORY;
-    }
-
-    // Convert name to UCS-2
-    for (size_t i = 0; i <= name_len; i++) {
-        Info->FileName[i] = (CHAR16)(unsigned char)entry->name[i];
-    }
-
-    return needed;
-}
-
-/// Read next directory entry.
-static EFI_STATUS
-read_dir(
-    WebFsFileCtx *fh,
-    UINTN           *BufferSize,
-    VOID            *Buffer
-)
-{
-    WebFsPrivate *priv = fh->private_data;
-
-    // Lazy-load directory listing (copy from cache for stability)
+    /* Lazy-load directory listing (copy from cache for stability). */
     if (!fh->dir_loaded) {
         DirEntry *cache_entries = NULL;
-        size_t cache_count = 0;
-        int ret = dir_cache_fetch(
-            priv, fh->path, &cache_entries, &cache_count);
-        if (ret != 0) return EFI_DEVICE_ERROR;
-
+        size_t    cache_count   = 0;
+        int ret = dir_cache_fetch(priv, fh->path,
+                                  &cache_entries, &cache_count);
+        if (ret != 0) return AXL_FS_ERR_IO;
         fh->dir_entries = axl_calloc(cache_count, sizeof(DirEntry));
-        if (fh->dir_entries == NULL) return EFI_OUT_OF_RESOURCES;
-        axl_memcpy(fh->dir_entries, cache_entries, cache_count * sizeof(DirEntry));
+        if (fh->dir_entries == NULL) return AXL_FS_ERR_NO_MEMORY;
+        axl_memcpy(fh->dir_entries, cache_entries,
+                   cache_count * sizeof(DirEntry));
         fh->dir_entry_count = cache_count;
-        fh->dir_loaded = true;
-        fh->dir_read_index = 0;
+        fh->dir_loaded      = true;
+        fh->dir_read_index  = 0;
     }
 
-    // End of directory
     if (fh->dir_read_index >= fh->dir_entry_count) {
-        *BufferSize = 0;
-        return EFI_SUCCESS;
+        *out_end = true;
+        return AXL_FS_OK;
     }
 
-    DirEntry *entry = &fh->dir_entries[fh->dir_read_index];
-    size_t needed = build_file_info(entry, NULL, 0);
-
-    if (*BufferSize < needed) {
-        *BufferSize = needed;
-        return EFI_BUFFER_TOO_SMALL;
-    }
-
-    build_file_info(entry, (EFI_FILE_INFO *)Buffer, *BufferSize);
-    *BufferSize = needed;
+    DirEntry *e = &fh->dir_entries[fh->dir_read_index];
     fh->dir_read_index++;
-    return EFI_SUCCESS;
-}
 
-EFI_STATUS
-EFIAPI
-WebFsRead(
-    EFI_FILE_PROTOCOL *This,
-    UINTN             *BufferSize,
-    VOID              *Buffer
-)
-{
-    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
-
-    if (fh->is_dir) {
-        return read_dir(fh, BufferSize, Buffer);
-    } else {
-        return read_file(fh, BufferSize, Buffer);
-    }
+    out->struct_size = sizeof(*out);
+    out->version     = AXL_FS_PROVIDER_VERSION;
+    axl_strlcpy(out->name, e->name, sizeof(out->name));
+    out->size        = e->size;
+    out->mtime_unix  = 0;     /* server's ISO-8601 modified isn't decoded yet */
+    out->attributes  = e->is_dir ? AXL_FS_ATTR_DIRECTORY : 0u;
+    *out_end = false;
+    return AXL_FS_OK;
 }
 
 // ---------------------------------------------------------------------------
-// EFI_FILE_PROTOCOL: Write
+// write — staged into put_buf, drained on close/flush
 // ---------------------------------------------------------------------------
 
-/* Drain the buffered PUT body to the server in a single request.
-   Called from WebFsClose (via the umbrella close path) and
-   WebFsFlush. Resets put_buf state whether or not the PUT
-   succeeded — the buffer can't survive the call because the
-   close/flush sites assume cleanup happened. Returns
-   EFI_DEVICE_ERROR on network / 4xx-5xx response, EFI_SUCCESS
-   otherwise. Empty buffer (no Writes happened since last flush)
-   is a no-op success. */
-static EFI_STATUS
-flush_put_buf(WebFsFileCtx *fh)
+static AxlFsStatus
+flush_put_buf(AxlFsProviderFile *fh)
 {
-    if (!fh->put_dirty) return EFI_SUCCESS;
-
-    WebFsPrivate *priv = fh->private_data;
+    if (!fh->put_dirty) return AXL_FS_OK;
+    WebFsPrivate *priv = fh->priv;
     const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
 
     /* Compute SHA-256 of the accumulator so the server can verify
-       end-to-end on PUT (SDK 28d488d's Content-Digest validation
-       reuses the same hex format the response-side Want-Digest
-       returns). Cheap relative to the network transfer; one hash
-       across the consolidated body, never per-chunk. axl_compute_
-       checksum_digest writes 32 raw bytes — convert to lowercase
-       hex inline for the header. */
-    char digest_hex[65];
+       end-to-end on PUT (SDK Content-Digest validation). */
+    char    digest_hex[65];
     uint8_t digest_raw[32];
     if (axl_compute_checksum_digest(AXL_CHECKSUM_SHA256,
                                     fh->put_buf, fh->put_buf_used,
@@ -533,99 +398,91 @@ flush_put_buf(WebFsFileCtx *fh)
                              digest_hex[0] != '\0' ? digest_hex : NULL,
                              &status);
 
-    /* Reset buffer state regardless of outcome. */
     axl_free(fh->put_buf);
-    fh->put_buf = NULL;
-    fh->put_buf_cap = 0;
+    fh->put_buf      = NULL;
+    fh->put_buf_cap  = 0;
     fh->put_buf_used = 0;
-    fh->put_dirty = false;
+    fh->put_dirty    = false;
 
     if (rc != 0 ||
         (status != 200 && status != 201 && status != 204)) {
-        return EFI_DEVICE_ERROR;
+        return AXL_FS_ERR_IO;
     }
 
-    /* Server view changed — drop the parent listing's cached
-       entry so the next ls reflects the new size / mtime. */
+    /* Server view changed — drop the parent listing's cached entry. */
     char parent_dir[MAX_PATH_LEN];
     get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
     dir_cache_invalidate(priv, parent_dir);
-    return EFI_SUCCESS;
+    return AXL_FS_OK;
 }
 
-EFI_STATUS
-EFIAPI
-WebFsWrite(
-    EFI_FILE_PROTOCOL *This,
-    UINTN             *BufferSize,
-    VOID              *Buffer
-)
+static AxlFsStatus
+webfs_write(AxlFsProviderFile *fh, const void *buf, size_t *inout_size)
 {
-    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
-    WebFsPrivate *priv = fh->private_data;
+    WebFsPrivate *priv = fh->priv;
+    if (buf == NULL || inout_size == NULL) return AXL_FS_ERR_INVALID;
+    if (fh->is_dir) return AXL_FS_ERR_IS_DIR;
+    if (priv->read_only) return AXL_FS_ERR_WRITE_PROTECTED;
+    if (*inout_size == 0) return AXL_FS_OK;
 
-    if (fh->is_dir) return EFI_UNSUPPORTED;
-    if (priv->read_only) return EFI_WRITE_PROTECTED;
-    if (*BufferSize == 0) return EFI_SUCCESS;
-
-    /* Lazy-allocate the staging buffer on the first Write. */
     if (!fh->put_dirty) {
         fh->put_buf = axl_malloc(PUT_BUF_INITIAL);
-        if (fh->put_buf == NULL) return EFI_OUT_OF_RESOURCES;
+        if (fh->put_buf == NULL) return AXL_FS_ERR_NO_MEMORY;
         fh->put_buf_cap  = PUT_BUF_INITIAL;
         fh->put_buf_used = 0;
         fh->put_dirty    = true;
-        /* The file is changing; the SHA-256 we got at Open no
-           longer reflects what's on the server. Disable the
-           integrity check so Close doesn't report a spurious
-           mismatch. */
         if (fh->digest_active) fh->digest_failed = true;
     }
 
-    /* Grow the buffer geometrically up to the cap. */
-    size_t need = fh->put_buf_used + *BufferSize;
-    if (need > PUT_BUF_MAX) return EFI_VOLUME_FULL;
+    size_t need = fh->put_buf_used + *inout_size;
+    if (need > PUT_BUF_MAX) return AXL_FS_ERR_NO_SPACE;
     if (need > fh->put_buf_cap) {
         size_t new_cap = fh->put_buf_cap * 2;
         while (new_cap < need) new_cap *= 2;
         if (new_cap > PUT_BUF_MAX) new_cap = PUT_BUF_MAX;
         uint8_t *nb = axl_realloc(fh->put_buf, new_cap);
-        if (nb == NULL) return EFI_OUT_OF_RESOURCES;
-        fh->put_buf = nb;
+        if (nb == NULL) return AXL_FS_ERR_NO_MEMORY;
+        fh->put_buf     = nb;
         fh->put_buf_cap = new_cap;
     }
 
-    axl_memcpy(fh->put_buf + fh->put_buf_used, Buffer, *BufferSize);
-    fh->put_buf_used += *BufferSize;
-    fh->position += *BufferSize;
-    if (fh->position > fh->file_size) {
-        fh->file_size = fh->position;
-    }
-    /* Future Reads on this handle would race against the buffered
-       writes; invalidate the read-ahead so any subsequent Read
-       triggers a fresh fetch (post-flush). */
-    fh->read_ahead_len = 0;
-
-    return EFI_SUCCESS;
+    axl_memcpy(fh->put_buf + fh->put_buf_used, buf, *inout_size);
+    fh->put_buf_used += *inout_size;
+    fh->position     += *inout_size;
+    if (fh->position > fh->file_size) fh->file_size = fh->position;
+    fh->read_ahead_len = 0;     /* invalidate */
+    return AXL_FS_OK;
 }
 
 // ---------------------------------------------------------------------------
-// EFI_FILE_PROTOCOL: Delete
+// seek
 // ---------------------------------------------------------------------------
 
-EFI_STATUS
-EFIAPI
-WebFsDelete(
-    EFI_FILE_PROTOCOL *This
-)
+static AxlFsStatus
+webfs_seek(AxlFsProviderFile *fh, uint64_t position)
 {
-    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
-    WebFsPrivate *priv = fh->private_data;
-
-    if (priv->read_only) {
-        WebFsClose(This);
-        return EFI_WARN_DELETE_FAILURE;
+    if (fh->is_dir) {
+        if (position == 0) {
+            fh->dir_read_index = 0;
+            return AXL_FS_OK;
+        }
+        return AXL_FS_ERR_UNSUPPORTED;
     }
+    /* Any seek breaks the sequential-read invariant. */
+    if (fh->digest_active) fh->digest_failed = true;
+    fh->position = (position == (uint64_t)-1) ? fh->file_size : position;
+    return AXL_FS_OK;
+}
+
+// ---------------------------------------------------------------------------
+// del
+// ---------------------------------------------------------------------------
+
+static AxlFsStatus
+webfs_del(AxlFsProviderFile *fh)
+{
+    WebFsPrivate *priv = fh->priv;
+    if (priv->read_only) return AXL_FS_ERR_WRITE_PROTECTED;
 
     const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
     size_t del_status = 0;
@@ -635,236 +492,137 @@ WebFsDelete(
     get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
     dir_cache_invalidate(priv, parent_dir);
 
-    // Close (free) the file handle per spec
-    WebFsClose(This);
-
-    /* 200/204 = removed cleanly; 404 = already gone (treat as
-       success per the JSON path's historical behavior). 204 added
-       for WebDAV servers that prefer it. */
+    /* 200/204 = removed cleanly; 404 = already gone (treat as success
+       per the JSON path's historical behavior). */
     if (ret != 0 ||
         (del_status != 200 && del_status != 204 && del_status != 404)) {
-        return EFI_WARN_DELETE_FAILURE;
+        return AXL_FS_ERR_IO;
     }
-
-    return EFI_SUCCESS;
+    return AXL_FS_OK;
 }
 
 // ---------------------------------------------------------------------------
-// EFI_FILE_PROTOCOL: GetInfo / SetInfo
+// flush
 // ---------------------------------------------------------------------------
 
-EFI_STATUS
-EFIAPI
-WebFsGetInfo(
-    EFI_FILE_PROTOCOL *This,
-    EFI_GUID          *InformationType,
-    UINTN             *BufferSize,
-    VOID              *Buffer
-)
+static AxlFsStatus
+webfs_flush(AxlFsProviderFile *fh)
 {
-    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
-    WebFsPrivate *priv = fh->private_data;
-
-    if (axl_guid_equal(InformationType, &gEfiFileInfoGuid)) {
-        DirEntry entry;
-        axl_memset(&entry, 0, sizeof(entry));
-
-        if (fh->is_root) {
-            axl_strlcpy(entry.name, "", sizeof(entry.name));
-            entry.is_dir = true;
-        } else {
-            // Look up from parent dir cache
-            char parent_dir[MAX_PATH_LEN];
-            get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
-            const char *name = get_file_name(fh->path);
-
-            int ret = dir_cache_lookup_entry(priv, parent_dir, name, &entry);
-            if (ret != 0) {
-                // Fallback: use what we know
-                axl_strlcpy(entry.name, name, sizeof(entry.name));
-                entry.size = fh->file_size;
-                entry.is_dir = fh->is_dir;
-            }
-        }
-
-        size_t needed = build_file_info(&entry, NULL, 0);
-        if (*BufferSize < needed) {
-            *BufferSize = needed;
-            return EFI_BUFFER_TOO_SMALL;
-        }
-
-        build_file_info(&entry, (EFI_FILE_INFO *)Buffer, *BufferSize);
-        *BufferSize = needed;
-        return EFI_SUCCESS;
-    }
-
-    if (axl_guid_equal(InformationType, &gEfiFileSystemInfoGuid)) {
-        size_t label_len = axl_wcslen(VOLUME_LABEL);
-        size_t needed = SIZE_OF_EFI_FILE_SYSTEM_INFO + (label_len + 1) * sizeof(CHAR16);
-
-        if (*BufferSize < needed) {
-            *BufferSize = needed;
-            return EFI_BUFFER_TOO_SMALL;
-        }
-
-        EFI_FILE_SYSTEM_INFO *fs_info = (EFI_FILE_SYSTEM_INFO *)Buffer;
-        axl_memset(fs_info, 0, needed);
-        fs_info->Size = needed;
-        fs_info->ReadOnly = priv->read_only;
-        /* The backing filesystem lives on the workstation; we don't
-           ask the server how much free space it has. Reporting zero
-           free space here makes UEFI Shell's cp refuse to write
-           ("insufficient capacity on destination media") before it
-           even attempts a single Write call. Advertise a large
-           synthetic free-space value so cp proceeds and the actual
-           Write/PUT exchange determines success or failure. */
-        fs_info->VolumeSize = (UINT64)-1;
-        fs_info->FreeSpace  = (UINT64)-1;
-        fs_info->BlockSize = 512;
-        axl_wcscpy(fs_info->VolumeLabel, VOLUME_LABEL, label_len + 1);
-
-        *BufferSize = needed;
-        return EFI_SUCCESS;
-    }
-
-    if (axl_guid_equal(InformationType, &gEfiFileSystemVolumeLabelInfoIdGuid)) {
-        size_t label_len = axl_wcslen(VOLUME_LABEL);
-        size_t needed = sizeof(EFI_FILE_SYSTEM_VOLUME_LABEL) + (label_len + 1) * sizeof(CHAR16);
-
-        if (*BufferSize < needed) {
-            *BufferSize = needed;
-            return EFI_BUFFER_TOO_SMALL;
-        }
-
-        EFI_FILE_SYSTEM_VOLUME_LABEL *label = (EFI_FILE_SYSTEM_VOLUME_LABEL *)Buffer;
-        axl_wcscpy(label->VolumeLabel, VOLUME_LABEL, label_len + 1);
-        *BufferSize = needed;
-        return EFI_SUCCESS;
-    }
-
-    return EFI_UNSUPPORTED;
+    if (fh->put_dirty) return flush_put_buf(fh);
+    return AXL_FS_OK;
 }
 
-EFI_STATUS
-EFIAPI
-WebFsSetInfo(
-    EFI_FILE_PROTOCOL *This,
-    EFI_GUID          *InformationType,
-    UINTN              BufferSize,
-    VOID              *Buffer
-)
+// ---------------------------------------------------------------------------
+// get_info / set_info
+// ---------------------------------------------------------------------------
+
+static AxlFsStatus
+webfs_get_info(AxlFsProviderFile *fh, AxlFsProviderInfo *out)
 {
-    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
-    WebFsPrivate *priv = fh->private_data;
+    WebFsPrivate *priv = fh->priv;
+    if (out == NULL) return AXL_FS_ERR_INVALID;
 
-    if (!axl_guid_equal(InformationType, &gEfiFileInfoGuid)) {
-        return EFI_UNSUPPORTED;
+    out->struct_size = sizeof(*out);
+    out->version     = AXL_FS_PROVIDER_VERSION;
+    out->mtime_unix  = 0;
+
+    DirEntry entry;
+    axl_memset(&entry, 0, sizeof(entry));
+
+    if (fh->is_root) {
+        out->name[0]    = '\0';
+        out->size       = 0;
+        out->attributes = AXL_FS_ATTR_DIRECTORY;
+        return AXL_FS_OK;
     }
 
-    if (priv->read_only) return EFI_WRITE_PROTECTED;
-    if (Buffer == NULL || BufferSize < SIZE_OF_EFI_FILE_INFO) {
-        return EFI_INVALID_PARAMETER;
+    char parent_dir[MAX_PATH_LEN];
+    get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
+    const char *name = get_file_name(fh->path);
+
+    if (dir_cache_lookup_entry(priv, parent_dir, name, &entry) == 0) {
+        axl_strlcpy(out->name, entry.name, sizeof(out->name));
+        out->size       = entry.size;
+        out->attributes = entry.is_dir ? AXL_FS_ATTR_DIRECTORY : 0u;
+    } else {
+        /* Cache miss fallback: use what we know on the handle. */
+        axl_strlcpy(out->name, name, sizeof(out->name));
+        out->size       = fh->file_size;
+        out->attributes = fh->is_dir ? AXL_FS_ATTR_DIRECTORY : 0u;
     }
+    return AXL_FS_OK;
+}
 
-    EFI_FILE_INFO *new_info = (EFI_FILE_INFO *)Buffer;
+static AxlFsStatus
+webfs_set_info(AxlFsProviderFile *fh, const AxlFsProviderInfo *in)
+{
+    WebFsPrivate *priv = fh->priv;
+    if (in == NULL) return AXL_FS_ERR_INVALID;
+    if (priv->read_only) return AXL_FS_ERR_WRITE_PROTECTED;
 
-    // Check if the filename changed (rename)
+    /* Treat in->name change as rename. The thunk has already
+       decoded the trailing CHAR16 name into UTF-8. */
     const char *old_name = get_file_name(fh->path);
-    char new_name8[256];
-    size_t i = 0;
-    while (new_info->FileName[i] != L'\0' && i < sizeof(new_name8) - 1) {
-        new_name8[i] = (char)new_info->FileName[i];
-        i++;
-    }
-    new_name8[i] = '\0';
-
-    if (axl_streql(old_name, new_name8)) {
-        return EFI_SUCCESS;  // No name change
+    if (axl_streql(old_name, in->name)) {
+        return AXL_FS_OK;     /* attribute change without rename */
     }
 
-    // Rename via the active protocol.
     const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
     size_t rename_status = 0;
-    int ret = ops->rename(priv, fh->path, new_name8, &rename_status);
-
+    int ret = ops->rename(priv, fh->path, in->name, &rename_status);
     if (ret != 0 ||
         (rename_status != 200 && rename_status != 201 &&
          rename_status != 204)) {
-        return EFI_DEVICE_ERROR;
+        return AXL_FS_ERR_IO;
     }
 
-    // Update internal path to reflect new name
     char parent_dir[MAX_PATH_LEN];
     get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
     dir_cache_invalidate(priv, parent_dir);
-
-    axl_snprintf(fh->path, MAX_PATH_LEN, "%s%s", parent_dir, new_name8);
-
-    return EFI_SUCCESS;
+    /* The path on the handle now points to the renamed entry. */
+    axl_snprintf(fh->path, sizeof(fh->path), "%s%s", parent_dir, in->name);
+    return AXL_FS_OK;
 }
 
 // ---------------------------------------------------------------------------
-// EFI_FILE_PROTOCOL: Position / Flush
+// volume_info — synthesizes EFI_FILE_SYSTEM_INFO from the mount state
 // ---------------------------------------------------------------------------
 
-EFI_STATUS
-EFIAPI
-WebFsGetPosition(
-    EFI_FILE_PROTOCOL *This,
-    UINT64            *Position
-)
+static AxlFsStatus
+webfs_volume_info(void *backend_ctx, AxlFsProviderVolumeInfo *out)
 {
-    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
-    if (fh->is_dir) return EFI_UNSUPPORTED;
-    *Position = fh->position;
-    return EFI_SUCCESS;
+    WebFsPrivate *priv = backend_ctx;
+    out->struct_size = sizeof(*out);
+    out->version     = AXL_FS_PROVIDER_VERSION;
+    out->read_only   = priv->read_only;
+    /* Server backing — we don't query free space. Synthetic huge
+       value so UEFI Shell `cp` doesn't refuse the write upfront
+       (the actual write/PUT exchange determines success). */
+    out->volume_size = (uint64_t)-1;
+    out->free_space  = (uint64_t)-1;
+    out->block_size  = 512;
+    axl_strlcpy(out->label, VOLUME_LABEL_UTF8, sizeof(out->label));
+    return AXL_FS_OK;
 }
 
-EFI_STATUS
-EFIAPI
-WebFsSetPosition(
-    EFI_FILE_PROTOCOL *This,
-    UINT64             Position
-)
-{
-    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
+// ---------------------------------------------------------------------------
+// Provider vtable (caller-owned, lives in BSS)
+// ---------------------------------------------------------------------------
 
-    if (fh->is_dir) {
-        if (Position == 0) {
-            fh->dir_read_index = 0;
-            return EFI_SUCCESS;
-        }
-        return EFI_UNSUPPORTED;
-    }
-
-    /* Any seek breaks the sequential-read invariant the digest
-       accumulator depends on. Latch failed; Close will skip
-       validation. */
-    if (fh->digest_active) {
-        fh->digest_failed = true;
-    }
-
-    if (Position == UINT64_MAX) {
-        fh->position = fh->file_size;
-    } else {
-        fh->position = Position;
-    }
-
-    return EFI_SUCCESS;
-}
-
-EFI_STATUS
-EFIAPI
-WebFsFlush(
-    EFI_FILE_PROTOCOL *This
-)
-{
-    WebFsFileCtx *fh = WEBFS_FILE_FROM_FILE_PROTOCOL(This);
-    /* UEFI Shell's `cp` / many callers Flush before Close. Drain
-       the staging buffer here so the bytes are on the server
-       before the next operation observes the file. */
-    if (fh->put_dirty) {
-        return flush_put_buf(fh);
-    }
-    return EFI_SUCCESS;
-}
+const AxlFsProvider webfs_provider = {
+    .struct_size   = sizeof(AxlFsProvider),
+    .version       = AXL_FS_PROVIDER_VERSION,
+    .open          = webfs_open,
+    .close         = webfs_close,
+    .read          = webfs_read,
+    .read_dir      = webfs_read_dir,
+    .write         = webfs_write,
+    .seek          = webfs_seek,
+    .del           = webfs_del,
+    .flush         = webfs_flush,
+    .get_info      = webfs_get_info,
+    .set_info      = webfs_set_info,
+    .volume_info   = webfs_volume_info,
+    .default_label = VOLUME_LABEL_UTF8,
+    /* backend_ctx filled at publish time by mount_setup. */
+};

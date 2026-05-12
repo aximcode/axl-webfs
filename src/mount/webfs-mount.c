@@ -3,13 +3,13 @@
 
   Single-source-file dual-compile (mirrors webfs-serve.c). With
   -DAXL_SERVICE_BUILD_DRIVER this builds into webfs-mount-dxe.efi
-  with setup/teardown that bring up the HTTP client, install
-  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL on a new handle (vendor device
-  path so umount can find it), and reverse the dance on unload.
-  Without the define only the unconditional bits compile
-  (g_mount_opts, mount_descs, the webfs_mount descriptor stub),
-  which is what the launcher needs for axl_service_start_embedded's
-  LoadOptions serialization.
+  with setup/teardown that bring up the HTTP client and publish a
+  filesystem via <axl/axl-fs-provider.h>; the SDK synthesizes the
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL + EFI_FILE_PROTOCOL vtables and
+  installs them on a freshly-created handle. Without the define
+  only the unconditional bits compile (g_mount_opts, mount_descs,
+  the webfs_mount descriptor stub), which is what the launcher
+  needs for axl_service_start_embedded's LoadOptions serialization.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
@@ -20,6 +20,7 @@
 #include <axl.h>
 
 #ifdef AXL_SERVICE_BUILD_DRIVER
+#  include <axl/axl-fs-provider.h>
 #  include <axl/axl-net.h>
 #  include <axl/axl-net-opts.h>
 #  include <axl/axl-url.h>
@@ -38,13 +39,7 @@ const AxlConfigDesc mount_descs[] = {
       offsetof(MountOpts, protocol),  sizeof(const char *) },
     { "auth",      AXL_CFG_STRING, "",      "HTTP auth (basic:user:token | bearer:token)",
       offsetof(MountOpts, auth),      sizeof(const char *) },
-    /* AXL_NET_OPT_CLIENT preset spelled out: --nic + --source-ip.
-       The SDK ships `axl_config_descs_net` to emit this group at
-       runtime, but axl-webfs's webfs_mount AxlService initializer
-       wants a compile-time-const mount_descs[] (cross-binary ABI
-       rule — see header), so we spell the entries here and use the
-       SDK's canonical defaults (AXL_NET_NIC_AUTO_STR for the auto
-       sentinel) to stay aligned with other consumers. */
+    /* AXL_NET_OPT_CLIENT preset spelled out: --nic + --source-ip. */
     { "nic",       AXL_CFG_UINT,   AXL_NET_NIC_AUTO_STR,
                                             "NIC index (auto if unset)",
       offsetof(MountOpts, net.nic_index), sizeof(uint64_t) },
@@ -55,30 +50,12 @@ const AxlConfigDesc mount_descs[] = {
 
 #ifdef AXL_SERVICE_BUILD_DRIVER
 
-/// Vendor GUID for the axl-webfs device path node — used by umount
-/// callers (axl-webfs's launcher and Shell users) to recognize the
-/// mounted volume's handle.
-static const EFI_GUID HttpFsVendorGuid = {
+/// Vendor GUID for axl-webfs's filesystem-provider device-path node.
+/// Used by umount callers (axl-webfs's launcher and Shell users) to
+/// recognize the mounted volume's handle.
+static const AxlGuid g_webfs_vendor_guid = AXL_GUID(
     0xf47c0fa2, 0xbf67, 0x4c0d,
-    {0xb0, 0x5e, 0x44, 0x9a, 0x1b, 0xf3, 0x44, 0xc7}
-};
-
-#pragma pack(1)
-typedef struct {
-    VENDOR_DEVICE_PATH       Vendor;
-    EFI_DEVICE_PATH_PROTOCOL End;
-} WebFsDevicePath;
-#pragma pack()
-
-static const WebFsDevicePath m_device_path_template = {
-    {
-        { HARDWARE_DEVICE_PATH, HW_VENDOR_DP,
-          { sizeof(VENDOR_DEVICE_PATH), 0 } },
-        { 0 }  // GUID filled at runtime
-    },
-    { END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE,
-      { sizeof(EFI_DEVICE_PATH_PROTOCOL), 0 } }
-};
+    0xb0, 0x5e, 0x44, 0x9a, 0x1b, 0xf3, 0x44, 0xc7);
 
 /// Parse "http://1.2.3.4:8080/path" into components using axl_url_parse.
 static int
@@ -121,28 +98,10 @@ parse_url(
     return 0;
 }
 
-EFI_STATUS
-EFIAPI
-WebFsOpenVolume(
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *This,
-    EFI_FILE_PROTOCOL              **Root
-)
-{
-    WebFsPrivate *priv = WEBFS_PRIVATE_FROM_SIMPLE_FS(This);
-
-    WebFsFileCtx *root_file = webfs_create_file_handle(
-        priv, priv->base_path, true, 0);
-    if (root_file == NULL) return EFI_OUT_OF_RESOURCES;
-
-    root_file->is_root = true;
-    *Root = &root_file->file;
-    return EFI_SUCCESS;
-}
-
 static int
 mount_setup(AxlLoop *loop, void *user)
 {
-    (void)loop;  // mount has no loop sources; protocol calls are synchronous
+    (void)loop;  // mount has no loop sources; provider calls are synchronous
     MountOpts *m = user;
 
     if (m->url == NULL || m->url[0] == '\0') {
@@ -154,7 +113,6 @@ mount_setup(AxlLoop *loop, void *user)
     if (priv == NULL) {
         return AXL_ERR;
     }
-    priv->signature = WEBFS_PRIVATE_SIGNATURE;
     priv->read_only = m->read_only;
 
     if (parse_url(m->url, priv->server_addr, &priv->server_port,
@@ -175,12 +133,6 @@ mount_setup(AxlLoop *loop, void *user)
                priv->server_addr[2], priv->server_addr[3],
                priv->server_port, priv->base_path);
 
-    /* DHCP bring-up on the chosen NIC. AXL_NET_NIC_AUTO selects
-       the first usable NIC; numeric values pick a specific index.
-       Static-IP-on-the-NIC (mutating IP4Config2 policy) is not a
-       mount-side option — that's the firmware's `ifconfig` layer;
-       users who genuinely need a static IPv4 install it ahead of
-       time via UEFI Shell `ifconfig` or axl_net_set_static_ip. */
     if (axl_net_init_from_opts(&m->net, 10) != AXL_OK) {
         axl_printf("axl-webfs-mount: network init failed\n");
         axl_free(priv);
@@ -194,26 +146,12 @@ mount_setup(AxlLoop *loop, void *user)
         return AXL_ERR;
     }
 
-    /* --source-ip → axl_http_client's `source.ip`, so outbound
-       connect()s bind to the named station IP. Empty leaves the
-       stack on auto-select (typical: pick the NIC's primary IP).
-       AxlNetOpts.local_ip serves as both source-IP (clients,
-       here) and listen-IP (servers, see webfs-serve.c) — same
-       bind(2), role inferred from what we do next. */
     if (m->net.local_ip != NULL && m->net.local_ip[0] != '\0') {
         axl_http_client_set(priv->http_client, "source.ip",
                             m->net.local_ip);
     }
 
-    /* Optional HTTP auth (Jenkins API tokens, SharePoint personal-
-       access-tokens, plain Basic, etc.). axl_http_client_set with
-       `header.Authorization` installs the value as a default header
-       on every request the client issues, so all protocol traffic
-       (HEAD probes, PROPFIND, Range GETs, PUTs) inherits it without
-       per-call plumbing. Format parsed here:
-         basic:<user>:<password>   → base64 the user:pw pair
-         bearer:<token>            → token used verbatim
-       Empty / unset → no auth. */
+    /* Optional HTTP auth — same parsing as v1. */
     if (m->auth != NULL && m->auth[0] != '\0') {
         char header[1024];
         header[0] = '\0';
@@ -242,9 +180,6 @@ mount_setup(AxlLoop *loop, void *user)
         }
     }
 
-    /* AxlCache owns slot allocation, eviction policy, and TTL. The
-       hand-rolled find/put/invalidate that lived here previously was
-       a near-duplicate of the SDK primitive. */
     priv->dir_cache = axl_cache_new(DIR_CACHE_MAX_SLOTS,
                                     sizeof(DirCacheSlot),
                                     DIR_CACHE_TTL_MS);
@@ -254,12 +189,7 @@ mount_setup(AxlLoop *loop, void *user)
         return AXL_ERR;
     }
 
-    /* Pick the wire protocol. With --protocol=auto (the default),
-       probe DAV first via OPTIONS / DAV: header and fall back to
-       JSON's GET /info; an explicit json/dav override skips probing.
-       Either probe doubles as the server-validation check, so a
-       misconfigured URL fails here before we publish the FSn:
-       handle. */
+    /* Wire-protocol probe + override: pick JSON / DAV. */
     const char *proto_cfg = (m->protocol != NULL) ? m->protocol : "auto";
     priv->protocol = WEBFS_PROTO_JSON;
     bool probed_ok = false;
@@ -287,6 +217,7 @@ mount_setup(AxlLoop *loop, void *user)
     if (!probed_ok) {
         axl_printf("axl-webfs-mount: server validation failed "
                    "(no %s endpoint reachable)\n", proto_cfg);
+        axl_cache_free(priv->dir_cache);
         axl_http_client_free(priv->http_client);
         axl_free(priv);
         return AXL_ERR;
@@ -295,34 +226,23 @@ mount_setup(AxlLoop *loop, void *user)
     axl_printf("axl-webfs-mount: wire protocol = %s\n",
                priv->protocol == WEBFS_PROTO_DAV ? "WebDAV" : "JSON");
 
-    priv->simple_fs.Revision = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_REVISION;
-    priv->simple_fs.OpenVolume = WebFsOpenVolume;
+    /* Publish the filesystem. The provider vtable is statically
+       initialized in webfs-file.c; backend_ctx threads the per-mount
+       state in. axl_fs_provider_publish synthesizes the EFI vtables,
+       allocates the vendor device-path with our GUID, installs both
+       protocols on a fresh handle, and connects controllers so Shell
+       sees the new fsN: mapping. */
+    AxlFsProvider provider = webfs_provider;
+    provider.backend_ctx = priv;
 
-    WebFsDevicePath *dev_path = axl_malloc(sizeof(WebFsDevicePath));
-    if (dev_path == NULL) {
+    if (axl_fs_provider_publish(&provider, &g_webfs_vendor_guid,
+                                &priv->fs_handle) != AXL_OK) {
+        axl_printf("axl-webfs-mount: provider publish failed\n");
+        axl_cache_free(priv->dir_cache);
         axl_http_client_free(priv->http_client);
         axl_free(priv);
         return AXL_ERR;
     }
-    axl_memcpy(dev_path, &m_device_path_template, sizeof(WebFsDevicePath));
-    axl_memcpy(&dev_path->Vendor.Guid, &HttpFsVendorGuid, sizeof(EFI_GUID));
-    priv->device_path = (EFI_DEVICE_PATH_PROTOCOL *)dev_path;
-
-    priv->fs_handle = NULL;
-    if (axl_protocol_register_multiple(&priv->fs_handle,
-            "simple-fs", &priv->simple_fs,
-            "device-path", priv->device_path,
-            NULL) != 0) {
-        axl_printf("axl-webfs-mount: protocol install failed\n");
-        axl_free(dev_path);
-        axl_http_client_free(priv->http_client);
-        axl_free(priv);
-        return AXL_ERR;
-    }
-
-    /* Connect controllers so Shell sees the new FS mapping
-       without `map -r`. */
-    axl_driver_connect_handle(priv->fs_handle);
 
     m->priv = priv;
     axl_printf("axl-webfs-mount: mounted (use 'map -r' to refresh "
@@ -335,23 +255,17 @@ mount_teardown(void *user)
 {
     MountOpts *m = user;
     WebFsPrivate *priv = m->priv;
-    if (priv == NULL) {
-        return AXL_OK;
-    }
+    if (priv == NULL) return AXL_OK;
 
+    /* Unpublish first — force-closes any still-open
+       AxlFsProviderFile, uninstalls SimpleFs + DevicePath, and
+       frees the SDK-side thunk state. Stale UEFI consumer pointers
+       get DEVICE_ERROR on next call (per the documented contract). */
     if (priv->fs_handle != NULL) {
-        axl_protocol_unregister(priv->fs_handle, "simple-fs", &priv->simple_fs);
-        axl_protocol_unregister(priv->fs_handle, "device-path", priv->device_path);
+        axl_fs_provider_unpublish(priv->fs_handle);
     }
-    if (priv->dir_cache != NULL) {
-        axl_cache_free(priv->dir_cache);
-    }
-    if (priv->http_client != NULL) {
-        axl_http_client_free(priv->http_client);
-    }
-    if (priv->device_path != NULL) {
-        axl_free(priv->device_path);
-    }
+    if (priv->dir_cache != NULL)   axl_cache_free(priv->dir_cache);
+    if (priv->http_client != NULL) axl_http_client_free(priv->http_client);
     axl_free(priv);
 
     m->priv = NULL;
@@ -369,9 +283,9 @@ const AxlService webfs_mount = {
     .teardown       = mount_teardown,
 #endif
     .user           = &g_mount_opts,
-    /* Mount has no loop sources -- EFI_FILE_PROTOCOL calls are
-       synchronous from the Shell's caller. The tick still fires;
-       it just iterates a sourceless loop. Keep it slow. */
+    /* Mount has no loop sources -- provider calls are synchronous
+       from the Shell's caller. The tick still fires; it just iterates
+       a sourceless loop. Keep it slow. */
     .driver_tick_ms = 1000,
 };
 
