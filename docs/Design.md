@@ -97,22 +97,22 @@ once without for the launcher's descriptor stub used by
 
 3. **axl-webfs-mount-dxe.efi** (AxlService DXE driver) — built from
    `src/mount/webfs-mount.c` with `-DAXL_SERVICE_BUILD_DRIVER`.
-   `setup()` parses the URL, brings up the network, validates the
-   server with `GET /info`, then installs `EFI_FILE_PROTOCOL` on a
-   new handle (vendor device path so `umount` can find it).
-   `teardown()` uninstalls and frees. Tick fires every 1000 ms;
-   `EFI_FILE_PROTOCOL` callbacks run synchronously from the Shell's
-   caller, not on the loop.
+   `setup()` parses the URL, brings up the network via
+   `axl_net_init_from_opts`, validates the server, then publishes
+   an `AxlFsProvider` (callback table speaking UTF-8 paths +
+   `AxlFsStatus`) via `axl_fs_provider_publish`. The SDK
+   synthesizes `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` +
+   `EFI_FILE_PROTOCOL` on top of that callback table and installs
+   them on a fresh vendor-path handle. `teardown()` reverses it.
+   Tick fires every 1000 ms; `AxlFsProvider` callbacks run
+   synchronously from the Shell's caller, not on the loop.
 
-4. **network** (`src/net/`) — Thin wrapper around `axl_net_auto_init`
-   for the common DHCP path. Retains static IP support via direct
-   `IP4Config2` protocol calls. Linked into the launcher (for
-   `list-nics`) and both driver images.
-
-5. **transfer** (`src/transfer/`) — Volume enumeration via
+4. **transfer** (`src/transfer/`) — Volume enumeration via
    `axl_volume_enumerate`, streaming file I/O via `axl_fopen`/
    `axl_fread`/`axl_fwrite`, directory listing as JSON/HTML.
-   Driver-only (linked into the serve driver image only).
+   Driver-only (linked into the serve driver image only). Networking
+   is the SDK's responsibility — no per-project wrapper since the
+   AxlNetOpts uptake.
 
 ### What comes from the AXL SDK
 
@@ -128,11 +128,16 @@ memory allocation, string utilities, logging.
 The `mount` command starts the embedded `axl-webfs-mount-dxe.efi`
 AxlService via `axl_service_start_embedded`. The driver's
 `mount_setup` parses the URL passed via LoadOptions, validates the
-server, and installs `EFI_FILE_PROTOCOL` on a new device handle so
-the UEFI Shell sees a new volume (FSn:). `umount` calls
-`axl_service_stop`, which resolves the running driver image by the
-service's name-derived GUID and unloads it; the driver's unload
-stub runs `mount_teardown` to uninstall the protocols.
+server, and calls `axl_fs_provider_publish` with a callback table
+that speaks UTF-8 paths + `AxlFsStatus` return codes. The SDK
+synthesizes `EFI_FILE_PROTOCOL` + `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`
+on top, installs them on a fresh vendor-path handle, and marshals
+CHAR16 ↔ UTF-8 + `EFI_FILE_INFO` headers/trailers + `EFI_STATUS`
+mapping at the boundary — so the UEFI Shell sees a new volume
+(FSn:). `umount` calls `axl_service_stop`, which resolves the
+running driver image by the service's name-derived GUID and
+unloads it; the driver's unload stub runs `mount_teardown` to
+unpublish the provider.
 
 ```
 Workstation                              UEFI Host
@@ -167,21 +172,26 @@ GET  /list/<path>         -> JSON directory listing:
 GET  /info                -> server info: {"version":"1.0","root":"/share"}
 ```
 
-### EFI_FILE_PROTOCOL Mapping
+### AxlFsProvider Mapping
 
-Every UEFI file operation translates to HTTP:
+The mount driver supplies an `AxlFsProvider` callback table; the
+SDK invokes the callbacks for each `EFI_FILE_PROTOCOL` op the
+Shell makes, marshalling CHAR16 paths to UTF-8 and the result
+back. The callbacks issue HTTP requests via `axl_http_client`
+(JSON protocol shown below; the parallel WebDAV path uses the
+RFC 4918 verbs instead — both go through the same vtable):
 
-| EFI_FILE_PROTOCOL      | HTTP Request                        |
-|-------------------------|-------------------------------------|
-| `Open()`               | `GET /list/<parent>` (check exists) |
-| `Close()`              | (no-op)                             |
-| `Read()` (file)        | `GET /files/<path>` (Range header)  |
-| `Read()` (dir)         | `GET /list/<path>` (iterate entries) |
-| `Write()`              | `PUT /files/<path>`                 |
-| `Delete()`             | `DELETE /files/<path>`              |
-| `GetInfo(FILE_INFO)`   | `GET /list/<parent>` (find entry)   |
-| `SetInfo(FILE_INFO)`   | `POST /files/<path>?rename=<new>`   |
-| `GetPosition()`        | (local tracking, no HTTP)           |
+| AxlFsProvider callback | HTTP Request                       |
+|------------------------|------------------------------------|
+| `open` (existing)      | `GET /list/<parent>` (check exists) |
+| `open` (create)        | `PUT /files/<path>` (empty body) or `POST ?mkdir` |
+| `close`                | flushes any buffered PUT body      |
+| `read` (file)          | `GET /files/<path>` (Range header) |
+| `read` (dir)           | `GET /list/<path>` (iterate entries) |
+| `write`                | accumulates; final `PUT /files/<path>` (streamed) |
+| `remove`               | `DELETE /files/<path>`             |
+| `stat`                 | `GET /list/<parent>` (find entry)  |
+| `rename`               | `POST /files/<path>?rename=<new>`  |
 | `SetPosition()`        | (local tracking, no HTTP)           |
 | `Flush()`              | (no-op -- writes are immediate)     |
 
@@ -328,13 +338,14 @@ src/
     webfs-mount.c              AxlService descriptor + setup/teardown,
                                gated on AXL_SERVICE_BUILD_DRIVER
     webfs-mount.h              Public extern decls (MountOpts, webfs_mount)
-    webfs-file.c               EFI_FILE_PROTOCOL impl (driver-only)
-    webfs-cache.c              Directory cache + HTTP request helper
-                               (driver-only)
+    webfs-file.c               AxlFsProvider callback table impl
+                               (open/close/read/write/...) — driver-only
+    webfs-cache.c              Directory cache + HTTP request helper +
+                               digest header parser (driver-only)
+    webfs-protocol.h           Protocol vtable: JSON vs WebDAV
+    webfs-protocol-json.c      Bespoke HTTP/JSON protocol impl
+    webfs-protocol-dav.c       RFC 4918 WebDAV client impl
     webfs-internal.h           Driver-only types (WebFsPrivate, etc.)
-  net/                         Network initialization (shared)
-    network.c                  Wrapper around axl_net_auto_init
-    network.h                  Public API
   transfer/                    Local file operations (used by serve)
     file-transfer.c            Volume enum, streaming read/write
     file-transfer.h            Public API

@@ -6,8 +6,11 @@
   The SDK loads the embedded webfs-mount-dxe.efi image, serializes
   g_mount_opts via mount_descs into LoadOptions, and calls the
   driver's AXL_SERVICE_DRIVER trampoline, which decodes and runs
-  mount_setup. setup() installs EFI_SIMPLE_FILE_SYSTEM_PROTOCOL on
-  a fresh handle (vendor device path), so the Shell sees a new FSn:.
+  mount_setup. setup() publishes an AxlFsProvider via
+  axl_fs_provider_publish; the SDK synthesizes
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL + EFI_FILE_PROTOCOL on top and
+  installs them on a fresh vendor-path handle, so the Shell sees
+  a new FSn:.
   Mount returns immediately -- no supervise loop, since the driver
   serves protocol calls synchronously from outside the loop.
 
