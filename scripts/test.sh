@@ -1068,6 +1068,96 @@ NSHEOF
     fi
 
     # ========================================================================
+    # Serve HTTP Basic auth test (X64 only) — --auth gates every surface
+    # (REST + uploads + /dav) via the SDK's add_*_auth registrations.
+    # The SDK 401 path emits no WWW-Authenticate, so we drive it with
+    # curl sending Basic preemptively (-u), which is the supported path.
+    # ========================================================================
+
+    info "QEMU" "=== Serve auth test: X64 ==="
+
+    APP_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs.efi"
+    AUTH_STAGE_DIR=$(mktemp -d)
+    echo "auth test file" > "$AUTH_STAGE_DIR/auth_test.txt"
+
+    eval "$("$RUN_QEMU_SH" --arch X64 --timeout 30 \
+        --net --hostfwd "${SERVE_PORT}:8080" \
+        --extra "$AUTH_STAGE_DIR/auth_test.txt" \
+        --background \
+        "$APP_EFI" serve -p 8080 --auth admin:s3cret)"
+
+    rm -rf "$AUTH_STAGE_DIR"
+
+    if [ -n "${QEMU_PID:-}" ]; then
+        # Gated server answers 401 to anonymous GET — use that as the
+        # readiness signal (a 200 never comes without credentials).
+        READY=false
+        for WAIT in $(seq 1 20); do
+            sleep 1
+            if ! kill -0 "$QEMU_PID" 2>/dev/null; then break; fi
+            HTTP_CHECK=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/" 2>/dev/null || true)
+            if [ "$HTTP_CHECK" = "401" ]; then
+                READY=true; break
+            fi
+        done
+
+        BASE="http://127.0.0.1:${SERVE_PORT}"
+
+        if $READY; then
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/" 2>/dev/null || true)
+            [ "$HTTP_CODE" = "401" ] && \
+                pass "serve --auth: anonymous GET / rejected (401)" || \
+                fail "serve --auth: anon GET" "expected 401, got $HTTP_CODE"
+
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u wrong:pass "$BASE/fs0/" 2>/dev/null || true)
+            [ "$HTTP_CODE" = "401" ] && \
+                pass "serve --auth: wrong credential rejected (401)" || \
+                fail "serve --auth: wrong cred" "expected 401, got $HTTP_CODE"
+
+            CONTENT=$(curl -sf -u admin:s3cret "$BASE/fs0/auth_test.txt" 2>/dev/null || true)
+            echo "$CONTENT" | grep -q "auth test file" && \
+                pass "serve --auth: authed GET works" || \
+                fail "serve --auth: authed GET" "unexpected: $CONTENT"
+
+            HTTP_CODE=$(echo -n "authed upload" | curl -s -o /dev/null -w "%{http_code}" \
+                -u admin:s3cret -T - "$BASE/fs0/authed.txt" 2>/dev/null || true)
+            [ "$HTTP_CODE" = "201" ] && \
+                pass "serve --auth: authed PUT works (201)" || \
+                fail "serve --auth: authed PUT" "expected 201, got $HTTP_CODE"
+
+            # Streaming uploads bypass the dispatch-time auth check, so a
+            # PUT with no credentials must still be refused (401) at the
+            # early upload site — the regression the SDK _auth upload
+            # route closes.
+            HTTP_CODE=$(echo -n "anon upload" | curl -s -o /dev/null -w "%{http_code}" \
+                -T - "$BASE/fs0/anon.txt" 2>/dev/null || true)
+            [ "$HTTP_CODE" = "401" ] && \
+                pass "serve --auth: anonymous PUT rejected (401)" || \
+                fail "serve --auth: anon PUT" "expected 401, got $HTTP_CODE"
+
+            # /dav mount is gated uniformly: anon PROPFIND 401, authed 207.
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PROPFIND \
+                -H "Depth: 1" "$BASE/dav/fs0/" 2>/dev/null || true)
+            [ "$HTTP_CODE" = "401" ] && \
+                pass "serve --auth: anonymous /dav PROPFIND rejected (401)" || \
+                fail "serve --auth: anon /dav" "expected 401, got $HTTP_CODE"
+
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u admin:s3cret -X PROPFIND \
+                -H "Depth: 1" "$BASE/dav/fs0/" 2>/dev/null || true)
+            [ "$HTTP_CODE" = "207" ] && \
+                pass "serve --auth: authed /dav PROPFIND works (207)" || \
+                fail "serve --auth: authed /dav" "expected 207, got $HTTP_CODE"
+        else
+            fail "serve --auth: server start" "did not start within 20s"
+        fi
+
+        kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+        rm -rf "$TMPDIR"
+    else
+        fail "serve --auth: QEMU start" "failed to launch"
+    fi
+
+    # ========================================================================
     # Serve test (X64 only): driver image runs the HTTP server, the shell
     # returns immediately after `serve`, host curls validate the driver
     # is alive. (No --detach flag -- serve is detach-only as of the

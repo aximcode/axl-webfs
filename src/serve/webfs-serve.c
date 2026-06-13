@@ -89,6 +89,8 @@ const AxlConfigDesc serve_descs[] = {
       offsetof(ServeOpts, mode),             sizeof(const char *) },
     { "log",       AXL_CFG_STRING, "",           "Log file path (empty = console only)",
       offsetof(ServeOpts, log_path),         sizeof(const char *) },
+    { "auth",      AXL_CFG_STRING, "",           "HTTP Basic credential user:pass (empty = no auth)",
+      offsetof(ServeOpts, auth),             sizeof(const char *) },
     { 0 }
 };
 
@@ -738,6 +740,47 @@ handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 }
 
 // ----------------------------------------------------------------------------
+// Authentication (HTTP Basic)
+// ----------------------------------------------------------------------------
+
+/* Validate "Authorization: Basic <base64(user:pass)>" against the
+   configured --auth credential. The configured string is already the
+   exact "user:pass" form a Basic header decodes to, so we compare the
+   decoded bytes directly — no split needed. Only registered when
+   o->auth_enabled; gated routes return 401 otherwise.
+
+   NOTE (SDK gap): the SDK's 401 path emits no WWW-Authenticate header
+   and the callback can't reach the response, so interactive browsers /
+   Finder are never prompted to send credentials. Gating works for
+   clients that send Basic preemptively (curl -u, a configured davfs2).
+   Surfaced to axl-sdk; revisit once it emits a challenge. */
+static int
+webfs_auth_cb(AxlHttpRequest *req, AxlAuthInfo *auth_out, void *data)
+{
+    ServeOpts *o = (ServeOpts *)data;
+
+    const char *hdr = axl_hash_table_lookup(req->headers, "authorization");
+    if (hdr == NULL || axl_strncasecmp(hdr, "Basic ", 6) != 0)
+        return AXL_ERR;
+
+    void  *decoded = NULL;
+    size_t dlen = 0;
+    if (axl_base64_decode(hdr + 6, &decoded, &dlen) != AXL_OK || decoded == NULL)
+        return AXL_ERR;
+
+    /* decoded is not NUL-terminated — compare by exact length. */
+    bool ok = (dlen == axl_strlen(o->auth)) &&
+              (axl_memcmp(decoded, o->auth, dlen) == 0);
+    axl_free(decoded);
+    if (!ok)
+        return AXL_ERR;
+
+    auth_out->username = o->auth_user;
+    auth_out->role     = AXL_ROUTE_ADMIN;
+    return AXL_OK;
+}
+
+// ----------------------------------------------------------------------------
 // AxlService callbacks
 // ----------------------------------------------------------------------------
 
@@ -768,6 +811,20 @@ serve_setup(AxlLoop *loop, void *user)
     /* Derive permission bools from the parsed mode string. */
     o->read_only  = axl_streql(o->mode, "read-only");
     o->write_only = axl_streql(o->mode, "write-only");
+
+    /* Derive HTTP Basic auth state. When --auth is "user:pass", every
+       route (REST + uploads + /dav) is gated through webfs_auth_cb.
+       Cache the username (substring before ':') for AxlAuthInfo. */
+    o->auth_enabled = o->auth != NULL && o->auth[0] != '\0';
+    if (o->auth_enabled) {
+        const char *colon = axl_strchr(o->auth, ':');
+        size_t ulen = colon != NULL ? (size_t)(colon - o->auth)
+                                    : axl_strlen(o->auth);
+        if (ulen >= sizeof(o->auth_user))
+            ulen = sizeof(o->auth_user) - 1;
+        axl_memcpy(o->auth_user, o->auth, ulen);
+        o->auth_user[ulen] = '\0';
+    }
 
     if (axl_net_init_from_opts(&o->net, 10) != AXL_OK) {
         return AXL_ERR;
@@ -813,23 +870,35 @@ serve_setup(AxlLoop *loop, void *user)
         axl_http_server_use(o->server, permission_middleware, o);
     }
 
+    /* HTTP Basic gate. When --auth is set, register the credential
+       checker and require an authenticated user on every route
+       (AXL_ROUTE_AUTH); otherwise AXL_ROUTE_NO_AUTH leaves the routes
+       open — identical to the non-_auth registration variants. */
+    uint32_t auth_flags = AXL_ROUTE_NO_AUTH;
+    if (o->auth_enabled) {
+        axl_http_server_use_auth(o->server, webfs_auth_cb, o);
+        auth_flags = AXL_ROUTE_AUTH;
+    }
+
     /* Routes. The SDK dispatcher tries exact matches before prefix
        patterns, so /_axl-webfs/upload.js shadows the GET wildcard
        regardless of registration order. */
-    axl_http_server_add_route(o->server, "GET",    "/_axl-webfs/upload.js",
-                              handle_get_upload_js, NULL);
-    axl_http_server_add_route(o->server, "GET",    "/",  handle_get_root,    NULL);
-    axl_http_server_add_route(o->server, "GET",    "/*", handle_get_path,    o);
+    axl_http_server_add_route_auth(o->server, "GET",    "/_axl-webfs/upload.js",
+                              handle_get_upload_js, NULL, auth_flags);
+    axl_http_server_add_route_auth(o->server, "GET",    "/",  handle_get_root,    NULL, auth_flags);
+    axl_http_server_add_route_auth(o->server, "GET",    "/*", handle_get_path,    o, auth_flags);
     /* HEAD routes to the same handler — emits Digest + status without
        a body. Mount clients use this to fetch SHA-256 on Open. */
-    axl_http_server_add_route(o->server, "HEAD",   "/*", handle_get_path,    o);
+    axl_http_server_add_route_auth(o->server, "HEAD",   "/*", handle_get_path,    o, auth_flags);
     /* PUT goes through the streaming upload route so multi-GB
        uploads bypass body_limit and never materialize the whole
-       request body in RAM. */
-    axl_http_server_add_upload_route(o->server, "PUT", "/*",
-                                     handle_put_chunk, o);
-    axl_http_server_add_route(o->server, "DELETE", "/*", handle_delete_path, o);
-    axl_http_server_add_route(o->server, "POST",   "/*", handle_post_path,   o);
+       request body in RAM. The _auth variant enforces auth_flags
+       before any body byte is accepted (streaming uploads bypass the
+       dispatch-time check). */
+    axl_http_server_add_upload_route_auth(o->server, "PUT", "/*",
+                                     handle_put_chunk, o, auth_flags);
+    axl_http_server_add_route_auth(o->server, "DELETE", "/*", handle_delete_path, o, auth_flags);
+    axl_http_server_add_route_auth(o->server, "POST",   "/*", handle_post_path,   o, auth_flags);
 
     /* WebDAV class-1 + MOVE under /dav. Modern clients (Finder,
        Explorer, davfs2, cadaver) mount this directly. The SDK owns
@@ -838,8 +907,9 @@ serve_setup(AxlLoop *loop, void *user)
        routes so the SDK's prefix matcher routes /dav/... to the
        WebDAV dispatcher and leaves /<vol>/... on the REST surface.
        Read-only / write-only enforcement composes through
-       permission_middleware (SDK 1eb3fc0). */
-    webfs_dav_register(o->server, "/dav");
+       permission_middleware (SDK 1eb3fc0); auth_flags gates every
+       verb route of the mount uniformly. */
+    webfs_dav_register(o->server, "/dav", auth_flags);
 
     if (axl_http_server_start(o->server, loop) != AXL_OK) {
         axl_http_server_free(o->server);

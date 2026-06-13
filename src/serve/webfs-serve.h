@@ -51,10 +51,13 @@ typedef struct {
     bool        verbose;
     const char *mode;                  /* "read-write" | "read-only" | "write-only" */
     const char *log_path;              /* file path, empty = console only */
+    const char *auth;                  /* HTTP Basic "user:pass", empty = open */
 
     /* Derived / runtime, set by serve_setup */
     bool             read_only;
     bool             write_only;
+    bool             auth_enabled;     /* derived: auth[0] != '\0' */
+    char             auth_user[64];    /* derived: substring before ':' (AxlAuthInfo.username) */
     AxlHttpServer   *server;
     AxlLoop         *loop;             /* needed by route handlers to publish */
     uint32_t         request_sub_id;   /* axl_pubsub_subscribe handle */

@@ -14,10 +14,13 @@
 
 #include <axl.h>
 
-/// Register the WebDAV mount on @p server at "/dav". Returns AXL_OK
-/// on success or the underlying axl_http_server_add_webdav status.
-/// The mount stays valid until @p server is freed.
+/// Register the WebDAV mount on @p server at @p prefix. @p auth_flags
+/// (AXL_ROUTE_* — NO_AUTH/AUTH/ADMIN) gates every verb route of the
+/// mount through the server's auth callback. Returns AXL_OK on success
+/// or the underlying axl_http_server_add_webdav_auth status. The mount
+/// stays valid until @p server is freed.
 int
-webfs_dav_register(AxlHttpServer *server, const char *prefix);
+webfs_dav_register(AxlHttpServer *server, const char *prefix,
+                   uint32_t auth_flags);
 
 #endif /* AXL_WEBFS_DAV_H_ */

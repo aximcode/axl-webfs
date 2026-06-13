@@ -51,6 +51,9 @@ const AxlArgDesc webfs_serve_flags[] = {
       .help = "Bind listener to interface with this station IPv4 (auto if unset)" },
     { .name = "log",        .short_name = 'l', .type = AXL_ARG_STRING,
       .help = "Log file path (e.g. fs0:\\webfs.log; default: console only)" },
+    { .name = "auth",       .short_name = 'a', .type = AXL_ARG_STRING,
+      .help = "Require HTTP Basic auth: user:pass (gates all surfaces; "
+              "default: open)" },
     {0}
 };
 
@@ -100,6 +103,9 @@ webfs_serve_handler(AxlArgs *a)
     g_serve_opts.verbose          = axl_args_get_bool(a, "verbose");
     g_serve_opts.mode             = axl_args_get_string(a, "mode");
     g_serve_opts.log_path         = axl_args_get_string(a, "log");
+    g_serve_opts.auth             = axl_args_get_string(a, "auth");
+    if (g_serve_opts.auth == NULL)
+        g_serve_opts.auth = "";
 
     AxlServiceDeploy deploy = {
         .service     = &webfs_serve,

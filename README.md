@@ -222,7 +222,8 @@ axl-webfs.efi umount [handle]
 
 ```
 axl-webfs.efi serve [-p port] [-n nic] [-t timeout]
-                    [--mode <read-write|read-only|write-only>] [-v]
+                    [--mode <read-write|read-only|write-only>]
+                    [-a user:pass] [-v]
 ```
 
 <details>
@@ -234,6 +235,7 @@ axl-webfs.efi serve [-p port] [-n nic] [-t timeout]
 | `-n` | auto | NIC index (use `list-nics` to find) |
 | `-t` | 0 | Idle timeout in seconds (0 = never) |
 | `--mode` | `read-write` | Permission mode: `read-only` blocks PUT/POST/DELETE, `write-only` blocks GET |
+| `-a`, `--auth` | off | Require HTTP Basic auth (`user:pass`) on every surface — REST, uploads, and `/dav`. Note: clients must send credentials preemptively (e.g. `curl -u`); the server does not yet emit a `WWW-Authenticate` challenge, so interactive browsers are not prompted. |
 | `-v` | off | Verbose logging |
 
 </details>

@@ -271,6 +271,15 @@ Options:
                    read-only (block PUT/POST/DELETE),
                    write-only (block GET)
   --listen-ip <ip> Bind listener to interface with this station IPv4
+  -a, --auth <u:p> Require HTTP Basic auth (user:pass) on every surface
+                   -- REST routes, streaming uploads, and the /dav
+                   mount. Wired through the SDK's add_route_auth /
+                   add_upload_route_auth / add_webdav_auth and a
+                   credential-checking AxlAuthCallback. Clients must
+                   send credentials preemptively (curl -u, a configured
+                   davfs2); the SDK 401 path emits no WWW-Authenticate
+                   challenge yet, so interactive browsers are not
+                   prompted (gap surfaced to axl-sdk).
   -l, --log <path> Tee axl_log output to a file (e.g. fs0:\webfs.log).
                    Open failure surfaces a console error and serve
                    continues with console-only output -- a missing

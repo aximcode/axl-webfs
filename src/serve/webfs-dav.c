@@ -410,7 +410,8 @@ static const AxlWebDavOps webfs_dav_ops = {
 };
 
 int
-webfs_dav_register(AxlHttpServer *server, const char *prefix)
+webfs_dav_register(AxlHttpServer *server, const char *prefix, uint32_t auth_flags)
 {
-    return axl_http_server_add_webdav(server, prefix, &webfs_dav_ops, NULL);
+    return axl_http_server_add_webdav_auth(server, prefix, &webfs_dav_ops,
+                                           NULL, auth_flags);
 }
