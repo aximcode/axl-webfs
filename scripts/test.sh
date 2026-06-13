@@ -1158,6 +1158,39 @@ NSHEOF
     fi
 
     # ========================================================================
+    # Serve auth footgun: a colon-less --auth value can never match a
+    # Basic credential, so the foreground handler must reject it at parse
+    # time (before launching the driver) rather than start a server that
+    # locks out every client. We boot once and assert the error message
+    # reaches the serial console.
+    # ========================================================================
+
+    info "QEMU" "=== Serve auth footgun test: X64 ==="
+
+    APP_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs.efi"
+    REJECT_NSH=$(mktemp --suffix=.nsh)
+    cat > "$REJECT_NSH" <<'NSHEOF'
+@echo -off
+fs0:
+axl-webfs.efi serve -p 8080 --auth nocolon
+echo === AUTH-REJECT-DONE ===
+reset -s
+NSHEOF
+    REJECT_LOG=$(mktemp)
+    "$RUN_QEMU_SH" --arch X64 --timeout 30 \
+        --nsh "$REJECT_NSH" \
+        --serial-log "$REJECT_LOG" \
+        "$APP_EFI" > /dev/null 2>&1 || true
+    rm -f "$REJECT_NSH"
+
+    if grep -q "auth must be" "$REJECT_LOG" 2>/dev/null; then
+        pass "serve --auth: colon-less value rejected at parse"
+    else
+        fail "serve --auth: colon-less reject" "no error message in serial log"
+    fi
+    rm -f "$REJECT_LOG"
+
+    # ========================================================================
     # Serve test (X64 only): driver image runs the HTTP server, the shell
     # returns immediately after `serve`, host curls validate the driver
     # is alive. (No --detach flag -- serve is detach-only as of the

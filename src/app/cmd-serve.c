@@ -106,6 +106,17 @@ webfs_serve_handler(AxlArgs *a)
     g_serve_opts.auth             = axl_args_get_string(a, "auth");
     if (g_serve_opts.auth == NULL)
         g_serve_opts.auth = "";
+    /* A colon-less --auth value can never match an HTTP Basic
+       credential (which always decodes to "user:pass"), so it would
+       silently lock out every client -- including the operator.
+       Reject it here with a clear message instead of starting an
+       unreachable server. */
+    if (g_serve_opts.auth[0] != '\0' &&
+        axl_strchr(g_serve_opts.auth, ':') == NULL) {
+        axl_printf("ERROR: serve: --auth must be \"user:pass\" "
+                   "(missing ':')\n");
+        return 1;
+    }
 
     AxlServiceDeploy deploy = {
         .service     = &webfs_serve,
