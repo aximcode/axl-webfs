@@ -747,13 +747,9 @@ handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
    configured --auth credential. The configured string is already the
    exact "user:pass" form a Basic header decodes to, so we compare the
    decoded bytes directly — no split needed. Only registered when
-   o->auth_enabled; gated routes return 401 otherwise.
-
-   NOTE (SDK gap): the SDK's 401 path emits no WWW-Authenticate header
-   and the callback can't reach the response, so interactive browsers /
-   Finder are never prompted to send credentials. Gating works for
-   clients that send Basic preemptively (curl -u, a configured davfs2).
-   Surfaced to axl-sdk; revisit once it emits a challenge. */
+   o->auth_enabled; gated routes return 401 otherwise. serve_setup
+   pairs this with axl_http_server_set_auth_challenge so the 401
+   carries a WWW-Authenticate header and interactive clients prompt. */
 static int
 webfs_auth_cb(AxlHttpRequest *req, AxlAuthInfo *auth_out, void *data)
 {
@@ -877,6 +873,10 @@ serve_setup(AxlLoop *loop, void *user)
     uint32_t auth_flags = AXL_ROUTE_NO_AUTH;
     if (o->auth_enabled) {
         axl_http_server_use_auth(o->server, webfs_auth_cb, o);
+        /* Emit WWW-Authenticate on every 401 so interactive clients
+           (browsers, Finder, Explorer) prompt for credentials instead
+           of showing a bare 401. */
+        axl_http_server_set_auth_challenge(o->server, "Basic", "axl-webfs");
         auth_flags = AXL_ROUTE_AUTH;
     }
 

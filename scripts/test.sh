@@ -1070,8 +1070,8 @@ NSHEOF
     # ========================================================================
     # Serve HTTP Basic auth test (X64 only) — --auth gates every surface
     # (REST + uploads + /dav) via the SDK's add_*_auth registrations.
-    # The SDK 401 path emits no WWW-Authenticate, so we drive it with
-    # curl sending Basic preemptively (-u), which is the supported path.
+    # A 401 carries WWW-Authenticate: Basic (set_auth_challenge), so
+    # interactive clients prompt; here we drive it with curl -u.
     # ========================================================================
 
     info "QEMU" "=== Serve auth test: X64 ==="
@@ -1104,10 +1104,16 @@ NSHEOF
         BASE="http://127.0.0.1:${SERVE_PORT}"
 
         if $READY; then
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/" 2>/dev/null || true)
-            [ "$HTTP_CODE" = "401" ] && \
+            ANON_HEADERS=$(curl -s -D - -o /dev/null "$BASE/" 2>/dev/null || true)
+            echo "$ANON_HEADERS" | grep -qE "^HTTP/[0-9.]+ 401" && \
                 pass "serve --auth: anonymous GET / rejected (401)" || \
-                fail "serve --auth: anon GET" "expected 401, got $HTTP_CODE"
+                fail "serve --auth: anon GET" "expected 401, got $(echo "$ANON_HEADERS" | head -1)"
+
+            # The 401 must carry a WWW-Authenticate: Basic challenge so
+            # interactive clients prompt (set_auth_challenge).
+            echo "$ANON_HEADERS" | grep -qiE '^WWW-Authenticate:[[:space:]]*Basic([[:space:]]|$)' && \
+                pass "serve --auth: 401 carries WWW-Authenticate: Basic" || \
+                fail "serve --auth: WWW-Authenticate" "missing/unexpected: $(echo "$ANON_HEADERS" | grep -i www-authenticate)"
 
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u wrong:pass "$BASE/fs0/" 2>/dev/null || true)
             [ "$HTTP_CODE" = "401" ] && \

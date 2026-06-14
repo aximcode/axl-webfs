@@ -275,11 +275,10 @@ Options:
                    -- REST routes, streaming uploads, and the /dav
                    mount. Wired through the SDK's add_route_auth /
                    add_upload_route_auth / add_webdav_auth and a
-                   credential-checking AxlAuthCallback. Clients must
-                   send credentials preemptively (curl -u, a configured
-                   davfs2); the SDK 401 path emits no WWW-Authenticate
-                   challenge yet, so interactive browsers are not
-                   prompted (gap surfaced to axl-sdk).
+                   credential-checking AxlAuthCallback.
+                   axl_http_server_set_auth_challenge makes each 401
+                   carry WWW-Authenticate: Basic, so browsers, Finder,
+                   and Explorer prompt for credentials.
   -l, --log <path> Tee axl_log output to a file (e.g. fs0:\webfs.log).
                    Open failure surfaces a console error and serve
                    continues with console-only output -- a missing
