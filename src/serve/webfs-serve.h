@@ -52,6 +52,9 @@ typedef struct {
     const char *mode;                  /* "read-write" | "read-only" | "write-only" */
     const char *log_path;              /* file path, empty = console only */
     const char *auth;                  /* HTTP Basic "user:pass", empty = open */
+    bool        tls;                   /* serve over HTTPS */
+    const char *cert_path;             /* DER cert path, empty = self-signed */
+    const char *key_path;              /* DER key path, empty = self-signed */
 
     /* Derived / runtime, set by serve_setup */
     bool             read_only;

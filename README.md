@@ -223,7 +223,7 @@ axl-webfs.efi umount [handle]
 ```
 axl-webfs.efi serve [-p port] [-n nic] [-t timeout]
                     [--mode <read-write|read-only|write-only>]
-                    [-a user:pass] [-v]
+                    [-a user:pass] [-s] [--cert path --key path] [-v]
 ```
 
 <details>
@@ -235,8 +235,17 @@ axl-webfs.efi serve [-p port] [-n nic] [-t timeout]
 | `-n` | auto | NIC index (use `list-nics` to find) |
 | `-t` | 0 | Idle timeout in seconds (0 = never) |
 | `--mode` | `read-write` | Permission mode: `read-only` blocks PUT/POST/DELETE, `write-only` blocks GET |
-| `-a`, `--auth` | off | Require HTTP Basic auth (`user:pass`) on every surface — REST, uploads, and `/dav`. A 401 carries `WWW-Authenticate: Basic`, so browsers, Finder, and Explorer prompt for credentials. |
+| `-a`, `--auth` | off | Require HTTP Basic auth (`user:pass`) on every surface — REST, uploads, and `/dav`. A 401 carries `WWW-Authenticate: Basic`, so browsers, Finder, and Explorer prompt for credentials. Pair with `-s` so credentials aren't sent in cleartext. |
+| `-s`, `--tls` | off | Serve over HTTPS. Generates a self-signed cert on boot (clients use `curl -k` or trust it), or loads `--cert`/`--key`. |
+| `--cert`, `--key` | — | DER certificate + private-key paths (e.g. `fs0:\cert.der`). Both required together; omit for a self-signed cert. |
 | `-v` | off | Verbose logging |
+
+Uploads (`PUT`) optionally carry a `Content-Digest: sha-256=<hex>`
+header; when present the server verifies the streamed body against it
+and rejects a mismatch with `400`, deleting the partial file. The same
+header, hex format, and status apply on both the REST and `/dav`
+surfaces, mirroring the `Want-Digest`/`Digest` integrity offered on
+`GET`.
 
 </details>
 

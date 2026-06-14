@@ -27,6 +27,7 @@
 #  include <axl/axl-url.h>
 #  include <axl/axl-cache.h>
 #  include <axl/axl-digest.h>
+#  include <axl/axl-tls.h>
 #  include "serve/upload-asset.h"
 #  include "serve/webfs-dav.h"
 #  include "transfer/file-transfer.h"
@@ -91,6 +92,12 @@ const AxlConfigDesc serve_descs[] = {
       offsetof(ServeOpts, log_path),         sizeof(const char *) },
     { "auth",      AXL_CFG_STRING, "",           "HTTP Basic credential user:pass (empty = no auth)",
       offsetof(ServeOpts, auth),             sizeof(const char *) },
+    { "tls",       AXL_CFG_BOOL,   "false",      "Serve over HTTPS (TLS)",
+      offsetof(ServeOpts, tls),              sizeof(bool) },
+    { "cert",      AXL_CFG_STRING, "",           "DER certificate path (empty = self-signed)",
+      offsetof(ServeOpts, cert_path),        sizeof(const char *) },
+    { "key",       AXL_CFG_STRING, "",           "DER private-key path (empty = self-signed)",
+      offsetof(ServeOpts, key_path),         sizeof(const char *) },
     { 0 }
 };
 
@@ -592,10 +599,50 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
  * (404 / 500 / 201) explicitly. Returning non-zero mid-stream would
  * force a generic 500 from the SDK and lose our error context.
  */
-static FtWriteCtx m_put_ctx;
-static bool       m_put_open    = false;
-static bool       m_put_failed  = false;
-static int        m_put_status  = 201;
+static FtWriteCtx   m_put_ctx;
+static bool         m_put_open    = false;
+static bool         m_put_failed  = false;
+static int          m_put_status  = 201;
+/* Optional upload integrity via a "Content-Digest: sha-256=<hex>"
+   request header. When the client advertises a body digest, hash the
+   stream and verify on close; a mismatch deletes the partial file and
+   returns 400 -- the same header name, hex format, and status the SDK's
+   WebDAV PUT uses on /dav, so REST and /dav share one contract.
+   m_put_vol/m_put_sub are retained from the first chunk so the final
+   call can delete the partial on mismatch. */
+static AxlChecksum *m_put_hash    = NULL;
+static char         m_put_expect[65];     /* expected lowercase hex; "" = none */
+static FtVolume     m_put_vol;
+static char         m_put_sub[512];
+
+/* Extract a 64-char hex SHA-256 from a request "Content-Digest:
+   sha-256=<hex>" header (scheme case-insensitive, "sha-256" or
+   "sha256"; stops at a comma/space so a multi-value list is tolerated).
+   Writes "" to @p out when the header is absent, malformed, or not
+   SHA-256. */
+static void
+parse_content_digest(AxlHttpRequest *req, char *out, size_t out_size)
+{
+    out[0] = '\0';
+    const char *h = axl_hash_table_lookup(req->headers, "content-digest");
+    if (h == NULL)
+        return;
+    const char *eq = axl_strchr(h, '=');
+    if (eq == NULL)
+        return;
+    size_t scheme_len = (size_t)(eq - h);
+    if (!((scheme_len == 7 && axl_strncasecmp(h, "sha-256", 7) == 0) ||
+          (scheme_len == 6 && axl_strncasecmp(h, "sha256", 6) == 0)))
+        return;
+    const char *hex = eq + 1;
+    size_t n = 0;
+    while (hex[n] != '\0' && hex[n] != ',' && hex[n] != ' ')
+        n++;
+    if (n != 64 || n >= out_size)
+        return;
+    axl_memcpy(out, hex, n);
+    out[n] = '\0';
+}
 
 static int
 handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
@@ -611,8 +658,13 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
             ft_close_write(&m_put_ctx);
             m_put_open = false;
         }
+        if (m_put_hash != NULL) {
+            axl_checksum_free(m_put_hash);
+            m_put_hash = NULL;
+        }
         m_put_failed = false;
         m_put_status = 201;
+        m_put_expect[0] = '\0';
         return 0;
     }
 
@@ -620,19 +672,21 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
 
     /* First chunk OR final-with-empty-body: parse path + open file. */
     if (!m_put_open && !m_put_failed) {
-        FtVolume volume;
-        char     sub_path[512];
-
-        if (parse_volume_path(req->path, &volume, sub_path,
-                              sizeof(sub_path)) != 0) {
+        if (parse_volume_path(req->path, &m_put_vol, m_put_sub,
+                              sizeof(m_put_sub)) != 0) {
             m_put_failed = true;
             m_put_status = 404;
-        } else if (ft_open_write(&volume, sub_path, NULL, NULL,
+        } else if (ft_open_write(&m_put_vol, m_put_sub, NULL, NULL,
                                  &m_put_ctx) != 0) {
             m_put_failed = true;
             m_put_status = 500;
         } else {
             m_put_open = true;
+            /* If the client advertised a body digest, hash the stream
+               so the final call can verify it. */
+            parse_content_digest(req, m_put_expect, sizeof(m_put_expect));
+            if (m_put_expect[0] != '\0')
+                m_put_hash = axl_checksum_new(AXL_CHECKSUM_SHA256);
         }
     }
 
@@ -642,6 +696,8 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
         if (ft_write_chunk(&m_put_ctx, chunk, chunk_size) != 0) {
             m_put_failed = true;
             m_put_status = 500;
+        } else if (m_put_hash != NULL) {
+            axl_checksum_update(m_put_hash, chunk, chunk_size);
         }
     }
 
@@ -649,10 +705,26 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
         return 0;
     }
 
-    /* Final call -- close, respond, reset. */
+    /* Final call -- close, verify digest, respond, reset. */
     if (m_put_open) {
         ft_close_write(&m_put_ctx);
         m_put_open = false;
+    }
+
+    /* Integrity: compare the streamed SHA-256 against the client's
+       advertised digest. On mismatch, delete the partial so a corrupt
+       upload never lands. Skipped when the write already failed. */
+    if (!m_put_failed && m_put_hash != NULL) {
+        const char *got = axl_checksum_get_string(m_put_hash);
+        if (got == NULL || axl_strcasecmp(got, m_put_expect) != 0) {
+            ft_delete(&m_put_vol, m_put_sub);
+            m_put_failed = true;
+            m_put_status = 400;
+        }
+    }
+    if (m_put_hash != NULL) {
+        axl_checksum_free(m_put_hash);
+        m_put_hash = NULL;
     }
 
     const char *body;
@@ -660,6 +732,8 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
         body = "Created\n";
     } else if (m_put_status == 404) {
         body = "Volume not found\n";
+    } else if (m_put_status == 400) {
+        body = "Content-Digest mismatch\n";
     } else {
         body = "Write failed\n";
     }
@@ -670,6 +744,7 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
     /* Reset for the next upload. */
     m_put_failed = false;
     m_put_status = 201;
+    m_put_expect[0] = '\0';
     return 0;
 }
 
@@ -737,6 +812,58 @@ handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     axl_http_response_set_status(resp, 201);
     publish_request(opts->loop, req, resp);
     return 0;
+}
+
+// ----------------------------------------------------------------------------
+// TLS (HTTPS)
+// ----------------------------------------------------------------------------
+
+/* Enable TLS on @p server. Uses the DER cert/key at o->cert_path /
+   o->key_path when given (validated as a pair in the launcher), else
+   generates a self-signed ECDSA P-256 cert with the bound IPv4 in the
+   SAN so a client connecting by IP gets a name match. Requires an
+   AXL_TLS=1 SDK build; axl_tls_init fails otherwise. Returns AXL_OK or
+   AXL_ERR. */
+static int
+enable_tls(AxlHttpServer *server, ServeOpts *o)
+{
+    if (axl_tls_init() != AXL_OK) {
+        axl_error("serve: TLS init failed (SDK built without AXL_TLS?)");
+        return AXL_ERR;
+    }
+
+    void  *cert = NULL, *key = NULL;
+    size_t cert_len = 0, key_len = 0;
+
+    if (o->cert_path[0] != '\0') {
+        if (axl_file_get_contents(o->cert_path, &cert, &cert_len) != AXL_OK ||
+            axl_file_get_contents(o->key_path, &key, &key_len) != AXL_OK) {
+            axl_error("serve: cannot read --cert/--key DER files");
+            axl_free(cert);
+            axl_free(key);
+            return AXL_ERR;
+        }
+    } else {
+        AxlIPv4Address san;
+        axl_memcpy(san.addr, o->addr, sizeof(san.addr));
+        if (axl_tls_generate_self_signed("axl-webfs", &san, 1,
+                                         &cert, &cert_len,
+                                         &key, &key_len) != AXL_OK) {
+            axl_error("serve: self-signed certificate generation failed");
+            axl_free(cert);   /* NULL-safe; mirror the file-read path */
+            axl_free(key);
+            return AXL_ERR;
+        }
+    }
+
+    int rc = axl_http_server_use_tls(server, cert, cert_len, key, key_len);
+    axl_free(cert);
+    axl_free(key);
+    if (rc != AXL_OK) {
+        axl_error("serve: enabling TLS on the server failed");
+        return AXL_ERR;
+    }
+    return AXL_OK;
 }
 
 // ----------------------------------------------------------------------------
@@ -862,6 +989,14 @@ serve_setup(AxlLoop *loop, void *user)
        connections. */
     axl_http_server_set_keep_alive(o->server, 0);
 
+    if (o->tls) {
+        if (enable_tls(o->server, o) != AXL_OK) {
+            axl_http_server_free(o->server);
+            o->server = NULL;
+            return AXL_ERR;
+        }
+    }
+
     if (o->read_only || o->write_only) {
         axl_http_server_use(o->server, permission_middleware, o);
     }
@@ -928,7 +1063,8 @@ serve_setup(AxlLoop *loop, void *user)
 
     /* Recognizable single-line banner; goes through axl_info so the
        file log handler captures it when --log is set. */
-    axl_info("listening on %d.%d.%d.%d:%u (mode %s)",
+    axl_info("listening on %s://%d.%d.%d.%d:%u (mode %s)",
+             o->tls ? "https" : "http",
              o->addr[0], o->addr[1], o->addr[2], o->addr[3],
              (unsigned)o->net.port, o->mode);
 

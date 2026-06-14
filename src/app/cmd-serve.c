@@ -54,6 +54,12 @@ const AxlArgDesc webfs_serve_flags[] = {
     { .name = "auth",       .short_name = 'a', .type = AXL_ARG_STRING,
       .help = "Require HTTP Basic auth: user:pass (gates all surfaces; "
               "default: open)" },
+    { .name = "tls",        .short_name = 's', .type = AXL_ARG_BOOL,
+      .help = "Serve over HTTPS (TLS); self-signed cert unless --cert/--key" },
+    { .name = "cert",                          .type = AXL_ARG_STRING,
+      .help = "DER certificate path (e.g. fs0:\\cert.der; default: self-signed)" },
+    { .name = "key",                           .type = AXL_ARG_STRING,
+      .help = "DER private-key path (e.g. fs0:\\key.der; default: self-signed)" },
     {0}
 };
 
@@ -115,6 +121,21 @@ webfs_serve_handler(AxlArgs *a)
         axl_strchr(g_serve_opts.auth, ':') == NULL) {
         axl_printf("ERROR: serve: --auth must be \"user:pass\" "
                    "(missing ':')\n");
+        return 1;
+    }
+
+    g_serve_opts.tls       = axl_args_get_bool(a, "tls");
+    g_serve_opts.cert_path = axl_args_get_string(a, "cert");
+    if (g_serve_opts.cert_path == NULL)
+        g_serve_opts.cert_path = "";
+    g_serve_opts.key_path  = axl_args_get_string(a, "key");
+    if (g_serve_opts.key_path == NULL)
+        g_serve_opts.key_path = "";
+    /* --cert and --key are a pair: a lone one is a config error. */
+    if ((g_serve_opts.cert_path[0] != '\0') !=
+        (g_serve_opts.key_path[0] != '\0')) {
+        axl_printf("ERROR: serve: --cert and --key must be given "
+                   "together\n");
         return 1;
     }
 

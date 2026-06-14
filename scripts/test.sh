@@ -889,6 +889,30 @@ NSHEOF
             pass "$QEMU_ARCH serve: uploaded file readable" || \
             fail "$QEMU_ARCH serve: read upload" "content: $CONTENT"
 
+        # Upload integrity: a matching "Content-Digest: sha-256=<hex>"
+        # accepts; a wrong one is rejected 400 and the partial removed.
+        # Same header/format/status the SDK's /dav PUT uses.
+        DG_BODY="integrity check body"
+        DG_HEX=$(printf '%s' "$DG_BODY" | sha256sum | awk '{print $1}')
+        HTTP_CODE=$(printf '%s' "$DG_BODY" | curl -s -o /dev/null -w "%{http_code}" \
+            -H "Content-Digest: sha-256=$DG_HEX" -T - "$BASE/fs0/digest_ok.txt" 2>/dev/null)
+        [ "$HTTP_CODE" = "201" ] && \
+            pass "$QEMU_ARCH serve: PUT with matching Content-Digest returns 201" || \
+            fail "$QEMU_ARCH serve: Content-Digest match" "expected 201, got $HTTP_CODE"
+
+        HTTP_CODE=$(printf '%s' "$DG_BODY" | curl -s -o /dev/null -w "%{http_code}" \
+            -H "Content-Digest: sha-256=0000000000000000000000000000000000000000000000000000000000000000" \
+            -T - "$BASE/fs0/digest_bad.txt" 2>/dev/null)
+        [ "$HTTP_CODE" = "400" ] && \
+            pass "$QEMU_ARCH serve: PUT with wrong Content-Digest rejected (400)" || \
+            fail "$QEMU_ARCH serve: Content-Digest mismatch" "expected 400, got $HTTP_CODE"
+
+        # The rejected upload must not have landed.
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fs0/digest_bad.txt" 2>/dev/null || true)
+        [ "$HTTP_CODE" = "404" ] && \
+            pass "$QEMU_ARCH serve: rejected upload left no partial file" || \
+            fail "$QEMU_ARCH serve: partial cleanup" "expected 404, got $HTTP_CODE"
+
         HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" -X DELETE "$BASE/fs0/uploaded.txt" 2>/dev/null)
         [ "$HTTP_CODE" = "200" ] && \
             pass "$QEMU_ARCH serve: DELETE returns 200" || \
@@ -1195,6 +1219,69 @@ NSHEOF
         fail "serve --auth: colon-less reject" "no error message in serial log"
     fi
     rm -f "$REJECT_LOG"
+
+    # ========================================================================
+    # Serve HTTPS test (X64 only) — --tls serves over a self-signed cert.
+    # Combined with --auth to exercise the secure combo (credentials no
+    # longer cross the wire in cleartext). curl -k accepts the self-signed
+    # cert; the gate still answers 401 + WWW-Authenticate over TLS.
+    # ========================================================================
+
+    info "QEMU" "=== Serve HTTPS test: X64 ==="
+
+    APP_EFI="$PROJECT_ROOT/build/axl/x64/axl-webfs.efi"
+    TLS_STAGE_DIR=$(mktemp -d)
+    echo "tls test file" > "$TLS_STAGE_DIR/tls_test.txt"
+
+    eval "$("$RUN_QEMU_SH" --arch X64 --timeout 30 \
+        --net --hostfwd "${SERVE_PORT}:8080" \
+        --extra "$TLS_STAGE_DIR/tls_test.txt" \
+        --background \
+        "$APP_EFI" serve -p 8080 --tls --auth admin:s3cret)"
+
+    rm -rf "$TLS_STAGE_DIR"
+
+    if [ -n "${QEMU_PID:-}" ]; then
+        # HTTPS + gated: an anon GET over TLS answers 401 once up.
+        READY=false
+        for WAIT in $(seq 1 20); do
+            sleep 1
+            if ! kill -0 "$QEMU_PID" 2>/dev/null; then break; fi
+            HTTP_CHECK=$(curl -sk -o /dev/null -w "%{http_code}" "https://127.0.0.1:${SERVE_PORT}/" 2>/dev/null || true)
+            if [ "$HTTP_CHECK" = "401" ]; then
+                READY=true; break
+            fi
+        done
+
+        BASE="https://127.0.0.1:${SERVE_PORT}"
+
+        if $READY; then
+            # TLS handshake completed (curl -k) and the gate responded.
+            ANON_HEADERS=$(curl -sk -D - -o /dev/null "$BASE/" 2>/dev/null || true)
+            echo "$ANON_HEADERS" | grep -qE "^HTTP/[0-9.]+ 401" && \
+            echo "$ANON_HEADERS" | grep -qiE '^WWW-Authenticate:[[:space:]]*Basic' && \
+                pass "serve --tls: HTTPS handshake + gated 401 + challenge" || \
+                fail "serve --tls: anon HTTPS" "$(echo "$ANON_HEADERS" | head -1)"
+
+            CONTENT=$(curl -sk -u admin:s3cret "$BASE/fs0/tls_test.txt" 2>/dev/null || true)
+            echo "$CONTENT" | grep -q "tls test file" && \
+                pass "serve --tls: authed HTTPS GET works" || \
+                fail "serve --tls: authed HTTPS GET" "unexpected: $CONTENT"
+
+            # A plaintext HTTP request to the TLS port must not succeed.
+            HTTP_CODE=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/" 2>/dev/null || true)
+            [ "$HTTP_CODE" != "200" ] && \
+                pass "serve --tls: plaintext HTTP to TLS port refused" || \
+                fail "serve --tls: cleartext" "plain HTTP unexpectedly returned 200"
+        else
+            fail "serve --tls: server start" "did not answer HTTPS within 20s"
+        fi
+
+        kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+        rm -rf "$TMPDIR"
+    else
+        fail "serve --tls: QEMU start" "failed to launch"
+    fi
 
     # ========================================================================
     # Serve test (X64 only): driver image runs the HTTP server, the shell

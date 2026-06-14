@@ -4,6 +4,12 @@
 ARCH     ?= x64
 OUTDIR   = build/axl/$(ARCH)
 
+# Build the SDK (and link) with TLS so `serve --tls` works. Always on by
+# default -- the ~200 KB lands in the serve driver only. Override with
+# `make AXL_TLS=` to drop it (TLS functions then return failure and
+# `--tls` errors at runtime).
+AXL_TLS  ?= 1
+
 # Pin the default goal explicitly so the conditional sdk-sync rule
 # below can't accidentally become the default by virtue of being the
 # first rule in the file.
@@ -19,7 +25,7 @@ ifneq ($(AXL_SDK_SRC),)
 override AXL_SDK := $(AXL_SDK_SRC)/out
 .PHONY: sdk-sync
 sdk-sync:
-	@$(AXL_SDK_SRC)/scripts/install.sh --arch $(ARCH) >/dev/null
+	@$(if $(AXL_TLS),AXL_TLS=$(AXL_TLS)) $(AXL_SDK_SRC)/scripts/install.sh --arch $(ARCH) >/dev/null
 SDK_SYNC_DEP := sdk-sync
 else
 AXL_SDK ?= /usr

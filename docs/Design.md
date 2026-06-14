@@ -278,7 +278,16 @@ Options:
                    credential-checking AxlAuthCallback.
                    axl_http_server_set_auth_challenge makes each 401
                    carry WWW-Authenticate: Basic, so browsers, Finder,
-                   and Explorer prompt for credentials.
+                   and Explorer prompt for credentials. Pair with --tls
+                   so the credential isn't sent in cleartext.
+  -s, --tls        Serve over HTTPS via axl_http_server_use_tls. A
+                   self-signed ECDSA P-256 cert is generated on boot
+                   (axl_tls_generate_self_signed, bound IPv4 in the
+                   SAN) unless --cert/--key supply a DER pair. Needs an
+                   AXL_TLS=1 SDK build (the default for this project;
+                   the ~200 KB lands in the serve driver only).
+  --cert <path>    DER certificate path (e.g. fs0:\cert.der). Must be
+  --key <path>     given together with --key; omit both for self-signed.
   -l, --log <path> Tee axl_log output to a file (e.g. fs0:\webfs.log).
                    Open failure surfaces a console error and serve
                    continues with console-only output -- a missing
@@ -324,7 +333,23 @@ curl -T IpmiTool.efi http://192.168.1.100:8080/fs0/IpmiTool.efi
 curl -X DELETE http://192.168.1.100:8080/fs0/temp/old.log
 curl -X POST "http://192.168.1.100:8080/fs0/tools/?mkdir"
 curl -C - http://192.168.1.100:8080/fs0/large.bin -o large.bin  # resume
+
+# HTTPS + auth; verify upload integrity end to end:
+curl -k -u admin:s3cret https://192.168.1.100:8080/fs0/         # over TLS
+H=$(sha256sum tool.efi | awk '{print $1}')
+curl -k -u admin:s3cret -H "Content-Digest: sha-256=$H" \
+     -T tool.efi https://192.168.1.100:8080/fs0/tool.efi        # 400 on mismatch
 ```
+
+Upload integrity: when a `PUT` carries `Content-Digest: sha-256=<hex>`,
+`handle_put_chunk` hashes the streamed body through an `AxlChecksum`
+and, on close, compares it to the advertised value — a mismatch
+deletes the partial file and returns `400`. This is the upload-side
+peer of the `Want-Digest`/`Digest` emission already done on `GET`. The
+WebDAV `/dav` surface enforces the identical contract: the SDK's
+WebDAV PUT validates `Content-Digest` against the `dav_digest` callback
+(same header, hex format, and `400` status), so both surfaces behave
+the same.
 
 ## Project Layout
 
