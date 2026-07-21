@@ -285,14 +285,22 @@ dav_write_chunk(void *ctx, const void *data, size_t len)
     return ft_write_chunk(&w->ctx, data, len) == 0 ? AXL_OK : AXL_ERR;
 }
 
-static void
+/* The status is what makes the SDK's PUT answer 201 vs 500, so it has
+   to be the real durability status of the close -- ft_close_write's
+   flush is where the bytes actually reach the volume. The SDK ignores
+   the return on the abort call (aborted=true), where a partial file is
+   expected and no response is transmitted. */
+static int
 dav_write_close(void *ctx, bool aborted)
 {
     (void)aborted;
     DavWriteCtx *w = ctx;
-    if (w == NULL) return;
-    if (w->open) ft_close_write(&w->ctx);
+    if (w == NULL) return AXL_ERR;
+    int status = AXL_OK;
+    if (w->open && ft_close_write(&w->ctx) != 0)
+        status = AXL_ERR;
     axl_free(w);
+    return status;
 }
 
 // ----------------------------------------------------------------------------

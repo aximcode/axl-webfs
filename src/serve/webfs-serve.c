@@ -705,9 +705,18 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
         return 0;
     }
 
-    /* Final call -- close, verify digest, respond, reset. */
+    /* Final call -- close, verify digest, respond, reset.
+       The close flushes, and that flush is where the bytes actually
+       reach the volume: every chunk can be accepted and the close
+       still fail on a full volume, write-protected media, or a device
+       error. Fold it into m_put_failed BEFORE the status is chosen, or
+       we answer 201 Created for a file that is not on disk. An already
+       recorded failure (404 / 400 / write error) keeps its status. */
     if (m_put_open) {
-        ft_close_write(&m_put_ctx);
+        if (ft_close_write(&m_put_ctx) != 0 && !m_put_failed) {
+            m_put_failed = true;
+            m_put_status = 500;
+        }
         m_put_open = false;
     }
 
@@ -991,7 +1000,7 @@ serve_setup(AxlLoop *loop, void *user)
 
     if (o->tls) {
         if (enable_tls(o->server, o) != AXL_OK) {
-            axl_http_server_free(o->server);
+            axl_http_server_free(o->server, AXL_TEARDOWN_GRACEFUL);
             o->server = NULL;
             return AXL_ERR;
         }
@@ -1047,7 +1056,7 @@ serve_setup(AxlLoop *loop, void *user)
     webfs_dav_register(o->server, "/dav", auth_flags);
 
     if (axl_http_server_start(o->server, loop) != AXL_OK) {
-        axl_http_server_free(o->server);
+        axl_http_server_free(o->server, AXL_TEARDOWN_GRACEFUL);
         o->server = NULL;
         return AXL_ERR;
     }
@@ -1091,7 +1100,7 @@ serve_teardown(void *user)
     o->loop = NULL;
 
     if (o->server != NULL) {
-        axl_http_server_free(o->server);
+        axl_http_server_free(o->server, AXL_TEARDOWN_GRACEFUL);
         o->server = NULL;
     }
     if (m_digest_cache != NULL) {

@@ -161,13 +161,25 @@ int ft_write_chunk(FtWriteCtx *wctx, const void *data, size_t len)
     return 0;
 }
 
-void ft_close_write(FtWriteCtx *wctx)
+int ft_close_write(FtWriteCtx *wctx)
 {
+    int status = 0;
+
     if (wctx->stream != NULL) {
-        axl_fflush(wctx->stream);
+        /* The flush is the durability point, not the close: axl_fclose
+           only drains the AXL-side buffer and never invokes the sink's
+           own flush, so the firmware cache flush -- and with it a full
+           volume, write-protected media, or device error -- surfaces
+           here and nowhere else. Every chunk can have been accepted and
+           the file still not be on the volume, so report it; a caller
+           that answers "stored" on a failed flush lies to its client.
+           Close regardless: the stream must be released either way. */
+        if (axl_fflush(wctx->stream) != AXL_OK)
+            status = -1;
         axl_fclose(wctx->stream);
         wctx->stream = NULL;
     }
+    return status;
 }
 
 // ----------------------------------------------------------------------------

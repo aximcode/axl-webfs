@@ -58,7 +58,9 @@ void   ft_close_read(FtReadCtx *rctx);
 
 int    ft_open_write(FtVolume *vol, const char *path, FtProgressCb cb, void *ctx, FtWriteCtx *wctx);
 int    ft_write_chunk(FtWriteCtx *wctx, const void *data, size_t len);
-void   ft_close_write(FtWriteCtx *wctx);
+/* Returns 0 when the bytes reached the volume, -1 when the final
+   flush failed -- callers that report upload success must check it. */
+int    ft_close_write(FtWriteCtx *wctx);
 
 int    ft_delete(FtVolume *vol, const char *path);
 int    ft_rmdir(FtVolume *vol, const char *path);
