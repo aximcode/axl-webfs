@@ -101,9 +101,19 @@ webfs_mount_handler(AxlArgs *a)
         return 0;
     }
 
-    int rc = axl_service_start_embedded(&deploy);
+    /* AxlStatus since SDK v3.0.0 -- AXL_NOT_FOUND now separates "no
+       candidate produced a registered protocol" (the driver image
+       itself) from AXL_ERR's descriptor / LoadOptions-overflow cases,
+       which are the operator's own inputs. Worth telling apart: they
+       point at completely different things to go look at. */
+    AxlStatus rc = axl_service_start_embedded(&deploy);
     if (rc != AXL_OK) {
-        axl_printf("ERROR: mount failed (rc=%d)\n", rc);
+        if (rc == AXL_NOT_FOUND) {
+            axl_printf("ERROR: mount: the mount driver image could not "
+                       "be loaded or failed to start\n");
+        } else {
+            axl_printf("ERROR: mount failed (rc=%d)\n", (int)rc);
+        }
         return 1;
     }
     return 0;

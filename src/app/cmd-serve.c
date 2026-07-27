@@ -151,9 +151,16 @@ webfs_serve_handler(AxlArgs *a)
         return 0;
     }
 
-    int rc = axl_service_start_embedded(&deploy);
+    /* AxlStatus since SDK v3.0.0 -- see the matching note in
+       cmd-mount.c for why AXL_NOT_FOUND is worth splitting out. */
+    AxlStatus rc = axl_service_start_embedded(&deploy);
     if (rc != AXL_OK) {
-        axl_printf("ERROR: serve: start failed (rc=%d)\n", rc);
+        if (rc == AXL_NOT_FOUND) {
+            axl_printf("ERROR: serve: the serve driver image could not "
+                       "be loaded or failed to start\n");
+        } else {
+            axl_printf("ERROR: serve: start failed (rc=%d)\n", (int)rc);
+        }
         return 1;
     }
     return 0;
