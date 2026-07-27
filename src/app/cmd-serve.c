@@ -139,10 +139,14 @@ webfs_serve_handler(AxlArgs *a)
         return 1;
     }
 
+    /* embedded_only -- see the matching note in cmd-mount.c: skips the
+       disk search so a stale loose axl-webfs-serve-dxe.efi beside the
+       launcher can't shadow the embedded driver. */
     AxlServiceDeploy deploy = {
-        .service     = &webfs_serve,
-        .driver_blob = AXL_EMBED_DATA(axl_webfs_serve_dxe),
-        .driver_name = "axl-webfs-serve-dxe.efi",
+        .service       = &webfs_serve,
+        .driver_blob   = AXL_EMBED_DATA(axl_webfs_serve_dxe),
+        .driver_name   = "axl-webfs-serve-dxe.efi",
+        .embedded_only = true,
     };
     deploy.driver_blob_len = AXL_EMBED_SIZE(axl_webfs_serve_dxe);
 

@@ -36,10 +36,18 @@ AXL_EMBED_DECLARE(axl_webfs_mount_dxe);
 static AxlServiceDeploy
 mount_make_deploy(void)
 {
+    /* embedded_only: load the baked-in blob directly and skip the SDK's
+       4-path disk search. Without it, search candidate #1 is
+       <image_dir>/<driver_name> -- exactly where devkit staged a loose
+       axl-webfs-mount-dxe.efi before 1aa5133 -- so a stale copy on an
+       older ESP would silently shadow the driver embedded in this
+       launcher. driver_name is kept only to name the loaded image in the
+       SDK's log line; driver_path must stay unset (mutually exclusive). */
     AxlServiceDeploy d = {
         .service         = &webfs_mount,
         .driver_blob     = AXL_EMBED_DATA(axl_webfs_mount_dxe),
         .driver_name     = "axl-webfs-mount-dxe.efi",
+        .embedded_only   = true,
     };
     d.driver_blob_len = AXL_EMBED_SIZE(axl_webfs_mount_dxe);
     return d;
