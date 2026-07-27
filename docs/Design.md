@@ -78,8 +78,8 @@ once without for the launcher's descriptor stub used by
 
 ### Components
 
-1. **axl-webfs.efi** (Launcher) — `int main()` entry via AXL_APP.
-   CLI parsing with `axl_args_parse`. Dispatches `serve`/`serve-stop`/
+1. **axl-webfs.efi** (Launcher) — plain `int main(int argc, char **argv)`
+   handing off to `axl_args_run`. Dispatches `serve`/`serve-stop`/
    `mount`/`umount`/`list-nics` to verb handlers. Each handler
    populates the matching opts struct from AxlArgs and calls
    `axl_service_start_embedded` (or `axl_service_stop`) against the
@@ -355,6 +355,7 @@ the same.
 
 ```
 src/
+  webfs-version.h              Version string
   app/                         Launcher (axl-webfs.efi)
     main.c                     Entry point, AxlArgs verb dispatch
     cmd-serve.c                serve / serve-stop verbs (axl_service_*)
@@ -392,7 +393,7 @@ Makefile                       axl-cc build
 CLAUDE.md                      Project instructions for Claude Code
 ```
 
-Build outputs (per arch, in `out/<arch>/`):
+Build outputs (per arch, in `build/axl/<arch>/`):
 
 - `axl-webfs.efi` — application; embeds both drivers via `axl-cc --embed`
 - `axl-webfs-mount-dxe.efi` — mount driver (built then embedded into the app;
@@ -402,14 +403,17 @@ Build outputs (per arch, in `out/<arch>/`):
 
 ## Network Initialization
 
-Uses `axl_net_auto_init()` from the AXL SDK, which handles:
+Uses `axl_net_init_from_opts()` from the AXL SDK, driven by an
+`AxlNetOpts` that the CLI populates (`--nic`, `--listen-ip` /
+`--source-ip`) and that AxlService serializes through to the driver via
+LoadOptions. The SDK handles:
 1. Loading NIC drivers from `\drivers\{arch}\` if needed
-2. Connecting SNP handles to bring up IP4/TCP4 stack
+2. Connecting SNP handles to bring up the IP4/TCP4 stack
 3. DHCP via IP4Config2 with polling
 4. DHCP4 direct fallback
 
-Static IP is handled locally via `IP4Config2->SetData()` after
-the SDK brings up the network stack.
+Static IP is part of that call — `AxlNetOpts.local_ip` — not a local
+`IP4Config2->SetData()` step. There is no per-project network library.
 
 The `list-nics` command uses `axl_net_list_interfaces()` directly.
 
@@ -464,12 +468,29 @@ still emitted by the build for users who prefer the UEFI-shell
 ### AXL SDK
 All HTTP, JSON, event loop, hash table, TCP, and network functionality
 comes from the AXL SDK. axl-webfs has no local reimplementations of these.
-The project is ~3,000 lines (app + driver + libraries), down from
-~4,800 lines in the EDK2 version.
+The project is ~5,300 lines of C across the launcher, both service
+drivers, and the transfer layer.
 
-### No TLS / No Authentication
-Diagnostic tool on isolated management networks. TLS and auth add
-complexity without value for the use case.
+### TLS and Authentication: Opt-In, Off by Default
+This started as a diagnostic tool for isolated management networks, where
+TLS and auth were judged pure complexity. Both have since shipped, because
+"isolated management network" turned out to be an assumption about the
+deployment rather than a property of it:
+
+- `serve --tls` (optionally `--cert`/`--key`; self-signed when omitted).
+  The ~200 KB of TLS lands in the serve driver only, and the SDK is built
+  with `AXL_TLS=1` by default — `make AXL_TLS=` drops it, after which
+  `--tls` fails at runtime rather than silently serving plaintext.
+- `serve --auth user:pass` (HTTP Basic), which also emits
+  `WWW-Authenticate` on 401 so browsers prompt. A colon-less value is
+  rejected by the verb handler before the service starts — it could never
+  match a Basic credential, so it would lock out every client including
+  the operator.
+- `mount --auth basic:user:token | bearer:token` for the client side.
+
+Both remain OFF unless asked for: the default is still the isolated-network
+diagnostic case, and defaulting to a self-signed certificate would train
+operators to click through warnings.
 
 ### Streaming I/O
 Files are transferred in 8 KB chunks, never fully buffered in RAM
@@ -481,10 +502,13 @@ Progress tracking hooks into streaming callbacks.
 ```bash
 make                           # X64
 make ARCH=aa64                 # AARCH64
-scripts/test.sh                # Host-side tests (xfer-server.py)
-scripts/test.sh --qemu         # Full suite with QEMU integration
-scripts/test.sh --aarch64      # Same, also runs the AARCH64 mount test
+scripts/test.sh                # Host-side tests (xfer-server.py, 25 tests)
+scripts/test.sh --qemu         # Full suite with QEMU integration, X64 (119 tests)
+scripts/test.sh --aarch64      # Also run the AARCH64 tests (implies --qemu)
 ```
+
+The QEMU paths need `AXL_SDK_SRC` pointing at an axl-sdk source checkout;
+`run-qemu.sh` ships in that tree, not in the packages.
 
 ## Future Enhancements
 
@@ -497,6 +521,9 @@ from `get_streamer_pull` and finalizes via `get_streamer_close`
 on EOF, error, or connection reset, so the FtReadCtx never
 leaks). Range requests open the file at `range.start` and bound
 the streamer to the slice length.)*
-- WebDAV client for mount (mount standard WebDAV servers without xfer-server.py)
-- TLS support (SDK has `axl_http_client_set("tls.verify", ...)`)
+*(Also done since this list was written: the WebDAV client for mount —
+`src/mount/webfs-protocol-dav.c`, selected by `mount --protocol dav` or
+auto-probed, so standard WebDAV servers mount without xfer-server.py; and
+TLS, as `serve --tls` — see "TLS and Authentication" above.)*
+
 - IPv6 support

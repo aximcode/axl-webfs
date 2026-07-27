@@ -268,9 +268,9 @@ The companion for `mount`. Python 3 stdlib only, no external deps.
 ## Testing
 
 ```bash
-scripts/test.sh              # host-side tests against xfer-server.py
-scripts/test.sh --qemu       # add QEMU integration tests (X64)
-scripts/test.sh --aarch64    # add AARCH64 QEMU tests
+scripts/test.sh              # host-side tests against xfer-server.py (25)
+scripts/test.sh --qemu       # add QEMU integration tests, X64 (119 total)
+scripts/test.sh --aarch64    # also test AARCH64 (implies --qemu)
 ```
 
 QEMU tests use `run-qemu.sh`, which ships with the AXL SDK source
