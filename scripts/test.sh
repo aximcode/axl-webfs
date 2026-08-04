@@ -544,39 +544,64 @@ NSHEOF
             pass "$QEMU_ARCH: large file read (50KB)" || \
             fail "$QEMU_ARCH: large file" "content not found"
 
-        # Non-ASCII filename round-trip — the SDK's Phase-C
-        # axl_utf8_to_ucs2_buf decoder fix must propagate
-        # 'résumé.txt' and '日本語.bin' from the JSON listing
-        # through EFI_FILE_INFO trailers into Shell ls output
-        # without the pre-fix Latin-1-cast smearing.
+        # Non-ASCII filename round-trip — 'résumé.txt' and
+        # '日本語.bin' must survive the JSON listing, the
+        # AxlFsProvider name marshalling and the EFI_FILE_INFO
+        # trailer into Shell `ls` output, byte-exact.
         #
-        # OVMF's serial console driver renders unprintable CHAR16
-        # cells as the ASCII string `uXXXX` (no backslash) — so a
-        # *correctly* round-tripped 'é' (U+00E9) lands as the
-        # 5-byte ASCII fragment `u00e9` in the captured serial,
-        # surrounded by neighboring file-name characters. The
-        # regression we're guarding against (Latin-1 cast of the
-        # UTF-8 bytes 0xC3 0xA9) would instead produce two cells
-        # 0x00C3 + 0x00A9 → `u00c3u00a9` — present iff the bug is
-        # back. Grep both directions: positive for `ru00e9sum` and
-        # `u65e5u672cu8a9e`, negative for `u00c3u00a9`.
-        if grep -q 'ru00e9sumu00e9' "$SERIAL_LOG" 2>/dev/null; then
-            pass "$QEMU_ARCH: non-ASCII 'résumé.txt' (CHAR16 U+00E9) round-trip"
+        # How a non-ASCII CHAR16 cell REACHES the serial log is
+        # firmware-specific, so accept either known rendering:
+        #   - OVMF / X64 encodes the cell as UTF-8, so the real
+        #     name appears verbatim ('résumé.txt'). Verified: a
+        #     Shell error naming cells U+00C3 U+00A9 came back as
+        #     0xC3 0x83 0xC2 0xA9, the UTF-8 of both.
+        #   - ArmVirtQemu / AARCH64 prints each cell's LOW BYTE,
+        #     substituting '?' when it is not printable — so 'é'
+        #     (U+00E9) becomes '?' and '本' (U+672C, low byte 0x2C)
+        #     becomes ','. Hence 'r?sum?.txt' and '?,?.bin'.
+        #
+        # Either way the CELL COUNT is what carries the signal, and
+        # it still discriminates: a Latin-1 cast doubles the cells
+        # ('r??sum??.txt'), which the negative check below rejects.
+        #
+        # Two distinct corruptions are guarded explicitly, because
+        # both once passed a weaker version of this test:
+        #
+        #  1. Latin-1 cast of the UTF-8 bytes — 0xC3 0xA9 widened to
+        #     cells U+00C3 U+00A9, which reaches the log as 'Ã©'.
+        #  2. Undecoded JSON \uXXXX. xfer-server.py is Python
+        #     json.dumps, which defaults to ensure_ascii=True and so
+        #     sends the ESCAPED form on the wire — the 20-byte
+        #     ASCII "r\u00e9sum\u00e9.txt", not the 12-byte UTF-8
+        #     name. An SDK whose JSON string
+        #     accessors do not decode \uXXXX yields the LITERAL
+        #     ASCII text 'ru00e9sumu00e9.txt' (axl-sdk 0352d185).
+        #     That is what this test asserted until 2026-08-04 — it
+        #     was pinning the corruption, having misread the literal
+        #     text as an OVMF unprintable-cell fallback rendering.
+        if grep -qE 'résumé\.txt|r\?sum\?\.txt' "$SERIAL_LOG" 2>/dev/null; then
+            pass "$QEMU_ARCH: non-ASCII 'résumé.txt' (U+00E9) round-trip"
         else
             fail "$QEMU_ARCH: non-ASCII résumé.txt" \
-                 "expected 'ru00e9sumu00e9' fragment in ls output"
+                 "expected 'résumé.txt' or 'r?sum?.txt' in ls output"
         fi
-        if grep -q 'u65e5u672cu8a9e' "$SERIAL_LOG" 2>/dev/null; then
+        if grep -qE '日本語\.bin|\?,\?\.bin' "$SERIAL_LOG" 2>/dev/null; then
             pass "$QEMU_ARCH: non-ASCII '日本語.bin' (3-byte UTF-8) round-trip"
         else
             fail "$QEMU_ARCH: non-ASCII 日本語.bin" \
-                 "expected 'u65e5u672cu8a9e' fragment in ls output"
+                 "expected '日本語.bin' or '?,?.bin' in ls output"
         fi
-        if grep -q 'u00c3u00a9' "$SERIAL_LOG" 2>/dev/null; then
+        if grep -qE 'Ã©|r\?\?sum\?\?\.txt' "$SERIAL_LOG" 2>/dev/null; then
             fail "$QEMU_ARCH: UTF-8 Latin-1 cast regression" \
-                 "saw 'u00c3u00a9' — axl_utf8_to_ucs2_buf reverted to byte cast?"
+                 "saw doubled cells — axl_utf8_to_ucs2_buf reverted to byte cast?"
         else
-            pass "$QEMU_ARCH: no Latin-1-cast smearing (no 'u00c3u00a9')"
+            pass "$QEMU_ARCH: no Latin-1-cast smearing"
+        fi
+        if grep -q 'ru00e9sumu00e9' "$SERIAL_LOG" 2>/dev/null; then
+            fail "$QEMU_ARCH: undecoded JSON \\uXXXX" \
+                 "saw literal 'ru00e9sumu00e9' — JSON string accessors stopped decoding \\uXXXX?"
+        else
+            pass "$QEMU_ARCH: JSON \\uXXXX decoded (no literal 'ru00e9sumu00e9')"
         fi
 
         # mkdir test — the AxlFsProviderOpen `attributes` arg
