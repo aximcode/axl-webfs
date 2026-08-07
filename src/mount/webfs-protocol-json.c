@@ -61,13 +61,13 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
     axl_http_client_response_free(response);
 
     AxlJsonReader ctx;
-    if (!axl_json_parse(body_buf, body_size, &ctx)) {
+    if (!axl_json_parse(body_buf, body_size, AXL_JSON_RELAXED, &ctx)) {
         axl_free(body_buf);
         return -1;
     }
 
     AxlJsonArrayIter iter;
-    if (!axl_json_root_array_begin(&ctx, &iter)) {
+    if (!axl_json_array_begin(&ctx, NULL, &iter)) {
         axl_json_free(&ctx);
         axl_free(body_buf);
         return -1;
