@@ -143,10 +143,11 @@ sudo dnf install ./axl-sdk.rpm
 ```
 
 Packages install under `/usr`. To build against a local SDK checkout,
-either point at a pre-installed `out/`:
+either point at a pre-installed `stage/` (where the SDK's
+`scripts/install.sh` puts it by default):
 
 ```bash
-AXL_SDK=~/src/axl-sdk/out make
+AXL_SDK=~/src/axl-sdk/stage make
 ```
 
 …or point at the source tree and let the build pick up SDK changes

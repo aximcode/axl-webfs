@@ -36,7 +36,7 @@ DO_SDK_SYNC := $(if $(DRY_RUN),,$(LINK_GOALS))
 # is a near-no-op otherwise. Without AXL_SDK_SRC the build behaves
 # as a packaged-install consumer and AXL_SDK defaults to /usr.
 ifneq ($(AXL_SDK_SRC),)
-override AXL_SDK := $(AXL_SDK_SRC)/out
+override AXL_SDK := $(AXL_SDK_SRC)/stage
 
 # The sync runs at PARSE time, deliberately, not as a recipe prerequisite.
 #
