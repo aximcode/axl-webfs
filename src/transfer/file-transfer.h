@@ -49,6 +49,14 @@ size_t ft_get_volume_count(void);
 int    ft_get_volume(size_t index, FtVolume *vol);
 int    ft_find_volume(const char *name, FtVolume *vol);
 
+/* Entries ft_list_dir leaves out: return true to hide @p name, found in
+   volume-relative directory @p dir_path. One filter, set by whoever
+   owns files that are not yet resources (the WebDAV PUT temps); NULL
+   clears it. */
+typedef bool (*FtListFilter)(const FtVolume *vol, const char *dir_path,
+                             const char *name);
+void   ft_set_list_filter(FtListFilter hide);
+
 int    ft_list_volumes(bool as_json, char *buf, size_t buf_size, size_t *written);
 int    ft_list_dir(FtVolume *vol, const char *path, bool as_json, bool read_only, char *buf, size_t buf_size, size_t *written);
 

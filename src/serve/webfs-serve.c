@@ -216,6 +216,21 @@ compute_file_digest(FtVolume *volume, const char *sub_path,
     return 0;
 }
 
+/* Drop @p sub_path's cached digest: its bytes changed (a PUT committed,
+   or it was moved or deleted). The cache checks only the size, which a
+   same-size replace keeps. Non-static for webfs-dav.c, like
+   compute_file_digest. */
+void
+invalidate_file_digest(const FtVolume *volume, const char *sub_path)
+{
+    if (m_digest_cache == NULL)
+        return;
+    char cache_key[640];
+    axl_snprintf(cache_key, sizeof(cache_key), "%s:%s",
+                 volume->name, sub_path);
+    axl_cache_invalidate(m_digest_cache, cache_key);
+}
+
 /* Streaming GET state (one per in-flight download). The SDK's
    axl_http_response_set_streamer pulls chunks via get_streamer_pull
    and finalizes via get_streamer_close on EOF, error, or connection
@@ -1058,6 +1073,7 @@ serve_setup(AxlLoop *loop, void *user)
     if (axl_http_server_start(o->server, loop) != AXL_OK) {
         axl_http_server_free(o->server, AXL_TEARDOWN_GRACEFUL);
         o->server = NULL;
+        webfs_dav_unregister();
         return AXL_ERR;
     }
 
@@ -1103,6 +1119,7 @@ serve_teardown(void *user)
         axl_http_server_free(o->server, AXL_TEARDOWN_GRACEFUL);
         o->server = NULL;
     }
+    webfs_dav_unregister();
     if (m_digest_cache != NULL) {
         axl_cache_free(m_digest_cache);
         m_digest_cache = NULL;

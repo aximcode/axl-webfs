@@ -18,6 +18,13 @@
     if ((pos) >= (sz)) (pos) = (sz) - 1; \
 } while (0)
 
+static FtListFilter m_list_filter;
+
+void ft_set_list_filter(FtListFilter hide)
+{
+    m_list_filter = hide;
+}
+
 // ----------------------------------------------------------------------------
 // Path helper (duplicated from FileTransfer.c to keep both files independent)
 // ----------------------------------------------------------------------------
@@ -323,6 +330,8 @@ int ft_list_dir(FtVolume *vol, const char *path, bool as_json, bool read_only,
     AxlFsEntry entry;
     while (axl_dir_read(dir, &entry)) {
         if (axl_streql(entry.name, ".") || axl_streql(entry.name, ".."))
+            continue;
+        if (m_list_filter != NULL && m_list_filter(vol, path, entry.name))
             continue;
 
         if (as_json) {

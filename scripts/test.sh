@@ -1636,6 +1636,133 @@ NSHEOF
                 { [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; } && \
                     pass "serve dav: DELETE empty collection returns 2xx" || \
                     fail "serve dav: DELETE collection" "expected 2xx, got $HTTP_CODE"
+
+                # ----------------------------------------------------
+                # Atomic PUT. The SDK ends every write with
+                # write_close(aborted): true DISCARDS the body (client
+                # hang-up, Content-Digest mismatch, failed chunk). A
+                # discarded PUT must leave the old file exactly as it
+                # was, so the body goes to a temp sibling and only a
+                # commit replaces the target.
+                # ----------------------------------------------------
+                ATOMIC_URL="$BASE/dav/fs0/atomic.txt"
+                HTTP_CODE=$(printf '%s' "the original, longer contents" | \
+                    curl -s -o /dev/null -w "%{http_code}" -T - \
+                    "$ATOMIC_URL" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && \
+                    pass "serve dav atomic: first PUT creates the file (201)" || \
+                    fail "serve dav atomic: first PUT" "expected 201, got $HTTP_CODE"
+
+                # A replace by a SHORTER body leaves no stale tail.
+                HTTP_CODE=$(printf '%s' "short-v1" | \
+                    curl -s -o /dev/null -w "%{http_code}" -T - \
+                    "$ATOMIC_URL" 2>/dev/null || true)
+                CONTENT=$(curl -sf "$ATOMIC_URL" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && [ "$CONTENT" = "short-v1" ] && \
+                    pass "serve dav atomic: replacing PUT stores exactly the new body" || \
+                    fail "serve dav atomic: replacing PUT" \
+                         "expected 201 + 'short-v1', got $HTTP_CODE + '${CONTENT:0:60}'"
+
+                # A same-SIZE replace: the bytes AND the advertised
+                # digest must both be the new body's. The digest cache
+                # is keyed by (path, size), so a commit that does not
+                # invalidate it serves the old body's digest.
+                HTTP_CODE=$(printf '%s' "SHORT-V2" | \
+                    curl -s -o /dev/null -w "%{http_code}" -T - \
+                    "$ATOMIC_URL" 2>/dev/null || true)
+                CONTENT=$(curl -sf "$ATOMIC_URL" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && [ "$CONTENT" = "SHORT-V2" ] && \
+                    pass "serve dav atomic: same-size replacing PUT stores the new bytes" || \
+                    fail "serve dav atomic: same-size replace" \
+                         "expected 201 + 'SHORT-V2', got $HTTP_CODE + '${CONTENT:0:60}'"
+                WANT_HEX=$(printf '%s' "SHORT-V2" | sha256sum | cut -d' ' -f1)
+                GOT_DIGEST=$(curl -sI -H "Want-Digest: sha-256" "$ATOMIC_URL" \
+                    2>/dev/null | tr -d '\r' | grep -i '^Digest:' || true)
+                [ "$GOT_DIGEST" = "Digest: sha-256=$WANT_HEX" ] && \
+                    pass "serve dav atomic: Digest after a same-size replace is the new body's" || \
+                    fail "serve dav atomic: Digest after replace" \
+                         "expected 'Digest: sha-256=$WANT_HEX', got '$GOT_DIGEST'"
+
+                # Content-Digest mismatch: 400, and the OLD file stays.
+                HTTP_CODE=$(printf '%s' "a body that must not land" | \
+                    curl -s -o /dev/null -w "%{http_code}" \
+                    -H "Content-Digest: sha-256=0000000000000000000000000000000000000000000000000000000000000000" \
+                    -T - "$ATOMIC_URL" 2>/dev/null || true)
+                CONTENT=$(curl -sf "$ATOMIC_URL" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "400" ] && [ "$CONTENT" = "SHORT-V2" ] && \
+                    pass "serve dav atomic: digest-mismatch PUT (400) keeps the old file" || \
+                    fail "serve dav atomic: digest mismatch" \
+                         "expected 400 + 'SHORT-V2', got $HTTP_CODE + '${CONTENT:0:60}'"
+
+                # Hang-up mid-PUT. Announce 1 MB, send 192 KB -- several
+                # 64 KB dispatcher chunks, so write_chunk has written
+                # bytes -- and hold the connection open: the PUT is IN
+                # FLIGHT.
+                DAV_HOSTPORT="${BASE#http://}"
+                if exec 7<>"/dev/tcp/${DAV_HOSTPORT%%:*}/${DAV_HOSTPORT##*:}"; then
+                    printf 'PUT /dav/fs0/atomic.txt HTTP/1.1\r\nHost: %s\r\nContent-Length: 1048576\r\n\r\n' \
+                        "$DAV_HOSTPORT" >&7
+                    head -c 196608 /dev/zero | tr '\0' 'X' >&7
+                    sleep 2
+
+                    # Control: the PUT really is in flight -- a mount
+                    # takes one PUT at a time and refuses a second 503.
+                    HTTP_CODE=$(printf '%s' "second" | \
+                        curl -s -o /dev/null -w "%{http_code}" -T - \
+                        "$BASE/dav/fs0/second.txt" 2>/dev/null || true)
+                    [ "$HTTP_CODE" = "503" ] && \
+                        pass "serve dav atomic: a PUT is in flight (second PUT 503)" || \
+                        fail "serve dav atomic: in-flight control" \
+                             "expected 503, got $HTTP_CODE"
+
+                    # While it streams, the target still holds the old
+                    # bytes -- nothing was truncated at write_open.
+                    CONTENT=$(curl -sf "$ATOMIC_URL" 2>/dev/null || true)
+                    [ "$CONTENT" = "SHORT-V2" ] && \
+                        pass "serve dav atomic: target untouched while a PUT streams" || \
+                        fail "serve dav atomic: target during PUT" \
+                             "expected 'SHORT-V2', got '${CONTENT:0:60}'"
+
+                    # The in-flight temp is in no listing.
+                    LISTING=$(curl -s -X PROPFIND -H "Depth: 1" \
+                        "$BASE/dav/fs0/" 2>/dev/null || true)
+                    if echo "$LISTING" | grep -q "atomic.txt" && \
+                       ! echo "$LISTING" | grep -qi "~AP"; then
+                        pass "serve dav atomic: PROPFIND hides the in-flight temp"
+                    else
+                        fail "serve dav atomic: PROPFIND during PUT" \
+                             "expected atomic.txt and no ~AP temp, got: ${LISTING:0:300}"
+                    fi
+                    LISTING=$(curl -s -H "Accept: application/json" \
+                        "$BASE/fs0/" 2>/dev/null || true)
+                    if echo "$LISTING" | grep -q "atomic.txt" && \
+                       ! echo "$LISTING" | grep -qi "~AP"; then
+                        pass "serve dav atomic: REST listing hides the in-flight temp"
+                    else
+                        fail "serve dav atomic: REST listing during PUT" \
+                             "expected atomic.txt and no ~AP temp, got: ${LISTING:0:300}"
+                    fi
+
+                    exec 7>&-
+                    sleep 2
+                    CONTENT=$(curl -sf "$ATOMIC_URL" 2>/dev/null || true)
+                    [ "$CONTENT" = "SHORT-V2" ] && \
+                        pass "serve dav atomic: hang-up mid-PUT keeps the old file" || \
+                        fail "serve dav atomic: hang-up mid-PUT" \
+                             "expected 'SHORT-V2', got '${CONTENT:0:60}'"
+                    LISTING=$(curl -s -H "Accept: application/json" \
+                        "$BASE/fs0/" 2>/dev/null || true)
+                    if echo "$LISTING" | grep -q "atomic.txt" && \
+                       ! echo "$LISTING" | grep -qi "~AP"; then
+                        pass "serve dav atomic: the discarded temp is removed"
+                    else
+                        fail "serve dav atomic: temp after hang-up" \
+                             "expected atomic.txt and no ~AP file, got: ${LISTING:0:300}"
+                    fi
+                else
+                    fail "serve dav atomic: hang-up mid-PUT" \
+                         "could not connect to $DAV_HOSTPORT"
+                fi
             else
                 fail "serve: driver did not start within 30s"
             fi

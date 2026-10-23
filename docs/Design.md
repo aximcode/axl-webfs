@@ -346,10 +346,11 @@ Upload integrity: when a `PUT` carries `Content-Digest: sha-256=<hex>`,
 and, on close, compares it to the advertised value — a mismatch
 deletes the partial file and returns `400`. This is the upload-side
 peer of the `Want-Digest`/`Digest` emission already done on `GET`. The
-WebDAV `/dav` surface enforces the identical contract: the SDK's
-WebDAV PUT validates `Content-Digest` against the `dav_digest` callback
-(same header, hex format, and `400` status), so both surfaces behave
-the same.
+WebDAV `/dav` surface answers the same header with the same `400`, but
+the SDK checks it itself, over the body as it streams and BEFORE the
+commit: a mismatch discards the write (`write_close(true)`), and since a
+`/dav` PUT is atomic (below) the previous file is left exactly as it was
+rather than deleted.
 
 ## Project Layout
 
@@ -366,8 +367,9 @@ src/
                                AXL_SERVICE_BUILD_DRIVER
     webfs-serve.h              Public extern decls (ServeOpts, webfs_serve)
     upload-asset.c/.h          Embedded upload UI assets (driver-only)
-    webfs-dav.c/.h             WebDAV class-1 + MOVE adapter onto ft_*
-                               (driver-only; mounts /dav)
+    webfs-dav.c/.h             WebDAV class-1 + MOVE: virtual volume root
+                               over axl_fs_webdav_ops (driver-only;
+                               mounts /dav)
   mount/                       Mount service (single-file dual-compile)
     webfs-mount.c              AxlService descriptor + setup/teardown,
                                gated on AXL_SERVICE_BUILD_DRIVER
@@ -435,14 +437,45 @@ REST surface under `/<vol>/<path>` (HTML/JSON listings,
 under `/dav` for Finder, Explorer, davfs2, and cadaver clients.
 The WebDAV layer lives entirely in axl-sdk
 (`axl_http_server_add_webdav`); axl-webfs supplies an
-`AxlWebDavOps` adapter (`src/serve/webfs-dav.c`) that maps the
-12 callbacks onto the existing `ft_*` helpers. The mount root
+`AxlWebDavOps` adapter (`src/serve/webfs-dav.c`). The mount root
 enumerates volumes as virtual collections; everything under
-`/dav/<vol>/` maps onto the matching `FtVolume`. MOVE goes
-through `axl_file_move`: atomic rename on the same-directory
-path and chunked stream copy + source delete on the cross-
-directory path. PROPFIND populates `<D:getlastmodified>` from
-`AxlDirEntry.mtime_unix` so Finder caches stay coherent.
+`/dav/<vol>/` that touches one path -- PROPFIND stat, GET/HEAD, PUT,
+MKCOL, DELETE -- is forwarded to the SDK's own filesystem backend,
+`axl_fs_webdav_ops()`, over one `AxlFsRoot` (`"<vol>:"`) per volume.
+Directory listing stays in `webfs-dav.c`: an `AxlFsRoot` at a bare
+volume strips the trailing separator and its `list_dir` opens `"fs0:"`,
+which lists nothing. PROPFIND populates `<D:getlastmodified>`
+from `AxlFsEntry.mtime_unix` so Finder caches stay coherent.
+
+A `/dav` PUT is atomic, by that forwarding. The body is written to a
+temp sibling (`~APxxxxx.TMP`) and replaces the target with
+`axl_file_replace` only when the SDK commits it
+(`write_close(false)`); a discard (`write_close(true)`: the client hung
+up, a chunk failed, the `Content-Digest` did not match) deletes the
+temp through the writer's own handle and leaves the old file exactly as
+it was. While a PUT is in flight its temp is no resource: a request
+naming it finds nothing (the SDK), and the PROPFIND and REST listings
+(`ft_set_list_filter`) leave it out -- a temp-shaped name the SDK's
+stat refuses is a live temp, since the SDK keeps its registry private. This is not rebuilt in
+axl-webfs on purpose: deleting through the writer's handle and flushing
+with it still open are SDK-internal, so a consumer re-implementation
+over the public `AxlFileWriter` could only delete by path. A commit
+drops the path's cached digest, which is keyed by size and would
+otherwise survive a same-size replace.
+
+MOVE stays in axl-webfs because it crosses volumes, which no single
+`AxlFsRoot` can: it goes through `axl_file_move` (a rename within a
+volume, chunked copy + source delete across), and its status is
+passed back for the SDK to map. The SDK answers a missing source and
+an existing destination under `Overwrite: F` before the op runs. The
+mount does not set `AXL_WEBDAV_CAP_IDENTITY`: MOVE does not decide
+identity by what the volume stores, so a case-only rename with
+`Overwrite: F` is refused 412 rather than forwarded. Want-Digest stays
+here too, to share `webfs-serve.c`'s digest cache with the REST
+surface.
+
+The REST `PUT /<vol>/<path>` still writes in place (`ft_open_write`):
+it is not atomic.
 
 ### Two AxlServices, One Launcher Binary
 `mount` and `serve` both need a persistent protocol that survives
