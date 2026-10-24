@@ -888,7 +888,7 @@ NSHEOF
     lm_rows() {
         sed -n "/$1/,/$2/p" "$LM_LOG" | tr -d '\r' | \
             grep -E '^[0-9/]+  [0-9:]+ ' | \
-            sed -E 's/^[0-9/]+  [0-9:]+ (<DIR>)? *[0-9]+  //' | sort -f
+            sed -E 's/^[0-9/]+  [0-9:]+ (<DIR>)? *[0-9]+  //' | LC_ALL=C sort -f
     }
 
     for LM_ARCH in "${QEMU_ARCHS[@]}"; do
@@ -992,11 +992,15 @@ NSHEOF
         # A share below the server's root: the mount URL's path selects it
         # ("/my share/", a base that needs encoding), and every href is
         # normalized and read relative to it. Of the fixture's root hrefs
-        # only dot.txt (a "." segment), readme.txt, rel.txt (relative,
-        # resolved against the request) and "sp ace" are entries: the self
-        # entry, an href outside the share, one climbing out of it with
-        # "..", and one that is no child of the root are not. A rename
-        # under the base carries the base in its Destination.
+        # these are entries: dot.txt (a "." segment), readme.txt, rel.txt
+        # (relative, resolved against the request), upper.txt (our host
+        # and port under an upper-case "HTTP://"), netours.txt (a
+        # "//host:port" reference to us) and "sp ace". Not entries: the
+        # self entry, an href outside the share,
+        # one climbing out of it with "..", one that is no child of the
+        # root, and every href for another host or port -- absolute or
+        # "//other-host/...". A rename under the base carries the base in
+        # its Destination.
         T="$LM_ARCH share base (dav)"
         info "QEMU" "$T: Booting mount test..."
         LM_FIXTURE_ARGS=(--base "/my share")
@@ -1008,9 +1012,10 @@ NSHEOF
         LM_FIXTURE_ARGS=()
         unset LM_URL_PATH
         BASE_ROOT=$(lm_rows "=== ROOT ===" "=== MV ===" | tr '\n' '|')
-        [ "$BASE_ROOT" = "dot.txt|readme.txt|rel.txt|sp ace|" ] && \
-            pass "$T: the root lists exactly its four entries" || \
-            fail "$T: root" "expected 'dot.txt|readme.txt|rel.txt|sp ace|', got '$BASE_ROOT'"
+        BASE_WANT="dot.txt|netours.txt|readme.txt|rel.txt|sp ace|upper.txt|"
+        [ "$BASE_ROOT" = "$BASE_WANT" ] && \
+            pass "$T: the root lists exactly its six entries" || \
+            fail "$T: root" "expected '$BASE_WANT', got '$BASE_ROOT'"
         MV_DEST=$(grep -a "MOVE-DEST" /tmp/listing-server.log | sed 's/^ *MOVE-DEST //')
         BASE_SUB=$(lm_rows "=== SUB ===" "=== END ===" | tr '\n' '|')
         [ "$MV_DEST" = "/my share/sp ace/b.txt" ] && [ "$BASE_SUB" = "b.txt|" ] && \
@@ -1037,6 +1042,26 @@ NSHEOF
             fail "$T: no self entry" "expected the refusal line and no rows, got $NOSELF_ROWS rows"
         fi
         rm -f "$LM_LOG"
+
+        # An href that cannot be read fails the whole listing -- never a
+        # short one: an absolute href with no host.
+        for BAD_HREF in 'http:///x.txt'; do
+            T="$LM_ARCH unreadable href (dav) $BAD_HREF"
+            info "QEMU" "$T: Booting mount test..."
+            LM_FIXTURE_ARGS=(--base "/my share" --extra-href "$BAD_HREF")
+            LM_URL_PATH="/my share/"
+            listing_mount based dav "echo === ROOT ===" 'ls fs1:\' "echo === END ==="
+            LM_FIXTURE_ARGS=()
+            unset LM_URL_PATH
+            BADH_ROWS=$(lm_rows "=== ROOT ===" "=== END ===" | wc -l)
+            if grep -qa "an href cannot be read; refused" "$LM_LOG" && \
+               [ "$BADH_ROWS" = "0" ]; then
+                pass "$T: the listing is refused, no rows shown"
+            else
+                fail "$T: unreadable href" "expected the refusal line and no rows, got $BADH_ROWS rows"
+            fi
+            rm -f "$LM_LOG"
+        done
 
         # A share that does not exist on the server is no mount: the probe
         # asks for its root collection, and a 404 refuses the mount rather

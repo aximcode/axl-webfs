@@ -31,9 +31,13 @@ Each --case builds a tree no real host directory can stand in for:
               a "." segment ("<base>/./dot.txt"), one outside the share
               ("/elsewhere/foreign.txt"), one climbing out of it
               ("<base>/../evil.txt"), and one that is no child of the
-              listed directory ("<base>/sp ace/a.txt" in the root) -- and
-              a directory "sp ace" to rename in. Only dot.txt, readme.txt,
-              rel.txt and "sp ace" are entries of the root.
+              listed directory ("<base>/sp ace/a.txt" in the root);
+              absolute hrefs for our own host and port (an upper-case
+              "HTTP://" scheme, a "//host:port" network-path reference)
+              and for others (another host, at the root and under the
+              base; our host on another port; "//other-host/..."); --
+              and a directory "sp ace" to rename in. The root's entries
+              are dot, netours, readme, rel, upper (.txt) and "sp ace".
   deep        A file whose path is 505 bytes -- "/files" + it is a 511-byte
               request target -- and a sibling whose path is 511 and
               starts with those 505 bytes: a client that cut
@@ -43,12 +47,15 @@ Each --case builds a tree no real host directory can stand in for:
 
 --base PATH serves the whole tree under PATH (decoded, e.g. "/my share"):
 requests must name it, hrefs carry it ("{B}" in an Entry's href is the
-encoded base), and a MOVE's logged Destination includes it. --no-self
-leaves the queried collection out of every PROPFIND.
+encoded base, "{HOST}" the request's Host without its port, "{PORT}" this
+server's port and "{PORT1}" the next one), and a MOVE's logged Destination
+includes it. --no-self leaves the queried collection out of every
+PROPFIND; --extra-href HREF (repeatable, templated the same way) adds a
+raw href to the root's.
 
 Usage:
     ./listing-server.py --case long-names --port 9877 [--webdav]
-        [--base PATH] [--no-self]
+        [--base PATH] [--no-self] [--extra-href HREF]...
 """
 
 from __future__ import annotations
@@ -135,6 +142,12 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
             Entry("foreign.txt", b"x", href="/elsewhere/foreign.txt"),
             Entry("evil.txt", b"x", href="{B}/../evil.txt"),
             Entry("a.txt", b"x", href="{B}/sp%20ace/a.txt"),
+            Entry("upper.txt", b"u", href="HTTP://{HOST}:{PORT}{B}/upper.txt"),
+            Entry("netours.txt", b"n", href="//{HOST}:{PORT}{B}/netours.txt"),
+            Entry("other1.txt", b"x", href="http://other-host.example{B}/other1.txt"),
+            Entry("other2.txt", b"x", href="http://other-host.example/other2.txt"),
+            Entry("otherport.txt", b"x", href="http://{HOST}:{PORT1}{B}/otherport.txt"),
+            Entry("netpath.txt", b"x", href="//other-host.example{B}/netpath.txt"),
             Entry("sp ace"),
         ], "/sp ace": [Entry("a.txt", b"rename me")]}
     if case == "huge":
@@ -163,6 +176,15 @@ class ListingHandler(BaseHTTPRequestHandler):
     case: str = ""
     base: str = ""          # decoded share prefix, "" for the root
     no_self: bool = False
+    port: int = 0
+    extra_hrefs: list[str] = []
+
+    def _href(self, template: str) -> str:
+        host = (self.headers.get("Host") or "").split(":")[0]
+        return (template.replace("{B}", quote(self.base))
+                .replace("{HOST}", host)
+                .replace("{PORT1}", str(self.port + 1))
+                .replace("{PORT}", str(self.port)))
 
     def _local(self, url_path: str) -> str | None:
         """The tree path @p url_path (decoded) names under the base, or None."""
@@ -305,14 +327,18 @@ class ListingHandler(BaseHTTPRequestHandler):
         if local is None or entries is None:
             self._send(404, b"not found\n", "text/plain")
             return
-        base = (self.base + local).rstrip("/")
-        parts = [] if self.no_self else [self._response(quote(base + "/"), "", None)]
-        if self.headers.get("Depth", "1") != "0":
-            for e in entries:
-                href = (e.href.replace("{B}", quote(self.base)) if e.href is not None
-                        else quote(f"{base}/{e.name}"))
-                disp = e.displayname if e.displayname is not None else escape(e.name)
-                parts.append(self._response(href, disp, e))
+        else:
+            base = (self.base + local).rstrip("/")
+            parts = [] if self.no_self else [self._response(quote(base + "/"), "", None)]
+            if self.headers.get("Depth", "1") != "0":
+                for e in entries:
+                    href = (self._href(e.href) if e.href is not None
+                            else quote(f"{base}/{e.name}"))
+                    disp = e.displayname if e.displayname is not None else escape(e.name)
+                    parts.append(self._response(href, disp, e))
+                if local.rstrip("/") == "":
+                    for raw in self.extra_hrefs:
+                        parts.append(self._response(self._href(raw), "", Entry("x", b"x")))
         body = ('<?xml version="1.0" encoding="utf-8"?>'
                 '<D:multistatus xmlns:D="DAV:">' + "".join(parts)
                 + "</D:multistatus>")
@@ -332,6 +358,8 @@ def main() -> None:
                         help="serve the tree under this (decoded) path prefix")
     parser.add_argument("--no-self", action="store_true",
                         help="leave the queried collection out of each PROPFIND")
+    parser.add_argument("--extra-href", action="append", default=[],
+                        help="a raw href to add to the root's PROPFIND (templated)")
     parser.add_argument("--port", type=int, default=9877)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--webdav", action="store_true",
@@ -342,6 +370,8 @@ def main() -> None:
     ListingHandler.case = args.case
     ListingHandler.base = args.base.rstrip("/")
     ListingHandler.no_self = args.no_self
+    ListingHandler.port = args.port
+    ListingHandler.extra_hrefs = list(args.extra_href)
     server = HTTPServer((args.bind, args.port), ListingHandler)
     try:
         server.serve_forever()

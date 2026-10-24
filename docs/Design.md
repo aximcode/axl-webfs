@@ -182,11 +182,14 @@ refused at mount time: the server would normalize it to another place.
 The WebDAV probe also asks for the share's root collection, so a share
 the server does not have is no mount rather than an empty volume.
 
-A PROPFIND href is read as RFC 3986 says: an absolute URI loses its
-scheme and authority, a relative reference resolves against the
+A PROPFIND href is read as RFC 3986 says. An absolute URI (a scheme in
+any case) or a network-path reference (`//host/...`) is parsed with
+`axl_url_parse`, and is the share's only when it is `http` on the
+mount's own host and port: another host or port is no entry, and one
+that does not parse fails the listing. A relative reference resolves
+against the
 collection URL the PROPFIND was sent to (always with its trailing
-separator), and the decoded path is normalized (`.`, `..`) BEFORE it is
-matched against the share's base. An href outside the share -- including
+separator). The decoded path is normalized (`.`, `..`) BEFORE it is matched against the share's base. An href outside the share -- including
 one that climbs out with `..` -- is no entry; one that is no direct
 child of the listed directory is no entry either, never shown under its
 basename. A listing that cannot be represented whole is refused, never

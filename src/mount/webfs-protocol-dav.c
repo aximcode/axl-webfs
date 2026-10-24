@@ -20,6 +20,7 @@
 **/
 
 #include "webfs-protocol.h"
+#include <axl/axl-string.h>
 #include <axl/axl-xml.h>
 
 AXL_LOG_DOMAIN("webfs-dav-client");
@@ -36,36 +37,87 @@ typedef enum {
     HREF_BAD,        ///< cannot be read (bad escape, ".." above the root)
 } HrefKind;
 
-/// Turn a PROPFIND <D:href> into a mount path ("/" + share-relative) in
-/// @p out. An absolute URI loses its scheme://authority; a relative
-/// reference resolves against @p req_dir, the decoded directory the
-/// PROPFIND was sent to (RFC 3986 5.2) -- "rel.txt" in a listing of
-/// "/my share/" is "/my share/rel.txt". The decoded path is normalized
-/// ("." and ".." resolved) BEFORE it is matched against the share's
-/// @p base, so "<base>/../x" is the sibling it names, outside the share,
-/// never a child "x". The whole encoded text is read, however long (it
-/// may be three times the decoded path).
-static HrefKind
-href_to_mount_path(const char *base, const char *req_dir, const char *href,
-                   char *out, size_t out_size)
+/// Whether @p href begins with a URI scheme ("http:", "HTTP:", ...):
+/// ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":" (RFC 3986 3.1).
+static bool
+href_has_scheme(const char *href)
 {
-    const char *p = href;
-    if (axl_strncmp(p, "http://", 7) == 0) p += 7;
-    else if (axl_strncmp(p, "https://", 8) == 0) p += 8;
-    if (p != href) {
-        const char *slash = p;
-        while (*slash && *slash != '/') slash++;
-        p = (*slash == '/') ? slash : "/";
+    const char *q = href;
+    if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z')))
+        return false;
+    for (q++; *q != '\0' && *q != ':'; q++) {
+        if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+              (*q >= '0' && *q <= '9') || *q == '+' || *q == '-' || *q == '.'))
+            return false;
     }
-    size_t cap = axl_strlen(p) + 1;
+    return *q == ':';
+}
+
+/// Turn a PROPFIND <D:href> into a mount path ("/" + share-relative) in
+/// @p out.
+///   - An absolute URI (a scheme, in any case) or a network-path
+///     reference ("//host/..", RFC 3986 4.2) is parsed with
+///     axl_url_parse, and is ours only when its scheme is http and its
+///     host and EFFECTIVE port are the mount's: another host or port is
+///     HREF_FOREIGN, an href that does not parse HREF_BAD. Its query and
+///     fragment are no part of the path.
+///   - A relative path reference resolves against @p req_dir, the
+///     decoded directory the PROPFIND was sent to (RFC 3986 5.2):
+///     "rel.txt" in a listing of "/my share/" is "/my share/rel.txt".
+/// The path is percent-decoded and normalized ("." and "..") BEFORE it is
+/// matched against the share's base, so "<base>/../x" is the sibling it
+/// names, outside the share, never a child "x".
+static HrefKind
+href_to_mount_path(const WebFsPrivate *priv, const char *req_dir,
+                   const char *href, char *out, size_t out_size)
+{
+    char   *raw  = NULL;    /* the path part, still encoded */
+    HrefKind kind = HREF_BAD;
+
+    if (href_has_scheme(href) || (href[0] == '/' && href[1] == '/')) {
+        char   *abs = NULL;
+        AxlUrl *u   = NULL;
+        if (href[0] == '/') {
+            /* A network-path reference takes the request's scheme. */
+            abs = axl_asprintf("http:%s", href);
+            if (abs == NULL)
+                return HREF_BAD;
+        }
+        if (axl_url_parse(abs != NULL ? abs : href, &u) != AXL_OK) {
+            axl_free(abs);
+            return HREF_BAD;
+        }
+        axl_free(abs);
+        char host[16];
+        axl_snprintf(host, sizeof(host), "%d.%d.%d.%d",
+                     priv->server_addr[0], priv->server_addr[1],
+                     priv->server_addr[2], priv->server_addr[3]);
+        /* axl_url_parse stores the scheme lowercased (schemes are
+           case-insensitive, RFC 3986 3.1) and fills the scheme's default
+           port when none is given: HTTP://host/ is http on port 80. */
+        if (!axl_streql(u->scheme, "http") ||
+            axl_strcasecmp(u->host, host) != 0 ||
+            u->port != priv->server_port) {
+            axl_url_free(u);
+            return HREF_FOREIGN;
+        }
+        raw = axl_strdup(u->path != NULL ? u->path : "/");
+        axl_url_free(u);
+    } else {
+        raw = axl_strdup(href);
+    }
+    if (raw == NULL)
+        return HREF_BAD;
+
+    size_t cap = axl_strlen(raw) + 1;
     char  *dec = axl_malloc(cap);
     char  *res = axl_malloc(MAX_PATH_LEN * 4);
-    HrefKind kind = HREF_BAD;
-    if (dec != NULL && res != NULL &&
-        axl_url_decode(p, dec, cap) >= 0 && axl_strlen(dec) < cap &&
+    int    n   = dec != NULL ? axl_url_decode(raw, dec, cap) : -1;
+    if (n >= 0 && axl_strlen(dec) < cap && res != NULL &&
         axl_path_resolve(req_dir, dec, res, MAX_PATH_LEN * 4) == AXL_OK) {
-        size_t blen = axl_strlen(base);
-        const char *rel = res;
+        const char *base = priv->base_path;
+        size_t      blen = axl_strlen(base);
+        const char *rel  = res;
         if (blen > 0) {
             if (axl_strncmp(res, base, blen) != 0 ||
                 (res[blen] != '\0' && res[blen] != '/'))
@@ -80,6 +132,7 @@ href_to_mount_path(const char *base, const char *req_dir, const char *href,
         else
             kind = HREF_ENTRY;
     }
+    axl_free(raw);
     axl_free(dec);
     axl_free(res);
     return kind;
@@ -395,7 +448,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
             if (in_href &&
                 axl_xml_token_local_name_eq(&tok, "href")) {
                 in_href = false;
-                switch (href_to_mount_path(priv->base_path, req_dir,
+                switch (href_to_mount_path(priv, req_dir,
                                            axl_string_str(text), cur.href,
                                            sizeof(cur.href))) {
                     case HREF_ENTRY:    break;
