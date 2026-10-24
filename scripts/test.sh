@@ -2443,6 +2443,48 @@ NSHEOF
                     pass "serve rest status: the 409 PUT made no directory" || \
                     fail "serve rest status: nope1" "expected 404, got $HTTP_CODE"
 
+
+                # ----------------------------------------------------
+                # The mount client against webfs serve itself: a second
+                # guest mounts this guest's /dav/fs0/ (a subpath, through
+                # the host's port forward) and lists, reads and writes it
+                # -- both ends on the SDK's HTTP client and server.
+                # ----------------------------------------------------
+                IO_DIR=$(mktemp -d)
+                printf 'through the mount\n' > "$IO_DIR/io-src.txt"
+                IO_NSH=$(mktemp --suffix=.nsh)
+                cat > "$IO_NSH" <<NSHEOF
+@echo -off
+fs0:
+axl-webfs.efi mount --protocol dav http://10.0.2.2:${DETACH_PORT}/dav/fs0/
+map -r
+echo === LS ===
+ls fs1:\\detach_test.txt
+echo === TYPE ===
+type fs1:\\detach_test.txt
+echo === PUT ===
+cp fs0:\\io-src.txt fs1:\\io-through.txt
+echo === END ===
+axl-webfs.efi umount
+reset -s
+NSHEOF
+                IO_LOG=$(mktemp)
+                "$RUN_QEMU_SH" --arch X64 --timeout 90 --raw --net \
+                    --extra "$IO_DIR/io-src.txt" \
+                    --nsh "$IO_NSH" --serial-log "$IO_LOG" \
+                    "$APP_EFI" > /dev/null 2>&1 || true
+                rm -f "$IO_NSH"
+                IO_TYPE=$(sed -n '/=== TYPE ===/,/=== PUT ===/p' "$IO_LOG" | tr -d '\r' | \
+                    grep -x "detach test" || true)
+                [ "$IO_TYPE" = "detach test" ] && \
+                    pass "serve interop: a mount of /dav/fs0/ reads a served file" || \
+                    fail "serve interop: read" "no 'detach test' line from type: $(grep -a 'axl-webfs-mount' "$IO_LOG" | tr -d '\r' | tr '\n' ' ' | cut -c1-200)"
+                CONTENT=$(curl -sf "$BASE/fs0/io-through.txt" 2>/dev/null | tr -d '\r' || true)
+                [ "$CONTENT" = "through the mount" ] && \
+                    pass "serve interop: a file written through the mount lands on the served volume" || \
+                    fail "serve interop: write" "expected 'through the mount', got '${CONTENT:0:60}'"
+                rm -rf "$IO_LOG" "$IO_DIR"
+
                 # The guest must still be running here: one that died
                 # early (a crash, its own timeout) would otherwise only
                 # show as the checks above failing with 000 -- and the

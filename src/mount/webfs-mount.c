@@ -83,18 +83,17 @@ parse_url(
 
     *port = (parsed->port != 0) ? parsed->port : DEFAULT_SERVER_PORT;
 
-    const char *url_path = (parsed->path != NULL && parsed->path[0] != '\0')
-                           ? parsed->path : "/";
-    axl_strlcpy(base_path, url_path, base_path_size);
-
-    size_t path_len = axl_strlen(base_path);
-    if (path_len > 0 && base_path[path_len - 1] != '/' &&
-        path_len < base_path_size - 1) {
-        base_path[path_len] = '/';
-        base_path[path_len + 1] = '\0';
-    }
-
+    /* The URL's path is where the share lives on the server ("/dav/fs0/"
+       for webfs serve's /dav): decoded, kept without its trailing
+       separator ("" for the server root), and prefixed to every
+       request -- refused, never cut, when it does not fit. */
+    const char *url_path = (parsed->path != NULL) ? parsed->path : "";
+    int         n        = axl_url_decode(url_path, base_path, base_path_size);
     axl_url_free(parsed);
+    if (n < 0 || axl_strlen(base_path) != (size_t)n)
+        return -1;
+    while (n > 0 && base_path[n - 1] == '/')
+        base_path[--n] = '\0';
     return 0;
 }
 
@@ -128,7 +127,7 @@ mount_setup(AxlLoop *loop, void *user)
                  priv->server_addr[2], priv->server_addr[3],
                  priv->server_port);
 
-    axl_printf("axl-webfs-mount: connecting to %d.%d.%d.%d:%d%s\n",
+    axl_printf("axl-webfs-mount: connecting to %d.%d.%d.%d:%d%s/\n",
                priv->server_addr[0], priv->server_addr[1],
                priv->server_addr[2], priv->server_addr[3],
                priv->server_port, priv->base_path);

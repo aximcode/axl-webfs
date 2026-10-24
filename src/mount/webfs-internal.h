@@ -128,6 +128,8 @@ typedef struct WebFsPrivate {
     AxlHttpClient                      *http_client;
     uint8_t                             server_addr[4];
     uint16_t                            server_port;
+    /// Where the share lives on the server, decoded, with no trailing
+    /// separator ("" = the server root); every request is under it.
     char                                base_path[256];
     char                                base_url[280];
     bool                                read_only;
@@ -219,7 +221,7 @@ void dir_cache_invalidate(WebFsPrivate *priv, const char *path);
 /// Room for any URL webfs_request_url builds: base_url + a percent-encoded
 /// wire path (3x) + a query (a rename's encoded new name, 3x a name).
 #define WEBFS_URL_MAX \
-    (280 + WEBFS_WIRE_PATH_MAX * 3 + WEBFS_NAME_SIZE * 3 + 16)
+    (280 + (256 + WEBFS_WIRE_PATH_MAX) * 3 + WEBFS_NAME_SIZE * 3 + 16)
 
 /// The URL for mount path @p path: base_url, then @p path percent-encoded
 /// whole ('/' kept; a '?' or '#' in a name is a name byte), then

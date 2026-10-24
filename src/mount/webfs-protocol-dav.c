@@ -49,6 +49,25 @@ decode_href(const char *href, char *out, size_t out_size)
     return axl_url_decode(p, out, out_size) >= 0;
 }
 
+/// Make decoded server path @p href relative to the share: strip @p base
+/// (the mount's base path, "" for the server root), so "/dav/fs0/a" with
+/// base "/dav/fs0" becomes "/a" and the base itself "/". false for a path
+/// outside the base -- no entry of this share.
+static bool
+strip_base(const char *base, char *href)
+{
+    size_t blen = axl_strlen(base);
+    if (blen == 0)
+        return true;
+    if (axl_strncmp(href, base, blen) != 0 ||
+        (href[blen] != '\0' && href[blen] != '/'))
+        return false;
+    axl_memmove(href, href + blen, axl_strlen(href + blen) + 1);
+    if (href[0] == '\0')
+        axl_strlcpy(href, "/", 2);
+    return true;
+}
+
 /// Extract the basename from a path (last "/"-delimited component).
 /// Trailing slash is stripped first so "/foo/bar/" yields "bar".
 /// false when it does not fit @p out_size (WEBFS_NAME_SIZE: skip, never
@@ -114,6 +133,7 @@ typedef struct {
     bool     is_collection;
     bool     have_href;
     bool     too_long;          ///< href or displayname did not fit: skip
+    bool     foreign;           ///< href outside the share's base path: skip
     bool     have_resourcetype;
     bool     have_size;
 } DavEntry;
@@ -132,6 +152,10 @@ dav_entry_emit(const DavEntry *e, const char *parent_path,
                DirEntry *out)
 {
     if (!e->have_href) return false;
+    if (e->foreign) {
+        axl_warning("listing %s: skipping an entry outside the share", parent_path);
+        return false;
+    }
     if (e->too_long) {
         axl_warning("listing %s: skipping an entry whose name or href does "
                     "not fit (names up to %zu bytes)", parent_path,
@@ -299,9 +323,11 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
             if (in_href &&
                 axl_xml_token_local_name_eq(&tok, "href")) {
                 in_href = false;
-                if (!decode_href(axl_string_str(text), cur.href,
+                        if (!decode_href(axl_string_str(text), cur.href,
                                  sizeof(cur.href)))
                     cur.too_long = true;
+                else if (!strip_base(priv->base_path, cur.href))
+                    cur.foreign = true;
                 cur.have_href = true;
             } else if (in_status &&
                        axl_xml_token_local_name_eq(&tok, "status")) {

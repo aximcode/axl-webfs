@@ -27,12 +27,16 @@ bool
 webfs_request_url(WebFsPrivate *priv, const char *path, const char *query,
                   char *url, size_t size)
 {
-    /* The WHOLE path is encoded -- a '?' or '#' in a name is a name
-       byte (%3F, %23), never the start of a query a server would split
-       off; the query is the caller's, passed apart. */
-    char enc[WEBFS_WIRE_PATH_MAX * 3];
+    /* The share's base path, then the mount path, encoded WHOLE -- a '?'
+       or '#' in a name is a name byte (%3F, %23), never the start of a
+       query a server would split off; the query is the caller's,
+       passed apart. */
+    char full[sizeof(priv->base_path) + WEBFS_WIRE_PATH_MAX];
+    char enc[sizeof(full) * 3];
     int  n = -1;
-    if (axl_url_encode(path, enc, sizeof(enc)) >= 0 &&
+    int  f = axl_snprintf(full, sizeof(full), "%s%s", priv->base_path, path);
+    if (f > 0 && (size_t)f < sizeof(full) &&
+        axl_url_encode(full, enc, sizeof(enc)) >= 0 &&
         axl_strlen(enc) + (query != NULL ? 1 + axl_strlen(query) : 0)
             < WEBFS_REQUEST_TARGET_MAX)
         n = axl_snprintf(url, size, "%s%s%s%s", priv->base_url, enc,

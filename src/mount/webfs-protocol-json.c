@@ -20,8 +20,9 @@ AXL_LOG_DOMAIN("webfs-json-client");
 static int
 proto_probe(WebFsPrivate *priv)
 {
-    char info_url[320];
-    axl_snprintf(info_url, sizeof(info_url), "%s/info", priv->base_url);
+    char info_url[WEBFS_URL_MAX];
+    if (!webfs_request_url(priv, "/info", NULL, info_url, sizeof(info_url)))
+        return -1;
     AxlHttpClientResponse *resp = NULL;
     int rc = axl_http_get(priv->http_client, info_url, &resp);
     int ok = (rc == 0 && resp != NULL && resp->status_code == 200);

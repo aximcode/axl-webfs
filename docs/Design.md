@@ -174,6 +174,11 @@ GET  /info                -> server info: {"version":"1.0","root":"/share"}
 
 ### AxlFsProvider Mapping
 
+The mount URL may name a share below the server's root -- e.g.
+`http://<host>:<port>/dav/fs0/` for another machine's `axl-webfs serve`
+-- and every request then goes under that base path; WebDAV hrefs are
+read relative to it (an href outside it is no entry of the share).
+
 The mount driver supplies an `AxlFsProvider` callback table; the
 SDK invokes the callbacks for each `EFI_FILE_PROTOCOL` op the
 Shell makes, marshalling CHAR16 paths to UTF-8 and the result
