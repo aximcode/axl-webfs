@@ -206,6 +206,17 @@ other's place. A WebDAV `<href>` is decoded whole, however long its
 percent-encoding, and only the decoded path is held to the limit. The
 buffers are to be sized from the SDK's `AXL_FS_NAME_MAX` once it exists.
 
+**Path length is refused, never cut.** A mount path is at most 511
+bytes (`MAX_PATH_LEN`); `open` and `rename` refuse a longer one with an
+error. Each request is checked once more as it is built: the SDK's HTTP
+client writes the request target (encoded path plus query) into 512
+bytes and silently cuts a longer one, so `webfs_request_url` refuses a
+target that would not fit. A cut path names another entry -- in the
+JSON protocol `/files` plus a 511-byte path cut to 511 IS `/files` plus
+its 505-byte prefix -- whose bytes would be read, or overwritten,
+instead. In practice the request target is the tighter limit: a JSON
+mount reaches paths up to 505 bytes (less once percent-encoded).
+
 ### Caching Strategy
 
 1. **Directory cache** — cache `GET /list/<path>` results for 2 seconds.

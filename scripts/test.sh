@@ -949,6 +949,32 @@ NSHEOF
                 fail "$T: last entry" "$BIG_LAST not listed"
             rm -f "$LM_LOG"
         done
+
+        # A request path is refused, never cut. The SDK's HTTP client
+        # sends at most a 511-byte request target, and "/files" + 505 is
+        # 511: the 505-byte path is read, while "/files" + the 511-byte
+        # sibling (which starts with those 505 bytes) would be cut to
+        # exactly the first one -- whose bytes ("short-file") a cutting
+        # client returns for it.
+        T="$LM_ARCH long path"
+        info "QEMU" "$T: Booting mount test..."
+        DEEP_DIR="$(printf 'd%.0s' $(seq 1 250))\\$(printf 'e%.0s' $(seq 1 250))"
+        listing_mount deep json \
+            "echo === SHORT ===" "type fs1:\\$DEEP_DIR\\ff" \
+            "echo === LONG ===" "type fs1:\\$DEEP_DIR\\ffgggggg"
+        DEEP_SHORT_OUT=$(echo "$LM_OUT" | sed -n 's/.*=== SHORT ===\(.*\)=== LONG ===.*/\1/p')
+        DEEP_LONG_OUT=$(echo "$LM_OUT" | sed -n 's/.*=== LONG ===\(.*\)=== OUT DONE ===.*/\1/p')
+        echo "$DEEP_SHORT_OUT" | grep -q "short-file" && \
+            pass "$T: a 505-byte path is read" || \
+            fail "$T: 505-byte path" "no 'short-file' in: ${DEEP_SHORT_OUT:0:200}"
+        if echo "$DEEP_LONG_OUT" | grep -q "short-file"; then
+            fail "$T: 511-byte path" "read the 505-byte sibling's content"
+        elif grep -qa "request path is too long" "$LM_LOG"; then
+            pass "$T: a 511-byte path whose request would be cut is refused"
+        else
+            fail "$T: 511-byte path" "no 'request path is too long' error"
+        fi
+        rm -f "$LM_LOG"
     done
 
     # ========================================================================

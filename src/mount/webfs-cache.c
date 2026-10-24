@@ -12,9 +12,49 @@
 #include "webfs-internal.h"
 #include "webfs-protocol.h"
 
+AXL_LOG_DOMAIN("webfs-mount-http");
+
 // ----------------------------------------------------------------------------
 // HTTP request with auto-reconnect
 // ----------------------------------------------------------------------------
+
+/* Room for base_url + a percent-encoded wire path (3x) + a raw query
+   (a rename's encoded new name, 3x WEBFS_NAME_SIZE). */
+/* axl_http_request writes the request target (path + "?" + query) into
+   512 bytes and silently CUTS a longer one (axl-http-client.c,
+   full_path[512]), so a longer target is refused here instead. */
+#define WEBFS_REQUEST_TARGET_MAX  512
+#define WEBFS_URL_MAX \
+    (280 + WEBFS_WIRE_PATH_MAX * 3 + WEBFS_NAME_SIZE * 3 + 16)
+
+/* Build the request URL for @p path: the path portion URL-encoded
+   ('/' kept), a "?query" kept raw. false -- logged, never cut -- when a
+   part does not fit; a cut URL names another resource. */
+static bool
+webfs_request_url(WebFsPrivate *priv, const char *path, char *url,
+                  size_t size)
+{
+    const char *query = path;
+    while (*query && *query != '?') query++;
+    size_t plen = (size_t)(query - path);
+
+    char path_only[WEBFS_WIRE_PATH_MAX];
+    char enc[WEBFS_WIRE_PATH_MAX * 3];
+    int  n = -1;
+    if (plen < sizeof(path_only)) {
+        axl_memcpy(path_only, path, plen);
+        path_only[plen] = '\0';
+        if (axl_url_encode(path_only, enc, sizeof(enc)) >= 0 &&
+            axl_strlen(enc) + axl_strlen(query) < WEBFS_REQUEST_TARGET_MAX)
+            n = axl_snprintf(url, size, "%s%s%s", priv->base_url, enc, query);
+    }
+    if (n < 0 || (size_t)n >= size) {
+        axl_error("request path is too long (%zu bytes); refused",
+                  axl_strlen(path));
+        return false;
+    }
+    return true;
+}
 
 int
 webfs_http_request(
@@ -27,25 +67,9 @@ webfs_http_request(
     AxlHttpClientResponse **response
 )
 {
-    // URL-encode the path portion (preserves /), keep query string raw
-    char encoded_path[MAX_PATH_LEN * 3];
-    const char *query = path;
-    while (*query && *query != '?') query++;
-    if (*query == '\0') query = NULL;
-    if (query != NULL) {
-        char path_only[MAX_PATH_LEN];
-        size_t plen = (size_t)(query - path);
-        if (plen >= sizeof(path_only)) plen = sizeof(path_only) - 1;
-        axl_memcpy(path_only, path, plen);
-        path_only[plen] = '\0';
-        char enc_part[MAX_PATH_LEN * 3];
-        axl_url_encode(path_only, enc_part, sizeof(enc_part));
-        axl_snprintf(encoded_path, sizeof(encoded_path), "%s%s", enc_part, query);
-    } else {
-        axl_url_encode(path, encoded_path, sizeof(encoded_path));
-    }
-    char url[MAX_PATH_LEN * 3 + 280];
-    axl_snprintf(url, sizeof(url), "%s%s", priv->base_url, encoded_path);
+    char url[WEBFS_URL_MAX];
+    if (!webfs_request_url(priv, path, url, sizeof(url)))
+        return -1;
 
     return axl_http_request(
         priv->http_client, method, url, body, body_len,
@@ -88,28 +112,9 @@ webfs_http_request_buf_streaming(
     AxlHttpClientResponse **response
 )
 {
-    /* URL-encode path identically to webfs_http_request — same
-       split/encode-path / keep-query-raw rule so consumers can
-       pass /files/<path>?something safely. */
-    char encoded_path[MAX_PATH_LEN * 3];
-    const char *query = path;
-    while (*query && *query != '?') query++;
-    if (*query == '\0') query = NULL;
-    if (query != NULL) {
-        char path_only[MAX_PATH_LEN];
-        size_t plen = (size_t)(query - path);
-        if (plen >= sizeof(path_only)) plen = sizeof(path_only) - 1;
-        axl_memcpy(path_only, path, plen);
-        path_only[plen] = '\0';
-        char enc_part[MAX_PATH_LEN * 3];
-        axl_url_encode(path_only, enc_part, sizeof(enc_part));
-        axl_snprintf(encoded_path, sizeof(encoded_path), "%s%s",
-                     enc_part, query);
-    } else {
-        axl_url_encode(path, encoded_path, sizeof(encoded_path));
-    }
-    char url[MAX_PATH_LEN * 3 + 280];
-    axl_snprintf(url, sizeof(url), "%s%s", priv->base_url, encoded_path);
+    char url[WEBFS_URL_MAX];
+    if (!webfs_request_url(priv, path, url, sizeof(url)))
+        return -1;
 
     PutDrainCtx d = { .bytes = body, .total = body_len, .pos = 0 };
     return axl_http_request_streaming(

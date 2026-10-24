@@ -18,6 +18,11 @@ Each --case builds a tree no real host directory can stand in for:
               `&amp;`/`&lt;`/`&gt;`, one split by a CDATA section into
               three text tokens.
   big         150 files: a listing well past 4 KB and past 64 entries.
+  deep        A file whose path is 505 bytes -- "/files" + it is a 511-byte
+              request target, the longest the SDK's HTTP client sends --
+              and a sibling whose path is 511 and starts with those 505
+              bytes: a client that lets "/files<path>" be cut at 511 reads
+              the first file when asked for the second.
 
 Usage:
     ./listing-server.py --case long-names --port 9877 [--webdav]
@@ -35,6 +40,10 @@ from xml.sax.saxutils import escape
 FIT_NAME = "LONGNAME-" + "a" * 246
 LONG_NAME = "LONGNAME-" + "a" * 247
 HREF_NAME = "HREFNAME-" + "b" * 246
+DEEP_DIR1 = "d" * 250
+DEEP_DIR2 = "e" * 250
+DEEP_SHORT = "f" * 2               # /DEEP_DIR1/DEEP_DIR2/ff: 505 bytes
+DEEP_LONG = "f" * 2 + "g" * 6      # same plus 6 bytes: 511
 
 
 @dataclass
@@ -74,6 +83,15 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
     if case == "big":
         files = [Entry(f"big-{i:03d}-{'p' * 40}.txt", b"big!\n") for i in range(150)]
         return {"/": [readme, *files]}
+    if case == "deep":
+        return {
+            "/": [readme, Entry(DEEP_DIR1)],
+            f"/{DEEP_DIR1}": [Entry(DEEP_DIR2)],
+            f"/{DEEP_DIR1}/{DEEP_DIR2}": [
+                Entry(DEEP_SHORT, b"short-file\n"),
+                Entry(DEEP_LONG, b"long-file\n"),
+            ],
+        }
     raise ValueError(f"unknown case {case!r}")
 
 
@@ -199,7 +217,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Serve a synthetic tree to the axl-webfs mount driver.")
     parser.add_argument("--case", required=True,
-                        choices=["long-names", "entities", "big"])
+                        choices=["long-names", "entities", "big", "deep"])
     parser.add_argument("--port", type=int, default=9877)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--webdav", action="store_true",

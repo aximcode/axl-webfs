@@ -96,6 +96,13 @@ webfs_open(
     if (path == NULL || out == NULL || out_is_dir == NULL) {
         return AXL_FS_ERR_INVALID;
     }
+    /* Refused, never cut (MAX_PATH_LEN): a cut path names another
+       entry, whose bytes would be read -- or overwritten -- instead. */
+    if (axl_strlen(path) >= MAX_PATH_LEN) {
+        axl_error("open %.48s...: path is longer than %d bytes; refused",
+                  path, MAX_PATH_LEN - 1);
+        return AXL_FS_ERR_INVALID;
+    }
 
     /* Root open. The SDK calls us with "/" from OpenVolume; child
        opens come pre-resolved by the SDK against the parent's
@@ -576,6 +583,21 @@ webfs_set_info(AxlFsProviderFile *fh, const AxlFsEntry *in)
         return AXL_FS_OK;     /* attribute change without rename */
     }
 
+    /* The renamed entry's path, checked BEFORE the rename is sent: one
+       the handle cannot hold is refused (MAX_PATH_LEN), never cut. */
+    char parent_dir[MAX_PATH_LEN];
+    char new_path[MAX_PATH_LEN];
+    get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
+    size_t plen  = axl_strlen(parent_dir);
+    bool   slash = plen > 0 && parent_dir[plen - 1] == '/';
+    int    n     = axl_snprintf(new_path, sizeof(new_path), "%s%s%s",
+                                parent_dir, slash ? "" : "/", in->name);
+    if (n < 0 || (size_t)n >= sizeof(new_path)) {
+        axl_error("rename %.48s...: the new path is longer than %d bytes; "
+                  "refused", fh->path, MAX_PATH_LEN - 1);
+        return AXL_FS_ERR_INVALID;
+    }
+
     const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
     size_t rename_status = 0;
     int ret = ops->rename(priv, fh->path, in->name, &rename_status);
@@ -585,11 +607,9 @@ webfs_set_info(AxlFsProviderFile *fh, const AxlFsEntry *in)
         return AXL_FS_ERR_IO;
     }
 
-    char parent_dir[MAX_PATH_LEN];
-    get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
     dir_cache_invalidate(priv, parent_dir);
     /* The path on the handle now points to the renamed entry. */
-    axl_snprintf(fh->path, sizeof(fh->path), "%s%s", parent_dir, in->name);
+    axl_strlcpy(fh->path, new_path, sizeof(fh->path));
     return AXL_FS_OK;
 }
 

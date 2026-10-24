@@ -41,7 +41,14 @@
 #define DIR_CACHE_TTL_MS             2000     ///< 2 second directory cache TTL.
 #define DIR_CACHE_MAX_SLOTS          16       ///< Maximum cached directories.
 #define READAHEAD_BUF_SIZE           (64 * 1024)
+/* A mount path ("/a/b", '/' separators) is at most MAX_PATH_LEN - 1
+   bytes. webfs_open and rename REFUSE a longer one with an error rather
+   than cut it: a cut path names another entry (".../ffffffffggg" cut
+   to 511 bytes IS ".../ffffffff"). */
 #define MAX_PATH_LEN                 512
+/* A protocol request path: a mount path plus the protocol's own prefix
+   and suffix ("/files", "/list", "?mkdir"). */
+#define WEBFS_WIRE_PATH_MAX          (MAX_PATH_LEN + 16)
 /* Size of every entry-name buffer the mount carries (DirEntry.name, the
    protocol parsers' scratch): 255 bytes of UTF-8 plus the NUL, matching
    the AxlFsEntry.name[256] the SDK hands names through.

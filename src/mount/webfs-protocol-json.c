@@ -36,7 +36,7 @@ proto_probe(WebFsPrivate *priv)
 static int
 proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
 {
-    char list_path[MAX_PATH_LEN];
+    char list_path[WEBFS_WIRE_PATH_MAX];
     axl_snprintf(list_path, sizeof(list_path), "/list%s", path);
 
     AxlHttpClientResponse *response = NULL;
@@ -124,7 +124,7 @@ proto_read_range(WebFsPrivate *priv, const char *path,
         axl_hash_table_insert(hdrs, "want-digest", axl_strdup("sha-256"));
     }
 
-    char file_path[MAX_PATH_LEN];
+    char file_path[WEBFS_WIRE_PATH_MAX];
     axl_snprintf(file_path, sizeof(file_path), "/files%s", path);
 
     AxlHttpClientResponse *resp = NULL;
@@ -164,7 +164,7 @@ proto_write_full(WebFsPrivate *priv, const char *path,
                  const void *body, size_t len,
                  const char *digest_hex, size_t *out_status)
 {
-    char file_path[MAX_PATH_LEN];
+    char file_path[WEBFS_WIRE_PATH_MAX];
     axl_snprintf(file_path, sizeof(file_path), "/files%s", path);
 
     /* Build extra headers when the caller passed a digest. Lifetime
@@ -213,7 +213,7 @@ proto_create_empty(WebFsPrivate *priv, const char *path, size_t *out_status)
 static int
 proto_mkdir(WebFsPrivate *priv, const char *path, size_t *out_status)
 {
-    char mkdir_path[MAX_PATH_LEN];
+    char mkdir_path[WEBFS_WIRE_PATH_MAX];
     axl_snprintf(mkdir_path, sizeof(mkdir_path), "/files%s?mkdir", path);
 
     AxlHttpClientResponse *resp = NULL;
@@ -232,7 +232,7 @@ proto_mkdir(WebFsPrivate *priv, const char *path, size_t *out_status)
 static int
 proto_remove(WebFsPrivate *priv, const char *path, size_t *out_status)
 {
-    char file_path[MAX_PATH_LEN];
+    char file_path[WEBFS_WIRE_PATH_MAX];
     axl_snprintf(file_path, sizeof(file_path), "/files%s", path);
 
     AxlHttpClientResponse *resp = NULL;
@@ -261,7 +261,7 @@ proto_rename(WebFsPrivate *priv, const char *old_path,
        the ? is on us. */
     char new_name_enc[256 * 3];
     axl_url_encode(new_name, new_name_enc, sizeof(new_name_enc));
-    char rename_path[MAX_PATH_LEN + sizeof(new_name_enc)];
+    char rename_path[WEBFS_WIRE_PATH_MAX + sizeof(new_name_enc)];
     axl_snprintf(rename_path, sizeof(rename_path),
                  "/files%s?rename=%s", old_path, new_name_enc);
 
