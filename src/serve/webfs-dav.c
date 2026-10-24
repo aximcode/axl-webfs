@@ -60,7 +60,8 @@ typedef enum {
     PATH_ROOT,
     PATH_VOLUME,
     PATH_OBJECT,
-    PATH_INVALID,           ///< unknown volume, or a path that does not fit
+    PATH_INVALID,           ///< unknown volume
+    PATH_BAD,               ///< a path that does not fit, or holds '\\' or ':'
 } DavPathKind;
 
 /* A PUT in flight (REST or /dav): the SDK's write ctx, plus where it
@@ -143,11 +144,14 @@ parse_dav_path(const char *url, FtVolume *vol, AxlFsRoot **root,
 
     /* p now points at '/' starting the sub-path. Refused, never cut,
        when it -- or the "<vol>:<sub>" path ft_* build from it -- does
-       not fit: a cut path names another file. */
+       not fit: a cut path names another file. A '\\' or ':' is UEFI
+       path syntax, not a name byte: it would reach the volume as a
+       separator, spelling a path the '/'-split checks here never see. */
     char full[FT_PATH_MAX];
     if (axl_strlcpy(sub, p, sub_size) >= sub_size ||
-        ft_build_path(vol, sub, full, sizeof(full)) != 0)
-        return PATH_INVALID;
+        ft_build_path(vol, sub, full, sizeof(full)) != 0 ||
+        axl_strchr(sub, '\\') != NULL || axl_strchr(sub, ':') != NULL)
+        return PATH_BAD;
     return PATH_OBJECT;
 }
 
@@ -181,25 +185,48 @@ dav_temp_shaped(const char *name)
     return true;
 }
 
-/* Whether @p sub on @p root names an in-flight PUT's temp. The SDK
-   keeps the registry of live temps private, but its stat refuses
-   exactly those, so a temp-shaped name that exists while that stat
-   fails is one. A temp a power loss left behind stats normally and is
-   an ordinary file, as the SDK documents. */
+/* Whether @p sub on @p root names an in-flight PUT's temp, under ANY
+   spelling: EVERY component is checked, split on each separator the
+   volume honours ('/', '\\', ':'), so a trailing separator or a
+   backslash cannot hide one (the SDK checks its own requests the same
+   way). The SDK keeps the registry of live temps private, but its stat
+   refuses exactly those, so a temp-shaped component whose path exists
+   while that stat fails is one. A temp a power loss left behind stats
+   normally and is an ordinary file, as the SDK documents. */
 static bool
 dav_live_temp(AxlFsRoot *root, const FtVolume *vol, const char *sub)
 {
-    const char *base = sub;
-    for (const char *q = sub; *q != '\0'; q++)
-        if (*q == '/' && q[1] != '\0')
-            base = q + 1;
-    if (!dav_temp_shaped(base))
-        return false;
-
-    AxlFsEntry e;
-    if (m_fs->stat(root, sub, &e) == AXL_OK)
-        return false;
-    return ft_stat((FtVolume *)vol, sub, &e) == 0;
+    char        prefix[FT_PATH_MAX];
+    size_t      plen  = 0;
+    const char *start = sub;
+    for (const char *q = sub; ; q++) {
+        bool sep = *q == '/' || *q == '\\' || *q == ':' || *q == '\0';
+        if (!sep)
+            continue;
+        size_t clen = (size_t)(q - start);
+        if (clen > 0) {
+            /* prefix = "/" + the components so far, '/'-joined. */
+            if (plen + 1 + clen >= sizeof(prefix))
+                return false;
+            prefix[plen++] = '/';
+            axl_memcpy(prefix + plen, start, clen);
+            plen += clen;
+            prefix[plen] = '\0';
+            if (clen == DAV_TEMP_NAME_LEN) {
+                char comp[DAV_TEMP_NAME_LEN + 1];
+                axl_memcpy(comp, start, clen);
+                comp[clen] = '\0';
+                AxlFsEntry e;
+                if (dav_temp_shaped(comp) &&
+                    m_fs->stat(root, prefix, &e) != AXL_OK &&
+                    ft_stat((FtVolume *)vol, prefix, &e) == 0)
+                    return true;
+            }
+        }
+        if (*q == '\0')
+            return false;
+        start = q + 1;
+    }
 }
 
 /* Whether entry @p name, listed in volume-relative directory @p dir
@@ -233,7 +260,7 @@ dav_list_dir(void *user, const char *path, AxlFsEntry *out,
     char       sub[512];
     DavPathKind kind = parse_dav_path(path, &vol, &root, sub, sizeof(sub));
 
-    if (kind == PATH_INVALID)
+    if (kind == PATH_INVALID || kind == PATH_BAD)
         return AXL_ERR;
 
     /* Mount root -> one virtual entry per UEFI volume. */
@@ -317,6 +344,7 @@ dav_stat(void *user, const char *path, AxlFsEntry *out)
             return AXL_OK;
         }
         case PATH_INVALID:
+        case PATH_BAD:
         default:
             return AXL_ERR;
     }
@@ -583,9 +611,15 @@ dav_move(void *user, const char *src, const char *dst, bool overwrite)
     if (parse_dav_path(src, &src_vol, &src_root, src_sub, sizeof(src_sub))
             != PATH_OBJECT)
         return AXL_ERR;
-    if (parse_dav_path(dst, &dst_vol, &dst_root, dst_sub, sizeof(dst_sub))
-            != PATH_OBJECT)
-        return AXL_ERR;
+    switch (parse_dav_path(dst, &dst_vol, &dst_root, dst_sub,
+                           sizeof(dst_sub))) {
+        case PATH_OBJECT:
+            break;
+        case PATH_BAD:
+            return AXL_INVALID;     /* 403: a '\\'/':' spelling, or too long */
+        default:
+            return AXL_NOT_FOUND;   /* 409: no such volume */
+    }
     if (dav_live_temp(src_root, &src_vol, src_sub))
         return AXL_NOT_FOUND;
     if (dav_live_temp(dst_root, &dst_vol, dst_sub))

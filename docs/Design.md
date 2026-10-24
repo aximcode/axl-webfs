@@ -481,10 +481,14 @@ it was. While a PUT is in flight its temp is no resource, on either
 surface: a /dav request naming it finds nothing (the SDK), a REST GET,
 HEAD or DELETE naming it is 404 and a `?mkdir` of it fails
 (`webfs_live_temp`), a REST PUT onto it is 403 (the SDK's write path
-refuses it), and the
+refuses it), a /dav MOVE onto it is 403, and the
 PROPFIND and REST listings (`ft_set_list_filter`) leave it out -- a
 temp-shaped name the SDK's stat refuses is a live temp, since the SDK
-keeps its registry private. `serve -v` logs the temp each PUT streams
+keeps its registry private. EVERY component of a path is checked, split
+on each separator the volume honours ('/', '\\', ':'), so a trailing
+slash or another letter case still names the temp; and a REST path that
+decodes to a '\\' or ':' (`%5C`, `%3A`) is 400, as is a /dav path
+holding one -- they are UEFI path syntax, not name bytes. `serve -v` logs the temp each PUT streams
 to ("PUT fs0:/a.txt: body streams to temp ~AP1A2B3.TMP"), which names
 the file a power loss could leave behind. This is not rebuilt in
 axl-webfs on purpose: deleting through the writer's handle and flushing

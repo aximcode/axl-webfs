@@ -1932,6 +1932,50 @@ NSHEOF
                             pass "serve live temp: REST PUT onto it is 403" || \
                             fail "serve live temp: REST PUT onto it" \
                                  "expected 403, got $HTTP_CODE"
+                        # Every other spelling of the temp is refused too:
+                        # a backslash or ':' is UEFI path syntax, not a
+                        # name byte, so a REST path decoding to one is 400;
+                        # a trailing slash, or another letter case, still
+                        # names the temp (404). And a /dav MOVE may not
+                        # land on it under any spelling (403), moving
+                        # nothing.
+                        TEMP_LC=$(echo "$TEMP_NAME" | tr 'A-Z' 'a-z')
+                        for LT in "GET|/fs0/%5C$TEMP_NAME|400" \
+                                  "GET|/fs0/.%5C$TEMP_NAME|400" \
+                                  "DELETE|/fs0/.%5C$TEMP_NAME|400" \
+                                  "GET|/fs0/fs0%3A$TEMP_NAME|400" \
+                                  "GET|/fs0/$TEMP_NAME/|404" \
+                                  "DELETE|/fs0/$TEMP_NAME/|404" \
+                                  "GET|/fs0/$TEMP_LC|404" \
+                                  "DELETE|/fs0/$TEMP_LC|404"; do
+                            LT_METHOD="${LT%%|*}"
+                            LT_REST="${LT#*|}"
+                            LT_PATH="${LT_REST%%|*}"
+                            LT_WANT="${LT_REST##*|}"
+                            HTTP_CODE=$(curl -s -o /dev/null -X "$LT_METHOD" \
+                                -w "%{http_code}" "$BASE$LT_PATH" 2>/dev/null || true)
+                            [ "$HTTP_CODE" = "$LT_WANT" ] && \
+                                pass "serve live temp: $LT_METHOD $LT_PATH is $LT_WANT" || \
+                                fail "serve live temp: $LT_METHOD $LT_PATH" \
+                                     "expected $LT_WANT, got $HTTP_CODE"
+                        done
+                        printf '%s' "mvsrc" | curl -s -o /dev/null -T - \
+                            "$BASE/fs0/mv-src.txt" 2>/dev/null || true
+                        for LT_DST in "$BASE/dav/fs0/$TEMP_NAME/" \
+                                      "$BASE/dav/fs0/.\\$TEMP_NAME" \
+                                      "$BASE/dav/fs0/$TEMP_LC"; do
+                            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                                -X MOVE -H "Destination: $LT_DST" -H "Overwrite: T" \
+                                "$BASE/dav/fs0/mv-src.txt" 2>/dev/null || true)
+                            [ "$HTTP_CODE" = "403" ] && \
+                                pass "serve live temp: MOVE onto ${LT_DST#$BASE} is 403" || \
+                                fail "serve live temp: MOVE onto ${LT_DST#$BASE}" \
+                                     "expected 403, got $HTTP_CODE"
+                        done
+                        CONTENT=$(curl -sf "$BASE/fs0/mv-src.txt" 2>/dev/null || true)
+                        [ "$CONTENT" = "mvsrc" ] && \
+                            pass "serve live temp: no refused MOVE moved its source" || \
+                            fail "serve live temp: MOVE source" "got '${CONTENT:0:60}'"
                     fi
 
                     exec 7>&-
