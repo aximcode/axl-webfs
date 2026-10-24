@@ -508,7 +508,12 @@ The REST `PUT /<vol>/<path>` is atomic the same way and by the same
 code: `handle_put_chunk` drives `webfs_put_open` / `webfs_put_write` /
 `webfs_put_close` (`webfs-dav.h`), the wrapper over that SDK write path
 -- one atomic writer, not two. It keeps the REST PUT's one extra: a
-missing parent directory (one level) is created for the upload.
+missing parent directory (one level) is created for the upload. Like
+/dav, the REST surface takes one PUT at a time: its upload state is
+keyed to the request's `request_id`, a PUT that overlaps it (another
+client, uploads interleave across connections) is answered 503 with
+`Retry-After: 1` and touches nothing, and another connection's hang-up
+cannot discard the PUT in flight.
 
 ### Two AxlServices, One Launcher Binary
 `mount` and `serve` both need a persistent protocol that survives

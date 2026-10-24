@@ -216,6 +216,35 @@ compute_file_digest(FtVolume *volume, const char *sub_path,
     return 0;
 }
 
+/* Set response header @p key to @p value. The table is the response's to
+   free, so both sides are heap copies in one that owns them -- the
+   contract the SDK's own setters (axl_http_response_set_content_range)
+   allocate it with. A table made under another contract is left alone
+   with a warning rather than handed strings it would leak or free
+   wrongly. */
+static void
+response_set_header(AxlHttpResponse *resp, const char *key, const char *value)
+{
+    if (resp->headers == NULL) {
+        resp->headers = axl_hash_table_new_full(axl_str_hash, axl_str_equal,
+                                                axl_free_impl, axl_free_impl);
+        if (resp->headers == NULL)
+            return;
+    } else if (!axl_hash_table_owns_entries(resp->headers)) {
+        axl_warning("response headers table does not own its entries; "
+                    "'%s' not set", key);
+        return;
+    }
+    char *k = axl_strdup(key);
+    char *v = axl_strdup(value);
+    if (k == NULL || v == NULL) {
+        axl_free(k);
+        axl_free(v);
+        return;
+    }
+    axl_hash_table_replace(resp->headers, k, v);
+}
+
 /* Drop @p sub_path's cached digest: its bytes changed (a PUT committed,
    or it was moved or deleted). The cache checks only the size, which a
    same-size replace keeps. Non-static for webfs-dav.c, like
@@ -573,24 +602,12 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         }
     }
 
-    /* Digest: must be inserted AFTER set_content_range so the SDK
-       lazy-allocates resp->headers with its own free-func contract
-       (str-table-with-free; see axl_http_parse_headers). Inserting
-       into a NULL or differently-shaped table earlier silently
-       loses the entry. */
+    /* Digest: into the same owning table set_content_range makes for a
+       Range response, or one made to that contract here. */
     if (have_digest) {
-        if (resp->headers == NULL) {
-            /* No Range path ran (full-file GET or HEAD) — match the
-               SDK's contract by allocating the same shape. */
-            resp->headers = axl_hash_table_new_str();
-        }
-        if (resp->headers != NULL) {
-            char digest_val[80];
-            axl_snprintf(digest_val, sizeof(digest_val),
-                         "sha-256=%s", digest_hex);
-            axl_hash_table_insert(resp->headers, "Digest",
-                                  axl_strdup(digest_val));
-        }
+        char digest_val[80];
+        axl_snprintf(digest_val, sizeof(digest_val), "sha-256=%s", digest_hex);
+        response_set_header(resp, "Digest", digest_val);
     }
     return 0;
 }
@@ -602,9 +619,15 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
  * call (chunk=NULL, chunk_size=0, aborted=false) where we set the
  * response, OR an abort call (same NULL/0 with aborted=true) when
  * the TCP peer disconnected mid-upload. The two terminal calls are
- * mutually exclusive (SDK 2341dcc). UEFI is single-threaded and the
- * dispatcher is single-armed, so only one upload runs at a time
- * and these statics don't race.
+ * mutually exclusive (SDK 2341dcc).
+ *
+ * Uploads on DIFFERENT connections interleave: the SDK keeps upload
+ * state per connection, so two clients' chunk calls arrive here in
+ * turn. The state below therefore belongs to ONE request, the one
+ * whose request_id is m_put_id -- the key the SDK documents for state
+ * kept across one upload's calls. Another PUT while it is in flight is
+ * answered 503 + Retry-After: 1 and touches nothing, as the /dav PUT
+ * does; an abort carrying another request's id is not this PUT's.
  *
  * The PUT is ATOMIC, through the same SDK write path as /dav
  * (webfs_put_open, webfs-dav.c): the body goes to a temp sibling and
@@ -622,7 +645,7 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
  * from the SDK and lose our error context.
  */
 static void        *m_put_ctx     = NULL;   /* webfs_put_open's; NULL = none */
-static bool         m_put_started = false;
+static uint64_t     m_put_id      = 0;      /* request holding it; 0 = none */
 static int          m_put_status  = 0;      /* 0 = no failure yet */
 /* Optional upload integrity via a "Content-Digest: sha-256=<hex>"
    request header: the stream is hashed, and a mismatch DISCARDS the
@@ -688,7 +711,7 @@ put_reset(void)
         axl_checksum_free(m_put_hash);
         m_put_hash = NULL;
     }
-    m_put_started   = false;
+    m_put_id        = 0;
     m_put_status    = 0;
     m_put_expect[0] = '\0';
 }
@@ -702,17 +725,35 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
 
     /* Abort: TCP teardown mid-upload. resp is NOT transmitted on
        this call -- discard the body (the target stays as it was) and
-       release per-request state. */
+       release per-request state. Only this PUT's own abort does that:
+       another connection's hang-up says nothing about this one. */
     if (aborted) {
-        put_reset();
+        if (m_put_id != 0 && m_put_id == req->request_id)
+            put_reset();
         return 0;
     }
 
     bool is_final = (chunk == NULL && chunk_size == 0);
 
+    /* Another PUT holds the upload state: refuse this one, touching
+       nothing. On a chunk call the AXL_ERR return ends this upload and
+       the SDK sends the status set here; no abort call follows. */
+    if (m_put_id != 0 && m_put_id != req->request_id) {
+        axl_http_response_set_text(resp, "Busy\n");
+        axl_http_response_set_status(resp, 503);
+        response_set_header(resp, "Retry-After", "1");
+        publish_request(opts->loop, req, resp);
+        return is_final ? 0 : AXL_ERR;
+    }
+
     /* First chunk OR final-with-empty-body: parse path + open the PUT. */
-    if (!m_put_started) {
-        m_put_started = true;
+    if (m_put_id == 0) {
+        if (req->request_id == 0) {
+            /* 0 is "no PUT in flight"; the SDK never hands it out. */
+            axl_http_response_set_status(resp, 500);
+            return is_final ? 0 : AXL_ERR;
+        }
+        m_put_id = req->request_id;
         FtVolume vol;
         char     sub[512];
         if (parse_volume_path(req->path, &vol, sub, sizeof(sub)) != 0) {
@@ -782,13 +823,8 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
     }
     axl_http_response_set_text(resp, body);
     axl_http_response_set_status(resp, (size_t)status);
-    if (status == 503) {
-        if (resp->headers == NULL)
-            resp->headers = axl_hash_table_new_str();
-        if (resp->headers != NULL)
-            axl_hash_table_insert(resp->headers, "Retry-After",
-                                  axl_strdup("1"));
-    }
+    if (status == 503)
+        response_set_header(resp, "Retry-After", "1");
     publish_request(opts->loop, req, resp);
 
     put_reset();

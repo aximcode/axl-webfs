@@ -2015,6 +2015,98 @@ NSHEOF
                     fail "serve rest atomic: hang-up mid-PUT" \
                          "could not connect to $DAV_HOSTPORT"
                 fi
+
+                # ----------------------------------------------------
+                # Overlapping REST PUTs. The upload state belongs to ONE
+                # request (its request_id): a second PUT while one is
+                # in flight is 503 + Retry-After: 1 and touches nothing
+                # (as /dav), and an abort from another connection does
+                # not discard the PUT in flight.
+                # ----------------------------------------------------
+                OV_BODY=$(mktemp)
+                head -c 1048576 /dev/urandom > "$OV_BODY"
+                if exec 7<>"/dev/tcp/${DAV_HOSTPORT%%:*}/${DAV_HOSTPORT##*:}"; then
+                    printf 'PUT /fs0/ov-a.bin HTTP/1.1\r\nHost: %s\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n' \
+                        "$DAV_HOSTPORT" >&7
+                    head -c 196608 "$OV_BODY" >&7
+                    sleep 2
+
+                    # B overlaps A: refused, and nothing of it lands.
+                    OV_HDR=$(mktemp)
+                    HTTP_CODE=$(printf '%s' "hello-b" | curl -s -o /dev/null \
+                        -D "$OV_HDR" -w "%{http_code}" -T - \
+                        "$BASE/fs0/ov-b.txt" 2>/dev/null || true)
+                    OV_RETRY=$(tr -d '\r' < "$OV_HDR" | grep -i '^Retry-After:' || true)
+                    [ "$HTTP_CODE" = "503" ] && [ "$OV_RETRY" = "Retry-After: 1" ] && \
+                        pass "serve rest overlap: a second PUT is 503 with Retry-After: 1" || \
+                        fail "serve rest overlap: second PUT" \
+                             "expected 503 + 'Retry-After: 1', got $HTTP_CODE + '$OV_RETRY'"
+                    rm -f "$OV_HDR"
+
+                    # C hangs up before sending any body: its abort must
+                    # not discard A.
+                    if exec 8<>"/dev/tcp/${DAV_HOSTPORT%%:*}/${DAV_HOSTPORT##*:}"; then
+                        printf 'PUT /fs0/ov-c.txt HTTP/1.1\r\nHost: %s\r\nContent-Length: 4096\r\n\r\n' \
+                            "$DAV_HOSTPORT" >&8
+                        sleep 1
+                        exec 8>&-
+                        sleep 1
+                    fi
+
+                    # A finishes: 201, and exactly its bytes.
+                    tail -c +196609 "$OV_BODY" >&7
+                    OV_STATUS=$(timeout 10 head -n 1 <&7 | tr -d '\r' || true)
+                    exec 7>&-
+                    [ "$OV_STATUS" = "HTTP/1.1 201 Created" ] && \
+                        pass "serve rest overlap: the PUT in flight still answers 201" || \
+                        fail "serve rest overlap: first PUT" \
+                             "expected 'HTTP/1.1 201 Created', got '$OV_STATUS'"
+                    OV_GOT=$(mktemp)
+                    curl -sf "$BASE/fs0/ov-a.bin" -o "$OV_GOT" 2>/dev/null || true
+                    cmp -s "$OV_BODY" "$OV_GOT" && \
+                        pass "serve rest overlap: the first file holds exactly its body" || \
+                        fail "serve rest overlap: first file" "content differs from its body"
+                    rm -f "$OV_GOT"
+                    for OV_NAME in ov-b.txt ov-c.txt; do
+                        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                            "$BASE/fs0/$OV_NAME" 2>/dev/null || true)
+                        [ "$HTTP_CODE" = "404" ] && \
+                            pass "serve rest overlap: the refused $OV_NAME was not written" || \
+                            fail "serve rest overlap: $OV_NAME" "expected 404, got $HTTP_CODE"
+                    done
+
+                    # B retried after A: stored whole.
+                    HTTP_CODE=$(printf '%s' "hello-b" | curl -s -o /dev/null \
+                        -w "%{http_code}" -T - "$BASE/fs0/ov-b.txt" 2>/dev/null || true)
+                    CONTENT=$(curl -sf "$BASE/fs0/ov-b.txt" 2>/dev/null || true)
+                    [ "$HTTP_CODE" = "201" ] && [ "$CONTENT" = "hello-b" ] && \
+                        pass "serve rest overlap: the second file, retried, holds exactly its body" || \
+                        fail "serve rest overlap: retried PUT" \
+                             "expected 201 + 'hello-b', got $HTTP_CODE + '${CONTENT:0:60}'"
+                else
+                    fail "serve rest overlap" "could not connect to $DAV_HOSTPORT"
+                fi
+                rm -f "$OV_BODY"
+
+                # A Range GET that also asks for the digest: the Digest
+                # header goes into the table the Range response made,
+                # under ITS ownership rules -- and the server keeps
+                # answering afterwards.
+                RANGE_HDR=$(mktemp)
+                HTTP_CODE=$(curl -s -o /dev/null -D "$RANGE_HDR" -w "%{http_code}" \
+                    -H "Range: bytes=0-2" -H "Want-Digest: sha-256" \
+                    "$BASE/fs0/ov-b.txt" 2>/dev/null || true)
+                WANT_HEX=$(printf '%s' "hello-b" | sha256sum | cut -d' ' -f1)
+                RANGE_DIGEST=$(tr -d '\r' < "$RANGE_HDR" | grep -i '^Digest:' || true)
+                [ "$HTTP_CODE" = "206" ] && [ "$RANGE_DIGEST" = "Digest: sha-256=$WANT_HEX" ] && \
+                    pass "serve: a Range GET with Want-Digest is 206 with the whole file's Digest" || \
+                    fail "serve: Range + Want-Digest" \
+                         "expected 206 + 'Digest: sha-256=$WANT_HEX', got $HTTP_CODE + '$RANGE_DIGEST'"
+                rm -f "$RANGE_HDR"
+                CONTENT=$(curl -sf "$BASE/fs0/ov-b.txt" 2>/dev/null || true)
+                [ "$CONTENT" = "hello-b" ] && \
+                    pass "serve: the server still answers after a Range + Digest response" || \
+                    fail "serve: after Range + Digest" "got '${CONTENT:0:60}'"
             else
                 fail "serve: driver did not start within 30s"
             fi
