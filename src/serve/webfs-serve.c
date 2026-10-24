@@ -276,7 +276,11 @@ response_set_header(AxlHttpResponse *resp, const char *key, const char *value)
         axl_free(v);
         return;
     }
-    axl_hash_table_replace(resp->headers, k, v);
+    /* On failure the table took neither copy: they are still ours. */
+    if (axl_hash_table_replace(resp->headers, k, v) == AXL_HASH_TABLE_ERR) {
+        axl_free(k);
+        axl_free(v);
+    }
 }
 
 /* Drop @p sub_path's cached digest: its bytes changed (a PUT committed,
