@@ -462,10 +462,16 @@ temp sibling (`~APxxxxx.TMP`) and replaces the target with
 (`write_close(false)`); a discard (`write_close(true)`: the client hung
 up, a chunk failed, the `Content-Digest` did not match) deletes the
 temp through the writer's own handle and leaves the old file exactly as
-it was. While a PUT is in flight its temp is no resource: a request
-naming it finds nothing (the SDK), and the PROPFIND and REST listings
-(`ft_set_list_filter`) leave it out -- a temp-shaped name the SDK's
-stat refuses is a live temp, since the SDK keeps its registry private. This is not rebuilt in
+it was. While a PUT is in flight its temp is no resource, on either
+surface: a /dav request naming it finds nothing (the SDK), a REST GET,
+HEAD or DELETE naming it is 404 and a `?mkdir` of it fails
+(`webfs_live_temp`), a REST PUT onto it is 403 (the SDK's write path
+refuses it), and the
+PROPFIND and REST listings (`ft_set_list_filter`) leave it out -- a
+temp-shaped name the SDK's stat refuses is a live temp, since the SDK
+keeps its registry private. `serve -v` logs the temp each PUT streams
+to ("PUT fs0:/a.txt: body streams to temp ~AP1A2B3.TMP"), which names
+the file a power loss could leave behind. This is not rebuilt in
 axl-webfs on purpose: deleting through the writer's handle and flushing
 with it still open are SDK-internal, so a consumer re-implementation
 over the public `AxlFileWriter` could only delete by path. A commit

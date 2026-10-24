@@ -79,6 +79,9 @@ static AxlFsRoot          *m_roots[FT_MAX_VOLUMES];
 /* The SDK's per-subtree table the single-path ops are forwarded to. */
 static const AxlWebDavOps *m_fs;
 
+/* `serve -v`: name each PUT's temp in the log. */
+static bool                m_verbose;
+
 // ----------------------------------------------------------------------------
 // Path parsing
 // ----------------------------------------------------------------------------
@@ -345,6 +348,53 @@ dav_root_for(const FtVolume *vol)
     return NULL;
 }
 
+bool
+webfs_live_temp(const FtVolume *vol, const char *sub)
+{
+    AxlFsRoot *root = dav_root_for(vol);
+    return root != NULL && dav_live_temp(root, vol, sub);
+}
+
+/* The live temps in volume-relative directory @p dir, into @p names
+   (up to @p max); returns how many. For the `-v` log only: a scan per
+   PUT is not paid otherwise. */
+static size_t
+dav_live_temps_in(AxlFsRoot *root, const FtVolume *vol, const char *dir,
+                  char names[][DAV_TEMP_NAME_LEN + 1], size_t max)
+{
+    AxlDir *d = dav_dir_open(vol, dir);
+    if (d == NULL)
+        return 0;
+    size_t     n = 0;
+    AxlFsEntry e;
+    while (n < max && axl_dir_read(d, &e)) {
+        if (dav_hidden_child(root, vol, dir, e.name))
+            axl_strlcpy(names[n++], e.name, DAV_TEMP_NAME_LEN + 1);
+    }
+    axl_dir_close(d);
+    return n;
+}
+
+/* Log the temp @p w's PUT streams to: the live temp in its directory
+   that was not live before the open (@p before, @p n_before). */
+static void
+dav_log_put_temp(AxlFsRoot *root, const WebfsPut *w, const char *dir,
+                 char before[][DAV_TEMP_NAME_LEN + 1], size_t n_before)
+{
+    char   now[8][DAV_TEMP_NAME_LEN + 1];
+    size_t n_now = dav_live_temps_in(root, &w->vol, dir, now, 8);
+    for (size_t i = 0; i < n_now; i++) {
+        bool seen = false;
+        for (size_t j = 0; j < n_before && !seen; j++)
+            seen = axl_strcasecmp(now[i], before[j]) == 0;
+        if (!seen) {
+            axl_info("PUT %s:%s: body streams to temp %s", w->vol.name,
+                     w->sub, now[i]);
+            return;
+        }
+    }
+}
+
 int
 webfs_put_open(const FtVolume *vol, const char *sub, void **out_ctx)
 {
@@ -361,11 +411,26 @@ webfs_put_open(const FtVolume *vol, const char *sub, void **out_ctx)
     w->vol = *vol;
     axl_strlcpy(w->sub, sub, sizeof(w->sub));
 
+    /* dirname("/a.txt") is "", which as a directory is the volume
+       root, "/". */
+    char  *dir = m_verbose ? axl_path_get_dirname(sub) : NULL;
+    if (dir != NULL && dir[0] == '\0') {
+        axl_free(dir);
+        dir = axl_strdup("/");
+    }
+    char   before[8][DAV_TEMP_NAME_LEN + 1];
+    size_t n_before = dir != NULL
+                      ? dav_live_temps_in(root, vol, dir, before, 8) : 0;
+
     int rc = m_fs->write_open(root, sub, &w->inner);
     if (rc != AXL_OK) {
+        axl_free(dir);
         axl_free(w);
         return rc;
     }
+    if (dir != NULL)
+        dav_log_put_temp(root, w, dir, before, n_before);
+    axl_free(dir);
     *out_ctx = w;
     return AXL_OK;
 }
@@ -540,9 +605,11 @@ dav_hide_entry(const FtVolume *vol, const char *dir, const char *name)
 // ----------------------------------------------------------------------------
 
 int
-webfs_dav_register(AxlHttpServer *server, const char *prefix, uint32_t auth_flags)
+webfs_dav_register(AxlHttpServer *server, const char *prefix,
+                   uint32_t auth_flags, bool verbose)
 {
-    m_fs = axl_fs_webdav_ops();
+    m_fs      = axl_fs_webdav_ops();
+    m_verbose = verbose;
 
     size_t n = ft_get_volume_count();
     for (size_t j = 0; j < n && j < FT_MAX_VOLUMES; j++) {

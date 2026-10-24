@@ -424,7 +424,8 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     }
 
     is_dir = false;
-    status = ft_is_dir(&volume, sub_path, &is_dir);
+    status = webfs_live_temp(&volume, sub_path)
+             ? -1 : ft_is_dir(&volume, sub_path, &is_dir);
     if (status != 0) {
         axl_http_response_set_text(resp, "Not found\n");
         axl_http_response_set_status(resp, 404);
@@ -810,7 +811,9 @@ handle_delete_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         return 0;
     }
 
-    status = ft_delete(&volume, sub_path);
+    /* A live PUT temp is no resource (webfs_live_temp). */
+    status = webfs_live_temp(&volume, sub_path)
+             ? -1 : ft_delete(&volume, sub_path);
     if (status != 0) {
         axl_http_response_set_text(resp, "Not found\n");
         axl_http_response_set_status(resp, 404);
@@ -846,7 +849,8 @@ handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         return 0;
     }
 
-    status = ft_mkdir(&volume, sub_path);
+    status = webfs_live_temp(&volume, sub_path)
+             ? -1 : ft_mkdir(&volume, sub_path);
     if (status != 0) {
         axl_http_response_set_text(resp, "mkdir failed\n");
         axl_http_response_set_status(resp, 500);
@@ -1090,7 +1094,7 @@ serve_setup(AxlLoop *loop, void *user)
        Read-only / write-only enforcement composes through
        permission_middleware (SDK 1eb3fc0); auth_flags gates every
        verb route of the mount uniformly. */
-    webfs_dav_register(o->server, "/dav", auth_flags);
+    webfs_dav_register(o->server, "/dav", auth_flags, o->verbose);
 
     if (axl_http_server_start(o->server, loop) != AXL_OK) {
         axl_http_server_free(o->server, AXL_TEARDOWN_GRACEFUL);

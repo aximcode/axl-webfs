@@ -1414,7 +1414,7 @@ NSHEOF
         cat > "$DETACH_NSH" <<'NSHEOF'
 @echo -off
 fs0:
-axl-webfs.efi serve -p 8080 --log fs0:\webfs.log
+axl-webfs.efi serve -p 8080 -v --log fs0:\webfs.log
 echo === DETACHED ===
 NSHEOF
 
@@ -1825,6 +1825,43 @@ NSHEOF
                     else
                         fail "serve dav atomic: REST listing during PUT" \
                              "expected atomic.txt and no ~AP temp, got: ${LISTING:0:300}"
+                    fi
+
+                    # A live temp is no resource on ANY surface: a
+                    # request naming it finds nothing. Its name comes
+                    # from the -v log line the PUT's open writes.
+                    TEMP_NAME=$(grep -aoE "streams to temp ~AP[0-9A-F]{5}\.TMP" \
+                        "$SERIAL_LOG" 2>/dev/null | tail -1 | grep -oE "~AP[0-9A-F]{5}\.TMP" || true)
+                    if [ -z "$TEMP_NAME" ]; then
+                        fail "serve live temp: name" "no 'streams to temp' line in the -v log"
+                    else
+                        pass "serve live temp: the -v log names the PUT's temp"
+                        for LT in "GET|$BASE/fs0/$TEMP_NAME" \
+                                  "HEAD|$BASE/fs0/$TEMP_NAME" \
+                                  "DELETE|$BASE/fs0/$TEMP_NAME" \
+                                  "GET|$BASE/dav/fs0/$TEMP_NAME" \
+                                  "DELETE|$BASE/dav/fs0/$TEMP_NAME"; do
+                            LT_METHOD="${LT%%|*}"
+                            LT_URL="${LT#*|}"
+                            if [ "$LT_METHOD" = "HEAD" ]; then
+                                HTTP_CODE=$(curl -s -o /dev/null -I -w "%{http_code}" \
+                                    "$LT_URL" 2>/dev/null || true)
+                            else
+                                HTTP_CODE=$(curl -s -o /dev/null -X "$LT_METHOD" \
+                                    -w "%{http_code}" "$LT_URL" 2>/dev/null || true)
+                            fi
+                            [ "$HTTP_CODE" = "404" ] && \
+                                pass "serve live temp: $LT_METHOD ${LT_URL#$BASE} is 404" || \
+                                fail "serve live temp: $LT_METHOD ${LT_URL#$BASE}" \
+                                     "expected 404, got $HTTP_CODE"
+                        done
+                        HTTP_CODE=$(printf '%s' "over the temp" | \
+                            curl -s -o /dev/null -w "%{http_code}" -T - \
+                            "$BASE/fs0/$TEMP_NAME" 2>/dev/null || true)
+                        [ "$HTTP_CODE" = "403" ] && \
+                            pass "serve live temp: REST PUT onto it is 403" || \
+                            fail "serve live temp: REST PUT onto it" \
+                                 "expected 403, got $HTTP_CODE"
                     fi
 
                     exec 7>&-

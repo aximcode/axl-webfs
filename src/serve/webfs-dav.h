@@ -24,9 +24,10 @@
 /// or the underlying axl_http_server_add_webdav_auth status. The mount
 /// stays valid until @p server is freed. Call after ft_init: it makes
 /// one SDK filesystem root per volume found then.
+/// @p verbose (`serve -v`) logs the temp each PUT streams to.
 int
 webfs_dav_register(AxlHttpServer *server, const char *prefix,
-                   uint32_t auth_flags);
+                   uint32_t auth_flags, bool verbose);
 
 /// Atomic PUT of volume-relative @p sub ("/a/b.txt") on @p vol, for the
 /// REST surface as much as /dav: the SDK's axl_fs_webdav_ops() write path
@@ -49,6 +50,12 @@ webfs_put_write(void *ctx, const void *data, size_t len);
 /// target is untouched; the return means nothing). @p ctx is dead after.
 int
 webfs_put_close(void *ctx, bool discard);
+
+/// Whether @p sub on @p vol names an in-flight PUT's temp. Such a temp
+/// is no resource: every surface answers a request naming it as if it
+/// did not exist (the listings leave it out the same way).
+bool
+webfs_live_temp(const FtVolume *vol, const char *sub);
 
 /// Free what webfs_dav_register made. Call after freeing the server
 /// that carries the mount. Safe without a prior register.
