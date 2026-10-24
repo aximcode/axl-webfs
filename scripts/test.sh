@@ -1118,7 +1118,7 @@ NSHEOF
 
         if ! $READY; then
             fail "$QEMU_ARCH serve: server did not start within 20s"
-            kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+            kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true
             rm -rf "$TMPDIR"
             continue
         fi
@@ -1231,7 +1231,7 @@ NSHEOF
             pass "$QEMU_ARCH serve: nonexistent file returns 404" || \
             fail "$QEMU_ARCH serve: nonexistent" "expected 404, got $HTTP_CODE"
 
-        kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+        kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true
         rm -rf "$TMPDIR"
     done
 
@@ -1294,7 +1294,7 @@ NSHEOF
             fail "serve --read-only: server start" "did not start within 20s"
         fi
 
-        kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+        kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true
         rm -rf "$TMPDIR"
     else
         fail "serve --read-only: QEMU start" "failed to launch"
@@ -1347,7 +1347,7 @@ NSHEOF
             fail "serve --mode write-only: server start" "did not start within 20s"
         fi
 
-        kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+        kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true
         rm -rf "$TMPDIR"
     else
         fail "serve --mode write-only: QEMU start" "failed to launch"
@@ -1443,7 +1443,7 @@ NSHEOF
             fail "serve --auth: server start" "did not start within 20s"
         fi
 
-        kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+        kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true
         rm -rf "$TMPDIR"
     else
         fail "serve --auth: QEMU start" "failed to launch"
@@ -1539,7 +1539,7 @@ NSHEOF
             fail "serve --tls: server start" "did not answer HTTPS within 20s"
         fi
 
-        kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+        kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true
         rm -rf "$TMPDIR"
     else
         fail "serve --tls: QEMU start" "failed to launch"
@@ -1573,8 +1573,10 @@ NSHEOF
 
         # Embedded-driver model: the serve driver is .incbin'd into
         # axl-webfs.efi via axl-cc --embed, so no separate driver
-        # image staging is required.
-        eval "$("$RUN_QEMU_SH" --arch X64 --timeout 60 \
+        # image staging is required. The guest must outlive every check
+        # this block runs (~2 minutes of PUTs, hang-ups and listings),
+        # or the later ones see a dead server.
+        eval "$("$RUN_QEMU_SH" --arch X64 --timeout 300 \
             --net --hostfwd "${DETACH_PORT}:8080" \
             --extra "$DETACH_STAGE/detach_test.txt" \
             --nsh "$DETACH_NSH" \
@@ -2399,7 +2401,7 @@ NSHEOF
                 fail "serve: driver did not start within 30s"
             fi
 
-            kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+            kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true
             rm -rf "$TMPDIR"
         fi
     fi
@@ -2474,7 +2476,7 @@ NSHEOF
                 pass "serve-stop: shell completed all three commands" || \
                 fail "serve-stop: shell completion" "RE-STOP marker missing"
 
-            kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null || true
+            kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true
             rm -rf "$TMPDIR"
         fi
     fi
