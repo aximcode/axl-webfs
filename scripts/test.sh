@@ -981,6 +981,32 @@ NSHEOF
             fail "$T: 511-byte path" "no 'request path is too long' error"
         fi
         rm -f "$LM_LOG"
+
+        # The same tree over WebDAV, where a request carries no "/files"
+        # prefix: a 511-byte path is read whole, and a 520-byte one --
+        # whose 511-byte cut IS that file -- must be refused, never
+        # read as it. The axl-sdk fs-provider cuts an over-long EFI name
+        # (resolve_efi_path) before the mount sees it; until the SDK
+        # refuses it instead, that case is an expected failure, reported
+        # as a SKIP that names the fix, and turns into a PASS by itself.
+        T="$LM_ARCH long path (dav)"
+        info "QEMU" "$T: Booting mount test..."
+        listing_mount deep dav \
+            "echo === SHORT ===" "type fs1:\\$DEEP_DIR\\ffgggggg" \
+            "echo === LONG ===" "type fs1:\\$DEEP_DIR\\ffggggggggggggggg"
+        DEEP_SHORT_OUT=$(echo "$LM_OUT" | sed -n 's/.*=== SHORT ===\(.*\)=== LONG ===.*/\1/p')
+        DEEP_LONG_OUT=$(echo "$LM_OUT" | sed -n 's/.*=== LONG ===\(.*\)=== OUT DONE ===.*/\1/p')
+        echo "$DEEP_SHORT_OUT" | grep -q "long-file" && \
+            pass "$T: a 511-byte path is read" || \
+            fail "$T: 511-byte path" "no 'long-file' in: ${DEEP_SHORT_OUT:0:200}"
+        if echo "$DEEP_LONG_OUT" | grep -q "long-file"; then
+            skip "$T: XFAIL a 520-byte path is read as its 511-byte cut -- needs the axl-sdk fix to resolve_efi_path (refuse an EFI name whose UTF-8 form does not fit, never cut it)"
+        elif echo "$DEEP_LONG_OUT" | grep -q "over-file"; then
+            fail "$T: 520-byte path" "read whole past the mount's own limit"
+        else
+            pass "$T: a 520-byte path is refused, not read as its 511-byte cut"
+        fi
+        rm -f "$LM_LOG"
     done
 
     # ========================================================================

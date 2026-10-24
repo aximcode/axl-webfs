@@ -22,7 +22,10 @@ Each --case builds a tree no real host directory can stand in for:
               request target, the longest the SDK's HTTP client sends --
               and a sibling whose path is 511 and starts with those 505
               bytes: a client that lets "/files<path>" be cut at 511 reads
-              the first file when asked for the second.
+              the first file when asked for the second. A third, 520
+              bytes, is DEEP_LONG plus 9: a path cut at 511 bytes
+              anywhere -- over WebDAV, with no "/files" prefix to push
+              the request over the limit -- reads DEEP_LONG instead.
 
 Usage:
     ./listing-server.py --case long-names --port 9877 [--webdav]
@@ -44,6 +47,7 @@ DEEP_DIR1 = "d" * 250
 DEEP_DIR2 = "e" * 250
 DEEP_SHORT = "f" * 2               # /DEEP_DIR1/DEEP_DIR2/ff: 505 bytes
 DEEP_LONG = "f" * 2 + "g" * 6      # same plus 6 bytes: 511
+DEEP_OVER = "f" * 2 + "g" * 15     # 520 bytes: its 511-byte cut IS DEEP_LONG
 
 
 @dataclass
@@ -90,6 +94,7 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
             f"/{DEEP_DIR1}/{DEEP_DIR2}": [
                 Entry(DEEP_SHORT, b"short-file\n"),
                 Entry(DEEP_LONG, b"long-file\n"),
+                Entry(DEEP_OVER, b"over-file\n"),
             ],
         }
     raise ValueError(f"unknown case {case!r}")

@@ -217,6 +217,17 @@ its 505-byte prefix -- whose bytes would be read, or overwritten,
 instead. In practice the request target is the tighter limit: a JSON
 mount reaches paths up to 505 bytes (less once percent-encoded).
 
+Known upstream cut, not solved here: the SDK's fs-provider converts an
+EFI file name into 512 bytes and CUTS a longer one (`resolve_efi_path`)
+before `webfs_open` sees it, so the mount's own `MAX_PATH_LEN` refusal
+cannot fire through it, and over WebDAV -- no `/files` prefix to push
+the request past the limit -- a cut 511-byte path would be sent. The fix
+belongs in axl-sdk (refuse the name, never cut it). The UEFI Shell does
+not reach it today: it fails a 520-byte `type` before any open reaches
+the mount, which the `long path (dav)` test pins; that test reports the
+cut as an expected failure, naming the SDK fix, should it ever be
+reached.
+
 ### Caching Strategy
 
 1. **Directory cache** — cache `GET /list/<path>` results for 2 seconds.
