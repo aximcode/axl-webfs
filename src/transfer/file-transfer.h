@@ -50,6 +50,13 @@ typedef bool (*FtListFilter)(const FtVolume *vol, const char *dir_path,
                              const char *name);
 void   ft_set_list_filter(FtListFilter hide);
 
+/* "<vol>:<sub>" with '\\' separators, the UEFI path ft_* operate on, in
+   @p out (FT_PATH_MAX bytes is always enough for a path that fits).
+   -1 -- and "" -- when it does not fit: refused, never cut. */
+#define FT_PATH_MAX  512
+int    ft_build_path(const FtVolume *vol, const char *sub_path,
+                     char *out, size_t out_size);
+
 int    ft_list_volumes(bool as_json, char *buf, size_t buf_size, size_t *written);
 int    ft_list_dir(FtVolume *vol, const char *path, bool as_json, bool read_only, char *buf, size_t buf_size, size_t *written);
 

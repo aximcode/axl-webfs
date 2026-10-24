@@ -51,15 +51,19 @@ int ft_find_volume(const char *name, FtVolume *vol)
 // Path helpers
 // ----------------------------------------------------------------------------
 
-/// Build a full "vol:path" string with forward slashes converted to backslashes.
-static void build_path(const FtVolume *vol, const char *sub_path,
-                       char *out, size_t out_size)
+int ft_build_path(const FtVolume *vol, const char *sub_path,
+                  char *out, size_t out_size)
 {
-    axl_snprintf(out, out_size, "%s:%s", vol->name, sub_path);
+    int n = axl_snprintf(out, out_size, "%s:%s", vol->name, sub_path);
+    if (n < 0 || (size_t)n >= out_size) {
+        out[0] = '\0';
+        return -1;      /* refused, never cut: a cut path names another */
+    }
     for (char *p = out; *p; p++) {
         if (*p == '/')
             *p = '\\';
     }
+    return 0;
 }
 
 // ----------------------------------------------------------------------------
@@ -69,8 +73,9 @@ static void build_path(const FtVolume *vol, const char *sub_path,
 int ft_open_read(FtVolume *vol, const char *path, uint64_t offset,
                  FtProgressCb cb, void *ctx, FtReadCtx *rctx)
 {
-    char full[512];
-    build_path(vol, path, full, sizeof(full));
+    char full[FT_PATH_MAX];
+    if (ft_build_path(vol, path, full, sizeof(full)) != 0)
+        return -1;
 
     AxlStream *s = axl_fopen(full, "r");
     if (s == NULL)
@@ -120,22 +125,25 @@ void ft_close_read(FtReadCtx *rctx)
 
 int ft_delete(FtVolume *vol, const char *path)
 {
-    char full[512];
-    build_path(vol, path, full, sizeof(full));
+    char full[FT_PATH_MAX];
+    if (ft_build_path(vol, path, full, sizeof(full)) != 0)
+        return -1;
     return axl_file_delete(full);
 }
 
 int ft_rmdir(FtVolume *vol, const char *path)
 {
-    char full[512];
-    build_path(vol, path, full, sizeof(full));
+    char full[FT_PATH_MAX];
+    if (ft_build_path(vol, path, full, sizeof(full)) != 0)
+        return -1;
     return axl_dir_rmdir(full);
 }
 
 int ft_mkdir(FtVolume *vol, const char *path)
 {
-    char full[512];
-    build_path(vol, path, full, sizeof(full));
+    char full[FT_PATH_MAX];
+    if (ft_build_path(vol, path, full, sizeof(full)) != 0)
+        return -1;
     return axl_dir_mkdir(full);
 }
 
@@ -146,17 +154,19 @@ int ft_mkdir(FtVolume *vol, const char *path)
 int ft_move(FtVolume *src_vol, const char *src_path,
             FtVolume *dst_vol, const char *dst_path)
 {
-    char src_full[512];
-    char dst_full[512];
-    build_path(src_vol, src_path, src_full, sizeof(src_full));
-    build_path(dst_vol, dst_path, dst_full, sizeof(dst_full));
+    char src_full[FT_PATH_MAX];
+    char dst_full[FT_PATH_MAX];
+    if (ft_build_path(src_vol, src_path, src_full, sizeof(src_full)) != 0 ||
+        ft_build_path(dst_vol, dst_path, dst_full, sizeof(dst_full)) != 0)
+        return -1;
     return axl_file_move(src_full, dst_full);
 }
 
 int ft_get_file_size(FtVolume *vol, const char *path, uint64_t *size)
 {
-    char full[512];
-    build_path(vol, path, full, sizeof(full));
+    char full[FT_PATH_MAX];
+    if (ft_build_path(vol, path, full, sizeof(full)) != 0)
+        return -1;
     AxlFsEntry fi;
     if (axl_file_info(full, &fi) != 0)
         return -1;
@@ -166,8 +176,9 @@ int ft_get_file_size(FtVolume *vol, const char *path, uint64_t *size)
 
 int ft_is_dir(FtVolume *vol, const char *path, bool *is_dir)
 {
-    char full[512];
-    build_path(vol, path, full, sizeof(full));
+    char full[FT_PATH_MAX];
+    if (ft_build_path(vol, path, full, sizeof(full)) != 0)
+        return -1;
     AxlFsEntry fi;
     if (axl_file_info(full, &fi) != 0)
         return -1;
@@ -177,7 +188,8 @@ int ft_is_dir(FtVolume *vol, const char *path, bool *is_dir)
 
 int ft_stat(FtVolume *vol, const char *path, AxlFsEntry *info)
 {
-    char full[512];
-    build_path(vol, path, full, sizeof(full));
+    char full[FT_PATH_MAX];
+    if (ft_build_path(vol, path, full, sizeof(full)) != 0)
+        return -1;
     return axl_file_info(full, info);
 }

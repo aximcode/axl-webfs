@@ -515,6 +515,13 @@ client, uploads interleave across connections) is answered 503 with
 `Retry-After: 1` and touches nothing, and another connection's hang-up
 cannot discard the PUT in flight.
 
+Request paths on the serve side are refused, never cut, like the
+mount's: `parse_volume_path` checks the percent-decode, answers 414 for
+a path (or its `<vol>:<sub>` UEFI form, `ft_build_path`) that does not
+fit and 400 for one that decodes to an embedded NUL; `parse_dav_path`
+refuses the same for /dav. The ft_* helpers build their UEFI paths
+through the same checked `ft_build_path`.
+
 ### Two AxlServices, One Launcher Binary
 `mount` and `serve` both need a persistent protocol that survives
 after the command returns, so axl-webfs ships two DXE drivers. Each

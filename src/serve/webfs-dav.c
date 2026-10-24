@@ -60,7 +60,7 @@ typedef enum {
     PATH_ROOT,
     PATH_VOLUME,
     PATH_OBJECT,
-    PATH_INVALID,           ///< unknown volume name
+    PATH_INVALID,           ///< unknown volume, or a path that does not fit
 } DavPathKind;
 
 /* A PUT in flight (REST or /dav): the SDK's write ctx, plus where it
@@ -113,12 +113,17 @@ parse_dav_path(const char *url, FtVolume *vol, AxlFsRoot **root,
     if (*p == '/')
         p++;
 
+    /* A volume name too long to be one is no volume -- never a cut
+       one that might match. */
+    const char *vol_end = p;
+    while (*vol_end != '/' && *vol_end != '\0')
+        vol_end++;
     char vol_name[16];
-    size_t i = 0;
-    while (*p != '/' && *p != '\0' && i < sizeof(vol_name) - 1) {
-        vol_name[i++] = *p++;
-    }
-    vol_name[i] = '\0';
+    if ((size_t)(vol_end - p) >= sizeof(vol_name))
+        return PATH_INVALID;
+    axl_memcpy(vol_name, p, (size_t)(vol_end - p));
+    vol_name[vol_end - p] = '\0';
+    p = vol_end;
 
     *root = NULL;
     size_t n = ft_get_volume_count();
@@ -136,8 +141,13 @@ parse_dav_path(const char *url, FtVolume *vol, AxlFsRoot **root,
         return PATH_VOLUME;
     }
 
-    /* p now points at '/' starting the sub-path. Copy as-is. */
-    axl_strlcpy(sub, p, sub_size);
+    /* p now points at '/' starting the sub-path. Refused, never cut,
+       when it -- or the "<vol>:<sub>" path ft_* build from it -- does
+       not fit: a cut path names another file. */
+    char full[FT_PATH_MAX];
+    if (axl_strlcpy(sub, p, sub_size) >= sub_size ||
+        ft_build_path(vol, sub, full, sizeof(full)) != 0)
+        return PATH_INVALID;
     return PATH_OBJECT;
 }
 
@@ -145,10 +155,9 @@ parse_dav_path(const char *url, FtVolume *vol, AxlFsRoot **root,
 static AxlDir *
 dav_dir_open(const FtVolume *vol, const char *sub)
 {
-    char full[512];
-    axl_snprintf(full, sizeof(full), "%s:%s", vol->name, sub);
-    for (char *q = full; *q; q++)
-        if (*q == '/') *q = '\\';
+    char full[FT_PATH_MAX];
+    if (ft_build_path(vol, sub, full, sizeof(full)) != 0)
+        return NULL;
     return axl_dir_open(full);
 }
 

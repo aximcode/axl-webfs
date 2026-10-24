@@ -26,20 +26,6 @@ void ft_set_list_filter(FtListFilter hide)
 }
 
 // ----------------------------------------------------------------------------
-// Path helper (duplicated from FileTransfer.c to keep both files independent)
-// ----------------------------------------------------------------------------
-
-static void build_path(const FtVolume *vol, const char *sub_path,
-                       char *out, size_t out_size)
-{
-    axl_snprintf(out, out_size, "%s:%s", vol->name, sub_path);
-    for (char *p = out; *p; p++) {
-        if (*p == '/')
-            *p = '\\';
-    }
-}
-
-// ----------------------------------------------------------------------------
 // HTML escape -- safe for both element-text and double/single-quoted
 // attribute contexts. Returns the buffer pointer for inline use in
 // APPEND() format-string substitutions. Truncates silently if the
@@ -152,8 +138,9 @@ int ft_list_volumes(bool as_json, char *buf, size_t buf_size, size_t *written)
 int ft_list_dir(FtVolume *vol, const char *path, bool as_json, bool read_only,
                 char *buf, size_t buf_size, size_t *written)
 {
-    char dir_full[512];
-    build_path(vol, path, dir_full, sizeof(dir_full));
+    char dir_full[FT_PATH_MAX];
+    if (ft_build_path(vol, path, dir_full, sizeof(dir_full)) != 0)
+        return -1;
 
     AxlDir *dir = axl_dir_open(dir_full);
     if (dir == NULL)

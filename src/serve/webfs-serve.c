@@ -109,44 +109,68 @@ AXL_LOG_DOMAIN("webfs-serve");
 // URL parsing helpers
 // ----------------------------------------------------------------------------
 
-/// Parse "/<vol>/<path>" into volume name and sub-path.
-/// Decodes percent-encoded characters in the URL path.
+/* parse_volume_path results; each refusal has its HTTP status. */
+#define PATH_OK          0
+#define PATH_NO_VOLUME  (-1)   /* 404 */
+#define PATH_TOO_LONG   (-2)   /* 414 */
+#define PATH_BAD        (-3)   /* 400 */
+
+/// Parse "/<vol>/<path>" into the volume and its sub-path, percent-
+/// decoding the URL path. A path is REFUSED, never cut -- a cut path
+/// names another file: one whose decoded form, or whose "<vol>:<sub>"
+/// UEFI path, does not fit is PATH_TOO_LONG, one that decodes to an
+/// embedded NUL is PATH_BAD.
 static int
 parse_volume_path(const char *url_path, FtVolume *volume,
                   char *sub_path, size_t sub_path_size)
 {
-    char decoded[512];
-    axl_url_decode(url_path, decoded, sizeof(decoded));
+    char decoded[FT_PATH_MAX];
+    int  dlen = axl_url_decode(url_path, decoded, sizeof(decoded));
+    if (dlen < 0)
+        return PATH_TOO_LONG;   /* decoded[] is not terminated then */
+    if (axl_strlen(decoded) != (size_t)dlen)
+        return PATH_BAD;        /* %00 */
+
     const char *p = decoded;
-    char        vol_name[16];
-    size_t      i;
-
-    if (*p == '/') {
+    if (*p == '/')
         p++;
-    }
+    const char *vol_end = p;
+    while (*vol_end != '/' && *vol_end != '\0')
+        vol_end++;
+    char vol_name[16];
+    if ((size_t)(vol_end - p) >= sizeof(vol_name))
+        return PATH_NO_VOLUME;
+    axl_memcpy(vol_name, p, (size_t)(vol_end - p));
+    vol_name[vol_end - p] = '\0';
+    if (ft_find_volume(vol_name, volume) != 0)
+        return PATH_NO_VOLUME;
 
-    i = 0;
-    while (*p != '/' && *p != '\0' && i < 15) {
-        vol_name[i++] = *p++;
-    }
-    vol_name[i] = '\0';
+    const char *sub = (*vol_end == '\0') ? "/" : vol_end;
+    char        full[FT_PATH_MAX];
+    if (axl_strlcpy(sub_path, sub, sub_path_size) >= sub_path_size ||
+        ft_build_path(volume, sub_path, full, sizeof(full)) != 0)
+        return PATH_TOO_LONG;
+    return PATH_OK;
+}
 
-    if (ft_find_volume(vol_name, volume) != 0) {
-        return -1;
+/* Answer a parse_volume_path refusal @p rc. */
+static void
+set_path_error(AxlHttpResponse *resp, int rc)
+{
+    switch (rc) {
+        case PATH_TOO_LONG:
+            axl_http_response_set_text(resp, "Path too long\n");
+            axl_http_response_set_status(resp, 414);
+            break;
+        case PATH_BAD:
+            axl_http_response_set_text(resp, "Bad path\n");
+            axl_http_response_set_status(resp, 400);
+            break;
+        default:
+            axl_http_response_set_text(resp, "Volume not found\n");
+            axl_http_response_set_status(resp, 404);
+            break;
     }
-
-    i = 0;
-    while (*p != '\0' && i < sub_path_size - 1) {
-        sub_path[i++] = *p++;
-    }
-    sub_path[i] = '\0';
-
-    if (sub_path[0] == '\0') {
-        sub_path[0] = '/';
-        sub_path[1] = '\0';
-    }
-
-    return 0;
 }
 
 /* Compute (or recall) the SHA-256 of @p sub_path on @p volume.
@@ -445,10 +469,10 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     int        status;
     bool       is_dir;
 
-    status = parse_volume_path(req->path, &volume, sub_path, 512);
-    if (status != 0) {
-        axl_http_response_set_text(resp, "Volume not found\n");
-        axl_http_response_set_status(resp, 404);
+    status = parse_volume_path(req->path, &volume, sub_path,
+                               sizeof(sub_path));
+    if (status != PATH_OK) {
+        set_path_error(resp, status);
         return 0;
     }
 
@@ -647,6 +671,7 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 static void        *m_put_ctx     = NULL;   /* webfs_put_open's; NULL = none */
 static uint64_t     m_put_id      = 0;      /* request holding it; 0 = none */
 static int          m_put_status  = 0;      /* 0 = no failure yet */
+static const char  *m_put_msg     = NULL;   /* body for m_put_status; NULL = by status */
 /* Optional upload integrity via a "Content-Digest: sha-256=<hex>"
    request header: the stream is hashed, and a mismatch DISCARDS the
    write and answers 400 -- the header, hex format and status /dav
@@ -713,6 +738,7 @@ put_reset(void)
     }
     m_put_id        = 0;
     m_put_status    = 0;
+    m_put_msg       = NULL;
     m_put_expect[0] = '\0';
 }
 
@@ -756,8 +782,11 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
         m_put_id = req->request_id;
         FtVolume vol;
         char     sub[512];
-        if (parse_volume_path(req->path, &vol, sub, sizeof(sub)) != 0) {
-            m_put_status = 404;
+        int prc = parse_volume_path(req->path, &vol, sub, sizeof(sub));
+        if (prc != PATH_OK) {
+            m_put_status = prc == PATH_TOO_LONG ? 414
+                         : prc == PATH_BAD      ? 400 : 404;
+            m_put_msg    = prc == PATH_BAD ? "Bad path\n" : NULL;
         } else {
             /* The REST PUT has always made a missing PARENT directory
                (one level) for the upload; keep that. */
@@ -814,6 +843,7 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
     switch (status) {
         case 201: body = "Created\n";                 break;
         case 404: body = "Volume not found\n";        break;
+        case 414: body = "Path too long\n";           break;
         case 400: body = "Content-Digest mismatch\n"; break;
         case 403: body = "Forbidden\n";               break;
         case 409: body = "Conflict\n";                break;
@@ -821,7 +851,7 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
         case 507: body = "Insufficient storage\n";    break;
         default:  body = "Write failed\n";            break;
     }
-    axl_http_response_set_text(resp, body);
+    axl_http_response_set_text(resp, m_put_msg != NULL ? m_put_msg : body);
     axl_http_response_set_status(resp, (size_t)status);
     if (status == 503)
         response_set_header(resp, "Retry-After", "1");
@@ -839,10 +869,10 @@ handle_delete_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
     char       sub_path[512];
     int        status;
 
-    status = parse_volume_path(req->path, &volume, sub_path, 512);
-    if (status != 0) {
-        axl_http_response_set_text(resp, "Volume not found\n");
-        axl_http_response_set_status(resp, 404);
+    status = parse_volume_path(req->path, &volume, sub_path,
+                               sizeof(sub_path));
+    if (status != PATH_OK) {
+        set_path_error(resp, status);
         publish_request(opts->loop, req, resp);
         return 0;
     }
@@ -877,10 +907,10 @@ handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         return 0;
     }
 
-    status = parse_volume_path(req->path, &volume, sub_path, 512);
-    if (status != 0) {
-        axl_http_response_set_text(resp, "Volume not found\n");
-        axl_http_response_set_status(resp, 404);
+    status = parse_volume_path(req->path, &volume, sub_path,
+                               sizeof(sub_path));
+    if (status != PATH_OK) {
+        set_path_error(resp, status);
         publish_request(opts->loop, req, resp);
         return 0;
     }

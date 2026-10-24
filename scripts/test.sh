@@ -2107,6 +2107,42 @@ NSHEOF
                 [ "$CONTENT" = "hello-b" ] && \
                     pass "serve: the server still answers after a Range + Digest response" || \
                     fail "serve: after Range + Digest" "got '${CONTENT:0:60}'"
+
+                # ----------------------------------------------------
+                # Request paths are refused, never cut: a decoded path
+                # past the limit is 414, an embedded NUL (%00) 400 --
+                # and the %00 PUT does not write the name before it.
+                # (The firmware's own FAT path limit, ~260 characters,
+                # keeps a cut long path from being created here, so
+                # what a cut would hit is only observable for %00.)
+                # ----------------------------------------------------
+                LP_LONG="$(printf 'd%.0s' $(seq 1 200))/$(printf 'e%.0s' $(seq 1 200))/$(printf 'f%.0s' $(seq 1 200))"
+                HTTP_CODE=$(printf '%s' "long" | curl -s -o /dev/null -w "%{http_code}" \
+                    -T - "$BASE/fs0/$LP_LONG" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "414" ] && \
+                    pass "serve path: a REST PUT past the path limit is 414" || \
+                    fail "serve path: long REST PUT" "expected 414, got $HTTP_CODE"
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    "$BASE/fs0/$LP_LONG" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "414" ] && \
+                    pass "serve path: a REST GET past the path limit is 414" || \
+                    fail "serve path: long REST GET" "expected 414, got $HTTP_CODE"
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+                    "$BASE/fs0/$LP_LONG" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "414" ] && \
+                    pass "serve path: a REST DELETE past the path limit is 414" || \
+                    fail "serve path: long REST DELETE" "expected 414, got $HTTP_CODE"
+
+                HTTP_CODE=$(printf '%s' "nul" | curl -s -o /dev/null -w "%{http_code}" \
+                    -T - "$BASE/fs0/nul.txt%00.evil" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "400" ] && \
+                    pass "serve path: a REST path with %00 is 400" || \
+                    fail "serve path: %00" "expected 400, got $HTTP_CODE"
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    "$BASE/fs0/nul.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "404" ] && \
+                    pass "serve path: the %00 PUT did not write the name before it" || \
+                    fail "serve path: %00 cut" "expected 404, got $HTTP_CODE"
             else
                 fail "serve: driver did not start within 30s"
             fi
