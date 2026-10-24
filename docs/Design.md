@@ -238,6 +238,13 @@ reached.
    is parsed at its full size, and the cache (`webfs-cache.c`) owns each
    listing's array -- not the SDK's `AxlCache`, whose fixed-size values
    could not hold one, and which has no hook to free one it evicts.
+   Whole is not unbounded: a listing past `WEBFS_LIST_MAX_ENTRIES`
+   (16384, ~5 MB of entries; counted in entries because a byte cap would
+   admit very different directories as JSON and as PROPFIND XML) is
+   refused with an error to the Shell and a log line, never cut, and
+   every expired slot is swept on each lookup, so an unvisited big
+   listing does not stay resident. The HTTP body itself is not capped:
+   the SDK's client has no response-size limit to set.
 
 2. **Read-ahead buffer** — when reading a file, prefetch 64 KB into a
    buffer. Sequential reads hit the buffer instead of issuing per-8KB

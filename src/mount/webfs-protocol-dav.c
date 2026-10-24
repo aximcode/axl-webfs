@@ -226,7 +226,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
     bool   in_displayname    = false;
     bool   in_resourcetype   = false;
     bool   in_size           = false;
-    bool   oom = false;
+    bool   failed = false;   /* over the cap or out of memory */
     /* An element's text can arrive as several TEXT tokens -- a CDATA
        section splits it ("a<![CDATA[&b]]>c" is three) -- so href and
        displayname accumulate here and are taken whole at the element's
@@ -239,7 +239,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
     }
 
     AxlXmlToken tok;
-    while (!oom && axl_xml_reader_next(r, &tok)) {
+    while (!failed && axl_xml_reader_next(r, &tok)) {
         if (tok.type == AXL_XML_TOKEN_START_ELEMENT) {
             if (axl_xml_token_local_name_eq(&tok, "response")) {
                 dav_entry_reset(&cur);
@@ -337,8 +337,8 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
                 in_response = false;
                 DirEntry entry;
                 if (dav_entry_emit(&cur, path, &entry) &&
-                    axl_array_append(out, &entry) != AXL_OK)
-                    oom = true;   /* a short listing would pass for whole */
+                    webfs_listing_append(out, &entry, path) != 0)
+                    failed = true;   /* never a short listing */
             }
         }
     }
@@ -353,7 +353,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
         return -1;
     }
 
-    return oom ? -1 : 0;
+    return failed ? -1 : 0;
 }
 
 // ----------------------------------------------------------------------------

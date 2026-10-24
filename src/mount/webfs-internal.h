@@ -40,6 +40,17 @@
 
 #define DIR_CACHE_TTL_MS             2000     ///< 2 second directory cache TTL.
 #define DIR_CACHE_MAX_SLOTS          16       ///< Maximum cached directories.
+/* The most entries one directory listing may hold. A bigger one is
+   REFUSED -- an error to the caller and a log line -- never cut to the
+   first N, which would pass for the whole directory. 16384 bounds the
+   memory one listing costs at about 5 MB (a DirEntry is ~300 bytes),
+   held up to three times over (the HTTP body, the cached array, a
+   handle's copy) -- a server's directory, hostile or merely huge, cannot
+   run firmware out of memory -- and sits far above any directory a UEFI
+   tool works in. It is counted in entries, not body bytes, because the
+   same listing costs ~90 bytes an entry as JSON and ~330 as PROPFIND
+   XML: a byte cap would allow very different directories per protocol. */
+#define WEBFS_LIST_MAX_ENTRIES       16384
 #define READAHEAD_BUF_SIZE           (64 * 1024)
 /* A mount path ("/a/b", '/' separators) is at most MAX_PATH_LEN - 1
    bytes. webfs_open and rename REFUSE a longer one with an error rather
@@ -195,6 +206,10 @@ extern const AxlFsProvider webfs_provider;
 // Forward declarations -- webfs-cache.c
 // ---------------------------------------------------------------------------
 
+/// Append @p e to listing @p out of @p path, or fail it: -1 past
+/// WEBFS_LIST_MAX_ENTRIES (logged) or out of memory. Both protocols' list_dir
+/// add every entry through this.
+int  webfs_listing_append(AxlArray *out, const DirEntry *e, const char *path);
 DirCache *dir_cache_new(void);
 void dir_cache_free(DirCache *cache);   ///< NULL-safe
 int  dir_cache_fetch(WebFsPrivate *priv, const char *path, DirEntry **entries, size_t *count);

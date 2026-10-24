@@ -18,6 +18,7 @@ Each --case builds a tree no real host directory can stand in for:
               `&amp;`/`&lt;`/`&gt;`, one split by a CDATA section into
               three text tokens.
   big         150 files: a listing well past 4 KB and past 64 entries.
+  huge        16385 files: one past the mount's WEBFS_LIST_MAX_ENTRIES.
   deep        A file whose path is 505 bytes -- "/files" + it is a 511-byte
               request target, the longest the SDK's HTTP client sends --
               and a sibling whose path is 511 and starts with those 505
@@ -84,6 +85,8 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
             Entry("part1&part2.txt", b"parts",
                   displayname="part1<![CDATA[&part2]]>.txt"),
         ]}
+    if case == "huge":
+        return {"/": [Entry(f"h-{i:05d}.txt", b"h") for i in range(16385)]}
     if case == "big":
         files = [Entry(f"big-{i:03d}-{'p' * 40}.txt", b"big!\n") for i in range(150)]
         return {"/": [readme, *files]}
@@ -222,7 +225,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Serve a synthetic tree to the axl-webfs mount driver.")
     parser.add_argument("--case", required=True,
-                        choices=["long-names", "entities", "big", "deep"])
+                        choices=["long-names", "entities", "big", "huge", "deep"])
     parser.add_argument("--port", type=int, default=9877)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--webdav", action="store_true",

@@ -956,6 +956,24 @@ NSHEOF
             rm -f "$LM_LOG"
         done
 
+        # A listing past WEBFS_LIST_MAX_ENTRIES (16384) is REFUSED, loudly
+        # -- an error to the Shell and a log line -- never cut to the
+        # first 16384.
+        for LM_PROTO in json dav; do
+            T="$LM_ARCH listing cap ($LM_PROTO)"
+            info "QEMU" "$T: Booting mount test..."
+            listing_mount huge "$LM_PROTO" 'ls fs1:\'
+            HUGE_ROWS=$(echo "$LM_OUT" | grep -oE "h-[0-9]{5}\.txt" | wc -l)
+            if grep -qa "has more than 16384 entries; refused" "$LM_LOG" && \
+               [ "$HUGE_ROWS" = "0" ]; then
+                pass "$T: 16385 entries are refused, not listed or cut"
+            else
+                fail "$T: 16385 entries" \
+                     "expected the refusal line and no rows, got $HUGE_ROWS rows"
+            fi
+            rm -f "$LM_LOG"
+        done
+
         # A request path is refused, never cut. The SDK's HTTP client
         # sends at most a 511-byte request target, and "/files" + 505 is
         # 511: the 505-byte path is read, while "/files" + the 511-byte

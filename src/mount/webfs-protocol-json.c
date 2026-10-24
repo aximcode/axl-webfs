@@ -86,8 +86,8 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
         axl_json_get_bool(&elem, "dir", &e->is_dir);
         axl_json_get_string(&elem, "modified", e->modified,
                             sizeof(e->modified));
-        if (e->name[0] != '\0' && axl_array_append(out, e) != AXL_OK) {
-            ret = -1;   /* OOM: a short listing would pass for a whole one */
+        if (e->name[0] != '\0' && webfs_listing_append(out, e, path) != 0) {
+            ret = -1;   /* over the cap or OOM: never a short listing */
             break;
         }
     }

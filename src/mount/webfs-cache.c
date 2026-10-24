@@ -164,22 +164,35 @@ dir_cache_free(DirCache *cache)
     axl_free(cache);
 }
 
-/* The live slot for @p path, or NULL. An expired one is cleared. */
+int
+webfs_listing_append(AxlArray *out, const DirEntry *e, const char *path)
+{
+    if (axl_array_len(out) >= WEBFS_LIST_MAX_ENTRIES) {
+        axl_error("listing %s has more than %u entries; refused",
+                  path, (unsigned)WEBFS_LIST_MAX_ENTRIES);
+        return -1;
+    }
+    return axl_array_append(out, e) == AXL_OK ? 0 : -1;
+}
+
+/* The live slot for @p path, or NULL. EVERY expired slot is cleared on
+   the way -- a big listing nobody asks for again must not stay
+   resident until it happens to be evicted. */
 static DirCacheSlot *
 dir_cache_find(DirCache *cache, const char *path)
 {
-    uint64_t now = axl_time_get_ms();
+    uint64_t      now   = axl_time_get_ms();
+    DirCacheSlot *found = NULL;
     for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
         DirCacheSlot *slot = &cache->slots[i];
-        if (slot->path == NULL || !axl_streql(slot->path, path))
+        if (slot->path == NULL)
             continue;
-        if (now - slot->fetched_ms > DIR_CACHE_TTL_MS) {
+        if (now - slot->fetched_ms > DIR_CACHE_TTL_MS)
             dir_cache_slot_clear(slot);
-            return NULL;
-        }
-        return slot;
+        else if (axl_streql(slot->path, path))
+            found = slot;
     }
-    return NULL;
+    return found;
 }
 
 /* `entries` borrow window: callers must finish iterating the returned
