@@ -219,6 +219,21 @@ axl-webfs.efi mount <url>
 axl-webfs.efi umount [handle]
 ```
 
+The URL's path selects the share: `http://host:9876/` mounts the
+server's root, and a path below it mounts just that directory. That is
+how one UEFI machine mounts another's volume -- its `axl-webfs serve`
+publishes each volume over WebDAV at `/dav/<volume>/`:
+
+```
+FS0:\> axl-webfs.efi mount --protocol dav http://192.168.1.60:9876/dav/fs0/
+FS0:\> map -r
+FS0:\> ls fs1:
+```
+
+A path with a space is quoted (`"http://host:9876/my share/"`). One
+with a `.`, `..` or empty segment, or an encoded separator (`%2F`), is
+refused: the server would read it as another place.
+
 ### `serve`
 
 ```
