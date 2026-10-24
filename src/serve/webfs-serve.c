@@ -895,8 +895,8 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
                this PUT's, to take back should the PUT fail. */
             char *parent = axl_path_get_dirname(sub);
             bool  exists = false;
-            if (parent != NULL && parent[0] != '\0' &&
-                !axl_streql(parent, "/") && !axl_streql(parent, ".") &&
+            if (parent != NULL && !axl_streql(parent, "/") &&
+                !axl_streql(parent, ".") &&
                 ft_is_dir(&vol, parent, &exists) != 0 &&
                 ft_mkdir(&vol, parent) == 0) {
                 m_put_vol = vol;

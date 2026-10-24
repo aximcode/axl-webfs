@@ -48,8 +48,9 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
         return -1;
     }
 
-    /* The whole body, however big: parsed in place (the reader takes a
-       length) while the response is alive. */
+    /* The whole body, parsed in place (the reader takes a length) while
+       the response is alive; the entries it yields are capped by
+       webfs_listing_append, never the body cut. */
     AxlJsonReader ctx;
     /* A network body: RFC 8259 exactly (AXL_JSON_STRICT), as axl-json.h
        asks of anything a peer sends -- a relaxed parse would take a

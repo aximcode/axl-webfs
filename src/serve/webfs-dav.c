@@ -448,13 +448,7 @@ webfs_put_open(const FtVolume *vol, const char *sub, void **out_ctx)
     w->vol = *vol;
     axl_strlcpy(w->sub, sub, sizeof(w->sub));
 
-    /* dirname("/a.txt") is "", which as a directory is the volume
-       root, "/". */
-    char  *dir = m_verbose ? axl_path_get_dirname(sub) : NULL;
-    if (dir != NULL && dir[0] == '\0') {
-        axl_free(dir);
-        dir = axl_strdup("/");
-    }
+    char  *dir = m_verbose ? axl_path_get_dirname(sub) : NULL;   /* "/" at the root */
     char   before[8][DAV_TEMP_NAME_LEN + 1];
     size_t n_before = dir != NULL
                       ? dav_live_temps_in(root, vol, dir, before, 8) : 0;
