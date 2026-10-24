@@ -67,7 +67,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
     }
 
     AxlJsonArrayIter iter;
-    if (!axl_json_array_begin(&ctx, NULL, &iter)) {
+    if (!axl_json_value_array_begin(&ctx, &iter)) {
         axl_json_free(&ctx);
         axl_free(body_buf);
         return -1;
