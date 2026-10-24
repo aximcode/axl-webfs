@@ -830,6 +830,89 @@ NSHEOF
     fi
 
     # ========================================================================
+    # Over-long names (WEBFS_NAME_SIZE): a name that does not fit the
+    # mount's 256-byte name buffers is SKIPPED, never cut -- a cut name can
+    # equal a sibling's. long-name-server.py serves names no Linux
+    # filesystem can hold: a 255-byte name that fits, the same name plus
+    # one byte (256 -- its cut IS the first), and, over WebDAV, a 255-byte
+    # name whose every-byte-percent-encoded href is 765 characters.
+    # ========================================================================
+
+    LN_PORT=$((SERVER_PORT + 3))
+    for LN_PROTO in json dav; do
+        LN_FLAG=""
+        [ "$LN_PROTO" = "dav" ] && LN_FLAG="--webdav"
+        python3 "$SCRIPT_DIR/long-name-server.py" --port "$LN_PORT" \
+            --bind 0.0.0.0 $LN_FLAG >/tmp/long-name-server.log 2>&1 &
+        LN_PID=$!
+        sleep 0.5
+
+        for QEMU_ARCH in "${QEMU_ARCHS[@]}"; do
+            ARCH_DIR=$(echo "$QEMU_ARCH" | tr '[:upper:]' '[:lower:]')
+            [ "$ARCH_DIR" = "aarch64" ] && ARCH_DIR="aa64"
+            APP_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/axl-webfs.efi"
+            if [ ! -f "$APP_EFI" ]; then continue; fi
+            T="$QEMU_ARCH long names ($LN_PROTO)"
+
+            LN_NSH=$(mktemp --suffix=.nsh)
+            cat > "$LN_NSH" <<NSHEOF
+@echo -off
+fs0:
+axl-webfs.efi mount --protocol $LN_PROTO http://10.0.2.2:${LN_PORT}/
+map -r
+echo === LS ===
+ls fs1:\\
+echo === LS DONE ===
+axl-webfs.efi umount
+reset -s
+NSHEOF
+            SERIAL_LOG=$(mktemp)
+            info "QEMU" "$T: Booting mount test..."
+            "$RUN_QEMU_SH" --arch "$QEMU_ARCH" --timeout 30 --raw --net \
+                --nsh "$LN_NSH" --serial-log "$SERIAL_LOG" \
+                "$APP_EFI" > /dev/null 2>&1 || true
+            rm -f "$LN_NSH"
+
+            # The listing, with line breaks removed: a 255-character name
+            # can wrap on the console.
+            LS_OUT=$(sed -n '/=== LS ===/,/=== LS DONE ===/p' "$SERIAL_LOG" \
+                2>/dev/null | tr -d '\r\n')
+
+            # Control: the listing was fetched and shown at all.
+            echo "$LS_OUT" | grep -q "readme.txt" && \
+                pass "$T: listing shows readme.txt" || \
+                fail "$T: listing" "readme.txt not in the ls output"
+
+            # The 255-byte name is listed once, whole, with ITS size (5):
+            # never the cut 256-byte one (size 6) in its place or beside it.
+            LN_SEEN=$(echo "$LS_OUT" | grep -oE "[0-9]+  LONGNAME-a*" | \
+                sed -E 's/^([0-9]+)  (.*)$/\1 \2/' | \
+                awk '{print $1 ":" length($2)}' | tr '\n' ' ')
+            [ "$LN_SEEN" = "5:255 " ] && \
+                pass "$T: the 255-byte name is listed once, whole" || \
+                fail "$T: 255-byte name" \
+                     "expected '5:255 ' (size:name-length), got '$LN_SEEN'"
+
+            grep -qa "skipping an entry whose name" "$SERIAL_LOG" && \
+                pass "$T: the 256-byte name is skipped, not cut" || \
+                fail "$T: 256-byte name" "no 'skipping an entry' warning"
+
+            if [ "$LN_PROTO" = "dav" ]; then
+                LN_HREF_SEEN=$(echo "$LS_OUT" | grep -oE 'HREFNAME-b*' | \
+                    awk '{print length}' | tr '\n' ' ')
+                [ "$LN_HREF_SEEN" = "255 " ] && \
+                    pass "$T: a 765-character href yields its whole 255-byte name" || \
+                    fail "$T: long href" \
+                         "expected one 255-byte HREFNAME, got lengths '$LN_HREF_SEEN'"
+            fi
+            rm -f "$SERIAL_LOG"
+        done
+
+        kill "$LN_PID" 2>/dev/null || true
+        wait "$LN_PID" 2>/dev/null || true
+    done
+
+    # ========================================================================
     # Serve integration tests (QEMU runs axl-webfs serve, host curls)
     # ========================================================================
 

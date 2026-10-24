@@ -31,14 +31,17 @@ AXL_LOG_DOMAIN("webfs-dav-client");
 /// PROPFIND <D:href> bodies always carry the URL-encoded path. Decode
 /// in place to UTF-8 bytes the mount layer expects, then strip the
 /// scheme://host prefix if present so we keep just the path portion.
-static void
+static bool
 decode_href(const char *href, size_t href_len, char *out, size_t out_size)
 {
-    char tmp[MAX_PATH_LEN];
-    size_t cp = href_len;
-    if (cp >= sizeof(tmp)) cp = sizeof(tmp) - 1;
-    axl_memcpy(tmp, href, cp);
-    tmp[cp] = '\0';
+    /* The ENCODED href may be up to three times the decoded path, so it
+       is copied whole -- a cut here cuts the basename. Only the decoded
+       path is held to @p out_size, and one that does not fit is
+       refused (false), never cut. */
+    char *tmp = axl_malloc(href_len + 1);
+    if (tmp == NULL) return false;
+    axl_memcpy(tmp, href, href_len);
+    tmp[href_len] = '\0';
 
     /* Strip http(s)://host/ if present. */
     const char *p = tmp;
@@ -49,12 +52,16 @@ decode_href(const char *href, size_t href_len, char *out, size_t out_size)
         while (*slash && *slash != '/') slash++;
         p = (*slash == '/') ? slash : "/";
     }
-    axl_url_decode(p, out, out_size);
+    bool ok = axl_url_decode(p, out, out_size) >= 0;
+    axl_free(tmp);
+    return ok;
 }
 
 /// Extract the basename from a path (last "/"-delimited component).
 /// Trailing slash is stripped first so "/foo/bar/" yields "bar".
-static void
+/// false when it does not fit @p out_size (WEBFS_NAME_SIZE: skip, never
+/// cut).
+static bool
 href_basename(const char *path, char *out, size_t out_size)
 {
     size_t len = axl_strlen(path);
@@ -64,9 +71,13 @@ href_basename(const char *path, char *out, size_t out_size)
         if (path[i] == '/') start = i + 1;
     }
     size_t bn = len - start;
-    if (bn >= out_size) bn = out_size - 1;
+    if (bn >= out_size) {
+        out[0] = '\0';
+        return false;
+    }
     axl_memcpy(out, path + start, bn);
     out[bn] = '\0';
+    return true;
 }
 
 // ----------------------------------------------------------------------------
@@ -106,10 +117,11 @@ static const char k_propfind_allprop[] =
 /// the four fields we need before the matching </D:response> closes.
 typedef struct {
     char     href[MAX_PATH_LEN];
-    char     name[256];
+    char     name[WEBFS_NAME_SIZE];
     uint64_t size;
     bool     is_collection;
     bool     have_href;
+    bool     too_long;          ///< href or displayname did not fit: skip
     bool     have_resourcetype;
     bool     have_size;
 } DavEntry;
@@ -128,6 +140,12 @@ dav_entry_emit(const DavEntry *e, const char *parent_path,
                DirEntry *out)
 {
     if (!e->have_href) return false;
+    if (e->too_long) {
+        axl_warning("listing %s: skipping an entry whose name or href does "
+                    "not fit (names up to %zu bytes)", parent_path,
+                    sizeof(out->name) - 1);
+        return false;
+    }
 
     /* Skip the self entry — PROPFIND Depth:1 returns the queried
        resource plus its children. The self entry is whichever <href>
@@ -147,9 +165,11 @@ dav_entry_emit(const DavEntry *e, const char *parent_path,
 
     axl_memset(out, 0, sizeof(*out));
     if (e->name[0] != '\0') {
-        axl_strlcpy(out->name, e->name, sizeof(out->name));
-    } else {
-        href_basename(e->href, out->name, sizeof(out->name));
+        axl_strlcpy(out->name, e->name, sizeof(out->name));   /* fits */
+    } else if (!href_basename(e->href, out->name, sizeof(out->name))) {
+        axl_warning("listing %s: skipping an entry whose name is longer "
+                    "than %zu bytes", parent_path, sizeof(out->name) - 1);
+        return false;
     }
     out->is_dir = e->is_collection;
     out->size   = e->is_collection ? 0 : e->size;
@@ -261,14 +281,18 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
                 }
                 propstat_ok = ok;
             } else if (in_href) {
-                decode_href(tok.text, tok.text_len, cur.href,
-                            sizeof(cur.href));
+                if (!decode_href(tok.text, tok.text_len, cur.href,
+                                 sizeof(cur.href)))
+                    cur.too_long = true;
                 cur.have_href = true;
             } else if (in_displayname) {
-                size_t cp = tok.text_len;
-                if (cp >= sizeof(cur.name)) cp = sizeof(cur.name) - 1;
-                axl_memcpy(cur.name, tok.text, cp);
-                cur.name[cp] = '\0';
+                if (tok.text_len >= sizeof(cur.name)) {
+                    cur.too_long = true;
+                    cur.name[0] = '\0';
+                } else {
+                    axl_memcpy(cur.name, tok.text, tok.text_len);
+                    cur.name[tok.text_len] = '\0';
+                }
             } else if (in_size) {
                 /* getcontentlength text is ASCII digits */
                 cur.size = 0;

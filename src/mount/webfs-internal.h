@@ -44,6 +44,16 @@
 #define DIR_CACHE_MAX_ENTRIES        64       ///< Max files per cached directory.
 #define READAHEAD_BUF_SIZE           (64 * 1024)
 #define MAX_PATH_LEN                 512
+/* Size of every entry-name buffer the mount carries (DirEntry.name, the
+   protocol parsers' scratch): 255 bytes of UTF-8 plus the NUL, matching
+   the AxlFsEntry.name[256] the SDK hands names through.
+   SKIP RULE: a name that does not fit is left out of the listing, and a
+   lookup or create by such a name fails -- it is never cut. A cut name
+   can equal a sibling's ("<255 x a>b" cut to 255 bytes IS "<255 x a>"),
+   and then that sibling is listed twice and opens in place of the other.
+   TODO: size from the SDK's AXL_FS_NAME_MAX once it exists (it widens
+   AxlFsEntry.name to 766 bytes, FAT's 255 UTF-16 units). */
+#define WEBFS_NAME_SIZE              256
 #define HTTP_BODY_BUF_SIZE           4096
 /* axl-webfs's chosen default. Picked to avoid the well-trodden
    8080 / 3000 / 5000 / 9000 dev-tool zone — those collide with
@@ -77,7 +87,7 @@
 
 /// A single file or directory entry from a JSON listing.
 typedef struct {
-    char       name[256];
+    char       name[WEBFS_NAME_SIZE];   ///< whole name; see WEBFS_NAME_SIZE
     uint64_t   size;
     bool       is_dir;
     char       modified[32];   ///< ISO 8601 timestamp from server.

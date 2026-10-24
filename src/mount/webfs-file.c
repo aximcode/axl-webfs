@@ -42,19 +42,18 @@ get_parent_path(const char *path, char *parent, size_t parent_size)
 }
 
 /// Return basename of @p path (pointer into a single-threaded
-/// static buffer — fine for UEFI).
+/// static buffer — fine for UEFI), or NULL when it is longer than a
+/// listed name can be (WEBFS_NAME_SIZE): such a name is never cut,
+/// because the cut one could be a sibling's.
 static const char *
 get_file_name(const char *path)
 {
     char *base = axl_path_get_basename(path);
-    static char s_base_name[256];
-    if (base != NULL) {
-        axl_strlcpy(s_base_name, base, sizeof(s_base_name));
-        axl_free(base);
-    } else {
-        axl_strlcpy(s_base_name, path, sizeof(s_base_name));
-    }
-    return s_base_name;
+    static char s_base_name[WEBFS_NAME_SIZE];
+    size_t n = axl_strlcpy(s_base_name, base != NULL ? base : path,
+                           sizeof(s_base_name));
+    axl_free(base);
+    return n < sizeof(s_base_name) ? s_base_name : NULL;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +115,12 @@ webfs_open(
     char parent_dir[MAX_PATH_LEN];
     get_parent_path(path, parent_dir, sizeof(parent_dir));
     const char *entry_name = get_file_name(path);
+    if (entry_name == NULL) {
+        /* Nothing that long is listed (WEBFS_NAME_SIZE), so it cannot be
+           opened -- nor created, since it would never be listed. */
+        return (mode & AXL_FS_OPEN_CREATE) ? AXL_FS_ERR_INVALID
+                                           : AXL_FS_ERR_NOT_FOUND;
+    }
 
     DirEntry entry;
     int lookup_ret = dir_cache_lookup_entry(priv, parent_dir,
@@ -540,13 +545,16 @@ webfs_get_info(AxlFsProviderFile *fh, AxlFsEntry *out)
     get_parent_path(fh->path, parent_dir, sizeof(parent_dir));
     const char *name = get_file_name(fh->path);
 
-    if (dir_cache_lookup_entry(priv, parent_dir, name, &entry) == 0) {
+    /* A handle exists only for a name that fit (webfs_open), so NULL is
+       not expected; answer with an empty name rather than a cut one. */
+    if (name != NULL &&
+        dir_cache_lookup_entry(priv, parent_dir, name, &entry) == 0) {
         axl_strlcpy(out->name, entry.name, sizeof(out->name));
         out->size       = entry.size;
         out->attributes = entry.is_dir ? AXL_FS_ATTR_DIRECTORY : 0u;
     } else {
         /* Cache miss fallback: use what we know on the handle. */
-        axl_strlcpy(out->name, name, sizeof(out->name));
+        axl_strlcpy(out->name, name != NULL ? name : "", sizeof(out->name));
         out->size       = fh->file_size;
         out->attributes = fh->is_dir ? AXL_FS_ATTR_DIRECTORY : 0u;
     }
@@ -563,6 +571,7 @@ webfs_set_info(AxlFsProviderFile *fh, const AxlFsEntry *in)
     /* Treat in->name change as rename. The thunk has already
        decoded the trailing CHAR16 name into UTF-8. */
     const char *old_name = get_file_name(fh->path);
+    if (old_name == NULL) return AXL_FS_ERR_INVALID;
     if (axl_streql(old_name, in->name)) {
         return AXL_FS_OK;     /* attribute change without rename */
     }

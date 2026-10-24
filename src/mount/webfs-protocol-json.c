@@ -11,6 +11,8 @@
 #include "webfs-protocol.h"
 #include <axl/axl-json.h>
 
+AXL_LOG_DOMAIN("webfs-json-client");
+
 // ----------------------------------------------------------------------------
 // probe — GET /info
 // ----------------------------------------------------------------------------
@@ -78,6 +80,17 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
     while (axl_json_array_next(&iter, &elem) && n < max) {
         DirEntry *e = &out[n];
         axl_memset(e, 0, sizeof(*e));
+        /* A name that does not fit is skipped, not cut (WEBFS_NAME_SIZE):
+           axl_json_get_string truncates and still succeeds. */
+        size_t name_len = 0;
+        if (!axl_json_get_string_len(&elem, "name", &name_len))
+            continue;
+        if (name_len >= sizeof(e->name)) {
+            axl_warning("listing %s: skipping an entry whose name is %zu "
+                        "bytes (the limit is %zu)", path, name_len,
+                        sizeof(e->name) - 1);
+            continue;
+        }
         axl_json_get_string(&elem, "name", e->name, sizeof(e->name));
         axl_json_get_uint(&elem, "size", &e->size);
         axl_json_get_bool(&elem, "dir", &e->is_dir);

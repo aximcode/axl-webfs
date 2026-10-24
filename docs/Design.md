@@ -195,6 +195,17 @@ RFC 4918 verbs instead — both go through the same vtable):
 | `SetPosition()`        | (local tracking, no HTTP)           |
 | `Flush()`              | (no-op -- writes are immediate)     |
 
+**Name length is a skip rule.** The mount holds an entry name in 256
+bytes (`WEBFS_NAME_SIZE`, `src/mount/webfs-internal.h`): 255 bytes of
+UTF-8 and the NUL, matching the SDK's `AxlFsEntry.name`. A remote name
+longer than that -- possible from any server whose filesystem allows
+255 UTF-16 units -- is left out of the listing with a warning, and an
+`open`/create or rename by such a name fails. It is never cut: a cut
+name can equal a sibling's, which then appears twice and opens in the
+other's place. A WebDAV `<href>` is decoded whole, however long its
+percent-encoding, and only the decoded path is held to the limit. The
+buffers are to be sized from the SDK's `AXL_FS_NAME_MAX` once it exists.
+
 ### Caching Strategy
 
 1. **Directory cache** — cache `GET /list/<path>` results for 2 seconds.
