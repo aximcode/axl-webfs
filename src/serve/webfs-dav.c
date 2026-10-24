@@ -484,9 +484,10 @@ webfs_put_write(void *ctx, const void *data, size_t len)
    The discard's return means something only for a write the backend
    declared in place: AXL_OK when the resource is as it was, anything
    else when it holds what was written. Either way the ctx is dead
-   afterwards. A commit -- or a failed in-place discard -- changes the
-   path's bytes, so its cached digest goes with it: the cache is keyed
-   by size, which a same-size write does not change. */
+   afterwards. A commit -- or a failed in-place commit or discard, which
+   leaves the resource partially written -- changes the path's bytes, so
+   its cached digest goes with it: the cache is keyed by size, which a
+   same-size write does not change. */
 int
 webfs_put_close(void *ctx, bool discard)
 {
@@ -494,7 +495,7 @@ webfs_put_close(void *ctx, bool discard)
     if (w == NULL)
         return AXL_ERR;
     int rc = m_fs->write_close(w->inner, discard);
-    if ((!discard && rc == AXL_OK) || (discard && w->in_place && rc != AXL_OK))
+    if ((!discard && rc == AXL_OK) || (w->in_place && rc != AXL_OK))
         invalidate_file_digest(&w->vol, w->sub);
     axl_free(w);
     return rc;

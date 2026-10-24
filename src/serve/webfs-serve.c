@@ -972,7 +972,9 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
         int  rc      = webfs_put_close(m_put_ctx, discard);
         m_put_ctx    = NULL;
         if (!discard && rc != AXL_OK) {
-            m_put_status = put_status_for(rc, 500);
+            /* A failed in-place commit left the resource partially
+               written: 500 whatever the code, as /dav answers it. */
+            m_put_status = m_put_in_place ? 500 : put_status_for(rc, 500);
             if (m_put_in_place)
                 m_put_msg = "PUT failed part-way: the resource is partially "
                             "written\n";
