@@ -673,6 +673,9 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
  * explicitly. Returning non-zero mid-stream would force a generic 500
  * from the SDK and lose our error context.
  */
+/* Room for the longest digest checked, sha-512, as hex + NUL. */
+#define PUT_DIGEST_HEX_MAX  (64 * 2 + 1)
+
 static void        *m_put_ctx     = NULL;   /* webfs_put_open's; NULL = none */
 static uint64_t     m_put_id      = 0;      /* request holding it; 0 = none */
 static int          m_put_status  = 0;      /* 0 = no failure yet */
@@ -682,35 +685,117 @@ static const char  *m_put_msg     = NULL;   /* body for m_put_status; NULL = by 
    write and answers 400 -- the header, hex format and status /dav
    uses, so REST and /dav share one contract. */
 static AxlChecksum *m_put_hash    = NULL;
-static char         m_put_expect[65];     /* expected lowercase hex; "" = none */
+static char         m_put_expect[PUT_DIGEST_HEX_MAX];   /* claimed lowercase hex */
 
-/* Extract a 64-char hex SHA-256 from a request "Content-Digest:
-   sha-256=<hex>" header (scheme case-insensitive, "sha-256" or
-   "sha256"; stops at a comma/space so a multi-value list is tolerated).
-   Writes "" to @p out when the header is absent, malformed, or not
-   SHA-256. */
+/* One Content-Digest entry's value, @p len bytes at @p v, as lowercase
+   hex in @p hex: RFC 9530's byte-sequence form `:<base64>:` (padding
+   optional, RFC 8941), or the bare hex this server has always taken.
+   A value that is neither leaves "", which matches no digest: a claim
+   that cannot be read is a mismatch, not a pass. */
 static void
-parse_content_digest(AxlHttpRequest *req, char *out, size_t out_size)
+digest_value_hex(const char *v, size_t len, char *hex, size_t cap)
 {
-    out[0] = '\0';
-    const char *h = axl_hash_table_lookup(req->headers, "content-digest");
-    if (h == NULL)
+    static const char digits[] = "0123456789abcdef";
+
+    hex[0] = '\0';
+    if (len >= 2 && v[0] == ':' && v[len - 1] == ':') {
+        char   b64[PUT_DIGEST_HEX_MAX];
+        size_t blen = len - 2;
+        void  *raw  = NULL;
+        size_t rlen = 0;
+        if (blen + 3 >= sizeof(b64))
+            return;
+        axl_memcpy(b64, v + 1, blen);
+        while (blen % 4 != 0)
+            b64[blen++] = '=';
+        b64[blen] = '\0';
+        if (axl_base64_decode(b64, &raw, &rlen) != AXL_OK)
+            return;
+        if (rlen * 2 < cap) {
+            const uint8_t *b = raw;
+            for (size_t i = 0; i < rlen; i++) {
+                hex[2 * i]     = digits[b[i] >> 4];
+                hex[2 * i + 1] = digits[b[i] & 0x0f];
+            }
+            hex[2 * rlen] = '\0';
+        }
+        axl_free(raw);
         return;
-    const char *eq = axl_strchr(h, '=');
-    if (eq == NULL)
+    }
+    if (len == 0 || len >= cap)
         return;
-    size_t scheme_len = (size_t)(eq - h);
-    if (!((scheme_len == 7 && axl_strncasecmp(h, "sha-256", 7) == 0) ||
-          (scheme_len == 6 && axl_strncasecmp(h, "sha256", 6) == 0)))
-        return;
-    const char *hex = eq + 1;
-    size_t n = 0;
-    while (hex[n] != '\0' && hex[n] != ',' && hex[n] != ' ')
-        n++;
-    if (n != 64 || n >= out_size)
-        return;
-    axl_memcpy(out, hex, n);
-    out[n] = '\0';
+    for (size_t i = 0; i < len; i++) {
+        char c = v[i];
+        if (c >= 'A' && c <= 'F')
+            c = (char)(c - 'A' + 'a');
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            hex[0] = '\0';
+            return;
+        }
+        hex[i] = c;
+    }
+    hex[len] = '\0';
+}
+
+/* The request's Content-Digest claim (RFC 9530), read exactly as the
+   SDK's /dav PUT reads it: EVERY entry of the list is scanned and the
+   strongest algorithm hashed here is checked -- sha-512, else sha-256 --
+   each value `:<base64>:` or bare hex, `;parameters` ignored. false
+   when no entry names either (the PUT is then unverified, as on /dav);
+   on true @p claimed holds the value as lowercase hex ("" when it
+   cannot be read, which then matches nothing).
+
+   This is a second copy of the SDK's put_digest_claim
+   (axl-http-webdav.c), which is static: the SDK has no public
+   Content-Digest parser to call. It should be exported, and this
+   replaced by it. */
+static bool
+content_digest_claim(AxlHttpRequest *req, AxlChecksumType *type,
+                     char *claimed, size_t cap)
+{
+    const char *p = (req->headers != NULL)
+        ? axl_hash_table_lookup(req->headers, "content-digest") : NULL;
+    if (p == NULL)
+        return false;
+    int best = 0;   /* 0 none, 1 sha-256, 2 sha-512 */
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == ',')
+            p++;
+        if (*p == '\0')
+            break;
+        char   algo[32];
+        size_t a = 0;
+        while (*p != '\0' && *p != '=' && *p != ',' && *p != ';' &&
+               *p != ' ' && *p != '\t') {
+            char c = *p++;
+            if (c >= 'A' && c <= 'Z')
+                c = (char)(c - 'A' + 'a');
+            if (a < sizeof(algo) - 1)
+                algo[a++] = c;
+        }
+        algo[a] = '\0';
+        const char *v    = NULL;
+        size_t      vlen = 0;
+        if (*p == '=') {
+            v = ++p;
+            while (*p != '\0' && *p != ',' && *p != ';' &&
+                   *p != ' ' && *p != '\t')
+                p++;
+            vlen = (size_t)(p - v);
+        }
+        while (*p != '\0' && *p != ',')
+            p++;    /* parameters, or whatever else the entry carries */
+        int rank = axl_streql(algo, "sha-512") ? 2
+                 : axl_streql(algo, "sha-256") ? 1 : 0;
+        if (rank > best) {
+            best = rank;
+            digest_value_hex(v != NULL ? v : "", vlen, claimed, cap);
+        }
+    }
+    if (best == 0)
+        return false;
+    *type = (best == 2) ? AXL_CHECKSUM_SHA512 : AXL_CHECKSUM_SHA256;
+    return true;
 }
 
 /* The HTTP status for a webfs_put_open / webfs_put_close failure @p rc,
@@ -805,9 +890,15 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
                 m_put_ctx    = NULL;
                 m_put_status = put_status_for(rc, 409);
             } else {
-                parse_content_digest(req, m_put_expect, sizeof(m_put_expect));
-                if (m_put_expect[0] != '\0')
-                    m_put_hash = axl_checksum_new(AXL_CHECKSUM_SHA256);
+                /* A claim that cannot be checked for want of memory is
+                   refused (500, discarded), never skipped. */
+                AxlChecksumType dtype;
+                if (content_digest_claim(req, &dtype, m_put_expect,
+                                         sizeof(m_put_expect))) {
+                    m_put_hash = axl_checksum_new(dtype);
+                    if (m_put_hash == NULL)
+                        m_put_status = 500;
+                }
             }
         }
     }
@@ -832,7 +923,7 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
        resource, and its status is the PUT's: 201 only once it held. */
     if (m_put_status == 0 && m_put_hash != NULL) {
         const char *got = axl_checksum_get_string(m_put_hash);
-        if (got == NULL || axl_strcasecmp(got, m_put_expect) != 0)
+        if (got == NULL || axl_strcmp(got, m_put_expect) != 0)
             m_put_status = 400;
     }
     if (m_put_ctx != NULL) {

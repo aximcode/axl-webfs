@@ -2213,6 +2213,40 @@ NSHEOF
                 [ "$HTTP_CODE" = "404" ] && \
                     pass "serve path: the %00 PUT did not write the name before it" || \
                     fail "serve path: %00 cut" "expected 404, got $HTTP_CODE"
+
+                # ----------------------------------------------------
+                # Content-Digest on the REST PUT reads what /dav reads
+                # (RFC 9530): sha-256 and sha-512, each as `:<base64>:`
+                # or bare hex; the strongest listed is checked, an
+                # unreadable value matches nothing, and a header naming
+                # only other algorithms checks nothing.
+                # ----------------------------------------------------
+                DG_URL="$BASE/fs0/digest-rest.txt"
+                b64_of() { printf '%s' "$2" | openssl dgst "-$1" -binary | base64 -w0; }
+                hex_of() { printf '%s' "$2" | openssl dgst "-$1" -r | cut -d' ' -f1; }
+                printf '%s' "dg-old" | curl -s -o /dev/null -T - "$DG_URL" 2>/dev/null || true
+                for DG in "201|dg-v1|sha-256=:$(b64_of sha256 dg-v1):" \
+                          "400|dg-x1|sha-256=:$(b64_of sha256 not-the-body):" \
+                          "400|dg-x2|sha-512=$(hex_of sha512 not-the-body)" \
+                          "201|dg-v2|sha-512=:$(b64_of sha512 dg-v2):" \
+                          "201|dg-v3|sha-256=:$(b64_of sha256 wrong):, sha-512=:$(b64_of sha512 dg-v3):" \
+                          "400|dg-x3|sha-256=:not base64:" \
+                          "201|dg-v4|md5=:AAAAAAAAAAAAAAAAAAAAAA==:"; do
+                    DG_WANT="${DG%%|*}"
+                    DG_REST="${DG#*|}"
+                    DG_BODY="${DG_REST%%|*}"
+                    DG_HDR="${DG_REST#*|}"
+                    DG_BEFORE=$(curl -sf "$DG_URL" 2>/dev/null || true)
+                    HTTP_CODE=$(printf '%s' "$DG_BODY" | curl -s -o /dev/null \
+                        -w "%{http_code}" -H "Content-Digest: $DG_HDR" -T - \
+                        "$DG_URL" 2>/dev/null || true)
+                    CONTENT=$(curl -sf "$DG_URL" 2>/dev/null || true)
+                    if [ "$DG_WANT" = "201" ]; then DG_EXPECT="$DG_BODY"; else DG_EXPECT="$DG_BEFORE"; fi
+                    [ "$HTTP_CODE" = "$DG_WANT" ] && [ "$CONTENT" = "$DG_EXPECT" ] && \
+                        pass "serve rest digest: '${DG_HDR:0:40}' -> $DG_WANT" || \
+                        fail "serve rest digest: '${DG_HDR:0:40}'" \
+                             "expected $DG_WANT + '$DG_EXPECT', got $HTTP_CODE + '${CONTENT:0:60}'"
+                done
             else
                 fail "serve: driver did not start within 30s"
             fi

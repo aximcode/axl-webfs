@@ -241,10 +241,12 @@ axl-webfs.efi serve [-p port] [-n nic] [-t timeout]
 | `--cert`, `--key` | — | DER certificate + private-key paths (e.g. `fs0:\cert.der`). Both required together; omit for a self-signed cert. |
 | `-v` | off | Verbose logging |
 
-Uploads (`PUT`) optionally carry a `Content-Digest: sha-256=<hex>`
-header; when present the server verifies the streamed body against it
-and rejects a mismatch with `400`. The same header, hex format, and
-status apply on both the REST and `/dav` surfaces, mirroring the
+Uploads (`PUT`) optionally carry a `Content-Digest` header (RFC 9530:
+`sha-256` or `sha-512`, the value as `:<base64>:` or bare hex, e.g.
+`sha-256=<hex>`); when present the server verifies the streamed body
+against the strongest one listed and rejects a mismatch -- or a value it
+cannot read -- with `400`. The same header, forms, and status apply on
+both the REST and `/dav` surfaces, mirroring the
 `Want-Digest`/`Digest` integrity offered on `GET`. A PUT is atomic on
 both surfaces: the body goes to a temp file and replaces the target
 only once it is complete, so a mismatch or a client hang-up leaves the

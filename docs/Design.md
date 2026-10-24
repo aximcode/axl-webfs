@@ -378,10 +378,16 @@ curl -k -u admin:s3cret -H "Content-Digest: sha-256=$H" \
      -T tool.efi https://192.168.1.100:8080/fs0/tool.efi        # 400 on mismatch
 ```
 
-Upload integrity: when a `PUT` carries `Content-Digest: sha-256=<hex>`,
-`handle_put_chunk` hashes the streamed body through an `AxlChecksum`
-and compares it to the advertised value BEFORE the commit — a mismatch
-discards the write and returns `400`. This is the upload-side peer of
+Upload integrity: when a `PUT` carries a `Content-Digest` (RFC 9530,
+`sha-256` or `sha-512`, `:<base64>:` or bare hex; the strongest listed
+is checked), `handle_put_chunk` hashes the streamed body through an
+`AxlChecksum` and compares it to the advertised value BEFORE the commit
+— a mismatch, or a value that cannot be read, discards the write and
+returns `400`; a hash that cannot be allocated is `500`, never an
+unchecked commit. The header is read exactly as the SDK's /dav PUT
+reads it, by a copy of its parser (`content_digest_claim`): the SDK's is
+static, and should be exported. The undocumented `sha256=` spelling the
+old REST parser also took is gone with it. This is the upload-side peer of
 the `Want-Digest`/`Digest` emission already done on `GET`. The WebDAV
 `/dav` surface answers the same header with the same `400`; there the
 SDK checks it itself, also before the commit. Both PUTs are atomic
