@@ -282,9 +282,11 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
                 }
                 propstat_ok = ok;
             } else if (in_href || in_displayname) {
+                /* Out of memory fails the LISTING: skipping the entry
+                   would hand back a short listing as the whole one. */
                 if (axl_string_append_len(text, tok.text, tok.text_len)
                         != AXL_OK)
-                    cur.too_long = true;   /* OOM: skip, never cut */
+                    failed = true;
             } else if (in_size) {
                 /* getcontentlength text is ASCII digits */
                 cur.size = 0;
