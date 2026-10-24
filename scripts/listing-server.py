@@ -19,6 +19,8 @@ Each --case builds a tree no real host directory can stand in for:
               three text tokens.
   big         150 files: a listing well past 4 KB and past 64 entries.
   huge        16385 files: one past the mount's WEBFS_LIST_MAX_ENTRIES.
+  relaxed     JSON only: a root listing with a trailing comma -- valid
+              JSON5, not RFC 8259 -- which a strict client refuses.
   deep        A file whose path is 505 bytes -- "/files" + it is a 511-byte
               request target, the longest the SDK's HTTP client sends --
               and a sibling whose path is 511 and starts with those 505
@@ -85,6 +87,8 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
             Entry("part1&part2.txt", b"parts",
                   displayname="part1<![CDATA[&part2]]>.txt"),
         ]}
+    if case == "relaxed":
+        return {"/": [readme]}
     if case == "huge":
         return {"/": [Entry(f"h-{i:05d}.txt", b"h") for i in range(16385)]}
     if case == "big":
@@ -108,6 +112,7 @@ class ListingHandler(BaseHTTPRequestHandler):
 
     webdav: bool = False
     tree: dict[str, list[Entry]] = {}
+    case: str = ""
 
     def _send(self, status: int, body: bytes, ctype: str,
               extra: dict[str, str] | None = None) -> None:
@@ -157,6 +162,10 @@ class ListingHandler(BaseHTTPRequestHandler):
             self._send_file(path)
         elif path == "/info":
             body = json.dumps({"version": "1.0", "root": "/", "read_only": True})
+            self._send(200, body.encode(), "application/json")
+        elif self.case == "relaxed" and path in ("/list", "/list/"):
+            body = ('[{"name": "readme.txt", "size": 5, "dir": false, '
+                    '"modified": "2026-01-01T00:00:00Z"},]')
             self._send(200, body.encode(), "application/json")
         elif path == "/list" or path.startswith("/list/"):
             entries = self._entries(path[len("/list"):] or "/")
@@ -225,7 +234,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Serve a synthetic tree to the axl-webfs mount driver.")
     parser.add_argument("--case", required=True,
-                        choices=["long-names", "entities", "big", "huge", "deep"])
+                        choices=["long-names", "entities", "big", "huge", "relaxed", "deep"])
     parser.add_argument("--port", type=int, default=9877)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--webdav", action="store_true",
@@ -233,6 +242,7 @@ def main() -> None:
     args = parser.parse_args()
     ListingHandler.webdav = args.webdav
     ListingHandler.tree = build_tree(args.case)
+    ListingHandler.case = args.case
     server = HTTPServer((args.bind, args.port), ListingHandler)
     try:
         server.serve_forever()

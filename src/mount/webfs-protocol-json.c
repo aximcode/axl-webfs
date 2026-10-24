@@ -51,8 +51,13 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
     /* The whole body, however big: parsed in place (the reader takes a
        length) while the response is alive. */
     AxlJsonReader ctx;
+    /* A network body: RFC 8259 exactly (AXL_JSON_STRICT), as axl-json.h
+       asks of anything a peer sends -- a relaxed parse would take a
+       listing the server never meant (comments, trailing commas). */
     if (!axl_json_parse(response->body, response->body_size,
-                        AXL_JSON_RELAXED, &ctx)) {
+                        AXL_JSON_STRICT, &ctx)) {
+        axl_warning("listing %s: the server's JSON is not valid RFC 8259; "
+                    "refused", path);
         axl_http_client_response_free(response);
         return -1;
     }

@@ -958,6 +958,20 @@ NSHEOF
             rm -f "$LM_LOG"
         done
 
+        # The JSON listing is a network body: parsed as RFC 8259, so a
+        # listing with a trailing comma (JSON5, not JSON) is refused, not
+        # read leniently.
+        T="$LM_ARCH strict json"
+        info "QEMU" "$T: Booting mount test..."
+        listing_mount relaxed json 'ls fs1:\'
+        if grep -qa "is not valid RFC 8259; refused" "$LM_LOG" && \
+           ! echo "$LM_OUT" | grep -q "readme.txt"; then
+            pass "$T: a listing with a trailing comma is refused"
+        else
+            fail "$T: trailing comma" "expected the refusal line and no rows"
+        fi
+        rm -f "$LM_LOG"
+
         # A listing past WEBFS_LIST_MAX_ENTRIES (16384) is REFUSED, loudly
         # -- an error to the Shell and a log line -- never cut to the
         # first 16384.
