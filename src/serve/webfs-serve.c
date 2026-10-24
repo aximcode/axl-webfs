@@ -119,7 +119,8 @@ AXL_LOG_DOMAIN("webfs-serve");
 /// decoding the URL path. A path is REFUSED, never cut -- a cut path
 /// names another file: one whose decoded form, or whose "<vol>:<sub>"
 /// UEFI path, does not fit is PATH_TOO_LONG; one that decodes to an
-/// embedded NUL, a '\\' or a ':' is PATH_BAD.
+/// embedded NUL, a '\\' or a ':', or that has a component starting with
+/// a blank or ending with a blank or period, is PATH_BAD.
 static int
 parse_volume_path(const char *url_path, FtVolume *volume,
                   char *sub_path, size_t sub_path_size)
@@ -154,6 +155,10 @@ parse_volume_path(const char *url_path, FtVolume *volume,
        %5C / %3A they would reach the volume as separators, spelling a
        path no '/'-split check sees (".\\<temp>" for "<temp>"). */
     if (axl_strchr(sub_path, '\\') != NULL || axl_strchr(sub_path, ':') != NULL)
+        return PATH_BAD;
+    /* Nor a component FAT would trim to another name ("<temp>.",
+       "%20<temp>"): no stored name is spelled that way. */
+    if (!ft_path_components_ok(sub_path))
         return PATH_BAD;
     return PATH_OK;
 }

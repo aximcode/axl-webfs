@@ -57,6 +57,13 @@ void   ft_set_list_filter(FtListFilter hide);
 int    ft_build_path(const FtVolume *vol, const char *sub_path,
                      char *out, size_t out_size);
 
+/* Whether every '/'-separated component of @p sub_path is a name FAT
+   could store as spelled: none starts with a blank or ends with a blank
+   or a period (so "." and ".." are refused too). The FAT driver TRIMS
+   those before it looks a name up, so "<x>." or " <x>" would reach the
+   entry <x> under a spelling no exact-name check matches. */
+bool   ft_path_components_ok(const char *sub_path);
+
 int    ft_list_volumes(bool as_json, char *buf, size_t buf_size, size_t *written);
 int    ft_list_dir(FtVolume *vol, const char *path, bool as_json, bool read_only, char *buf, size_t buf_size, size_t *written);
 

@@ -66,6 +66,22 @@ int ft_build_path(const FtVolume *vol, const char *sub_path,
     return 0;
 }
 
+bool ft_path_components_ok(const char *sub_path)
+{
+    const char *start = sub_path;
+    for (const char *q = sub_path; ; q++) {
+        if (*q == '/' || *q == '\0') {
+            size_t len = (size_t)(q - start);
+            if (len > 0 && (start[0] == ' ' || start[len - 1] == ' ' ||
+                            start[len - 1] == '.'))
+                return false;
+            if (*q == '\0')
+                return true;
+            start = q + 1;
+        }
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Streaming read
 // ----------------------------------------------------------------------------

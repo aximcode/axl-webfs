@@ -2023,6 +2023,11 @@ NSHEOF
                             pass "serve live temp: REST ?mkdir of it is 404" || \
                             fail "serve live temp: REST ?mkdir of it" \
                                  "expected 404, got $HTTP_CODE"
+                        # FAT trims a leading blank, and trailing blanks
+                        # and periods, from a name before it looks it up,
+                        # so "<temp>." and "<temp> " would open the temp;
+                        # no FAT name can start with a blank or end with a
+                        # blank or period, so such a component is 400.
                         # Every other spelling of the temp is refused too:
                         # a backslash or ':' is UEFI path syntax, not a
                         # name byte, so a REST path decoding to one is 400;
@@ -2038,13 +2043,23 @@ NSHEOF
                                   "GET|/fs0/$TEMP_NAME/|404" \
                                   "DELETE|/fs0/$TEMP_NAME/|404" \
                                   "GET|/fs0/$TEMP_LC|404" \
-                                  "DELETE|/fs0/$TEMP_LC|404"; do
+                                  "DELETE|/fs0/$TEMP_LC|404" \
+                                  "GET|/fs0/$TEMP_NAME.|400" \
+                                  "HEAD|/fs0/$TEMP_NAME.|400" \
+                                  "GET|/fs0/$TEMP_NAME%20|400" \
+                                  "DELETE|/fs0/%20$TEMP_NAME|400" \
+                                  "DELETE|/fs0/$TEMP_NAME.|400"; do
                             LT_METHOD="${LT%%|*}"
                             LT_REST="${LT#*|}"
                             LT_PATH="${LT_REST%%|*}"
                             LT_WANT="${LT_REST##*|}"
-                            HTTP_CODE=$(curl -s -o /dev/null -X "$LT_METHOD" \
-                                -w "%{http_code}" "$BASE$LT_PATH" 2>/dev/null || true)
+                            if [ "$LT_METHOD" = "HEAD" ]; then
+                                HTTP_CODE=$(curl -s -o /dev/null -I \
+                                    -w "%{http_code}" "$BASE$LT_PATH" 2>/dev/null || true)
+                            else
+                                HTTP_CODE=$(curl -s -o /dev/null -X "$LT_METHOD" \
+                                    -w "%{http_code}" "$BASE$LT_PATH" 2>/dev/null || true)
+                            fi
                             [ "$HTTP_CODE" = "$LT_WANT" ] && \
                                 pass "serve live temp: $LT_METHOD $LT_PATH is $LT_WANT" || \
                                 fail "serve live temp: $LT_METHOD $LT_PATH" \
@@ -2054,7 +2069,8 @@ NSHEOF
                             "$BASE/fs0/mv-src.txt" 2>/dev/null || true
                         for LT_DST in "$BASE/dav/fs0/$TEMP_NAME/" \
                                       "$BASE/dav/fs0/.\\$TEMP_NAME" \
-                                      "$BASE/dav/fs0/$TEMP_LC"; do
+                                      "$BASE/dav/fs0/$TEMP_LC" \
+                                      "$BASE/dav/fs0/$TEMP_NAME."; do
                             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
                                 -X MOVE -H "Destination: $LT_DST" -H "Overwrite: T" \
                                 "$BASE/dav/fs0/mv-src.txt" 2>/dev/null || true)

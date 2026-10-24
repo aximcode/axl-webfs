@@ -511,7 +511,11 @@ keeps its registry private. EVERY component of a path is checked, split
 on each separator the volume honours ('/', '\\', ':'), so a trailing
 slash or another letter case still names the temp; and a REST path that
 decodes to a '\\' or ':' (`%5C`, `%3A`) is 400, as is a /dav path
-holding one -- they are UEFI path syntax, not name bytes. `serve -v` logs the temp each PUT streams
+holding one -- they are UEFI path syntax, not name bytes. So is a path with a component that starts with a blank or ends with a
+blank or period (`<temp>.`, `<temp>%20`, `%20<temp>`, and `.`/`..`):
+the FAT driver trims those before its lookup, so they would open the
+temp under a spelling no exact-name check matches, and FAT can store no
+such name. (The SDK's own live-temp check has the same gap.) `serve -v` logs the temp each PUT streams
 to ("PUT fs0:/a.txt: body streams to temp ~AP1A2B3.TMP"), which names
 the file a power loss could leave behind. This is not rebuilt in
 axl-webfs on purpose: deleting through the writer's handle and flushing

@@ -61,7 +61,7 @@ typedef enum {
     PATH_VOLUME,
     PATH_OBJECT,
     PATH_INVALID,           ///< unknown volume
-    PATH_BAD,               ///< a path that does not fit, or holds '\\' or ':'
+    PATH_BAD,               ///< too long; a '\\' or ':'; a FAT-trimmed component
 } DavPathKind;
 
 /* A PUT in flight (REST or /dav): the SDK's write ctx, plus where it
@@ -150,7 +150,8 @@ parse_dav_path(const char *url, FtVolume *vol, AxlFsRoot **root,
     char full[FT_PATH_MAX];
     if (axl_strlcpy(sub, p, sub_size) >= sub_size ||
         ft_build_path(vol, sub, full, sizeof(full)) != 0 ||
-        axl_strchr(sub, '\\') != NULL || axl_strchr(sub, ':') != NULL)
+        axl_strchr(sub, '\\') != NULL || axl_strchr(sub, ':') != NULL ||
+        !ft_path_components_ok(sub))
         return PATH_BAD;
     return PATH_OBJECT;
 }
