@@ -18,36 +18,25 @@ AXL_LOG_DOMAIN("webfs-mount-http");
 // HTTP request with auto-reconnect
 // ----------------------------------------------------------------------------
 
-/* Room for base_url + a percent-encoded wire path (3x) + a raw query
-   (a rename's encoded new name, 3x WEBFS_NAME_SIZE). */
 /* axl_http_request writes the request target (path + "?" + query) into
    512 bytes and silently CUTS a longer one (axl-http-client.c,
    full_path[512]), so a longer target is refused here instead. */
 #define WEBFS_REQUEST_TARGET_MAX  512
-#define WEBFS_URL_MAX \
-    (280 + WEBFS_WIRE_PATH_MAX * 3 + WEBFS_NAME_SIZE * 3 + 16)
 
-/* Build the request URL for @p path: the path portion URL-encoded
-   ('/' kept), a "?query" kept raw. false -- logged, never cut -- when a
-   part does not fit; a cut URL names another resource. */
-static bool
-webfs_request_url(WebFsPrivate *priv, const char *path, char *url,
-                  size_t size)
+bool
+webfs_request_url(WebFsPrivate *priv, const char *path, const char *query,
+                  char *url, size_t size)
 {
-    const char *query = path;
-    while (*query && *query != '?') query++;
-    size_t plen = (size_t)(query - path);
-
-    char path_only[WEBFS_WIRE_PATH_MAX];
+    /* The WHOLE path is encoded -- a '?' or '#' in a name is a name
+       byte (%3F, %23), never the start of a query a server would split
+       off; the query is the caller's, passed apart. */
     char enc[WEBFS_WIRE_PATH_MAX * 3];
     int  n = -1;
-    if (plen < sizeof(path_only)) {
-        axl_memcpy(path_only, path, plen);
-        path_only[plen] = '\0';
-        if (axl_url_encode(path_only, enc, sizeof(enc)) >= 0 &&
-            axl_strlen(enc) + axl_strlen(query) < WEBFS_REQUEST_TARGET_MAX)
-            n = axl_snprintf(url, size, "%s%s%s", priv->base_url, enc, query);
-    }
+    if (axl_url_encode(path, enc, sizeof(enc)) >= 0 &&
+        axl_strlen(enc) + (query != NULL ? 1 + axl_strlen(query) : 0)
+            < WEBFS_REQUEST_TARGET_MAX)
+        n = axl_snprintf(url, size, "%s%s%s%s", priv->base_url, enc,
+                         query != NULL ? "?" : "", query != NULL ? query : "");
     if (n < 0 || (size_t)n >= size) {
         axl_error("request path is too long (%zu bytes); refused",
                   axl_strlen(path));
@@ -61,6 +50,7 @@ webfs_http_request(
     WebFsPrivate        *priv,
     const char             *method,
     const char             *path,
+    const char             *query,
     AxlHashTable           *extra_headers,
     const void             *body,
     size_t                  body_len,
@@ -68,7 +58,7 @@ webfs_http_request(
 )
 {
     char url[WEBFS_URL_MAX];
-    if (!webfs_request_url(priv, path, url, sizeof(url)))
+    if (!webfs_request_url(priv, path, query, url, sizeof(url)))
         return -1;
 
     return axl_http_request(
@@ -113,7 +103,7 @@ webfs_http_request_buf_streaming(
 )
 {
     char url[WEBFS_URL_MAX];
-    if (!webfs_request_url(priv, path, url, sizeof(url)))
+    if (!webfs_request_url(priv, path, NULL, url, sizeof(url)))
         return -1;
 
     PutDrainCtx d = { .bytes = body, .total = body_len, .pos = 0 };

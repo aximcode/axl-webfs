@@ -16,7 +16,9 @@ Each --case builds a tree no real host directory can stand in for:
               href percent-encoded (765 characters).
   entities    WebDAV displaynames that need decoding: one spelled with
               `&amp;`/`&lt;`/`&gt;`, one split by a CDATA section into
-              three text tokens.
+              three text tokens. And names a client must encode: "what?.txt"
+              (a '?' is a name byte, not a query) and a directory
+              "pct%41dir" (a '%' that must not be decoded again).
   big         150 files: a listing well past 4 KB and past 64 entries.
   huge        16385 files: one past the mount's WEBFS_LIST_MAX_ENTRIES.
   relaxed     JSON only: a root listing with a trailing comma -- valid
@@ -86,7 +88,9 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
             Entry("R&D <notes>.txt", b"notes"),
             Entry("part1&part2.txt", b"parts",
                   displayname="part1<![CDATA[&part2]]>.txt"),
-        ]}
+            Entry("what?.txt", b"question\n"),
+            Entry("pct%41dir"),
+        ], "/pct%41dir": [Entry("inner.txt", b"inner")]}
     if case == "relaxed":
         return {"/": [readme]}
     if case == "huge":

@@ -40,7 +40,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
     axl_snprintf(list_path, sizeof(list_path), "/list%s", path);
 
     AxlHttpClientResponse *response = NULL;
-    int rc = webfs_http_request(priv, "GET", list_path, NULL, NULL, 0,
+    int rc = webfs_http_request(priv, "GET", list_path, NULL, NULL, NULL, 0,
                                 &response);
     if (rc != 0 || response == NULL) return -1;
     if (response->status_code != 200) {
@@ -133,7 +133,7 @@ proto_read_range(WebFsPrivate *priv, const char *path,
     axl_snprintf(file_path, sizeof(file_path), "/files%s", path);
 
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "GET", file_path, hdrs, NULL, 0,
+    int rc = webfs_http_request(priv, "GET", file_path, NULL, hdrs, NULL, 0,
                                 &resp);
     axl_free(axl_hash_table_lookup(hdrs, "range"));
     if (out_digest_hex != NULL) {
@@ -219,10 +219,10 @@ static int
 proto_mkdir(WebFsPrivate *priv, const char *path, size_t *out_status)
 {
     char mkdir_path[WEBFS_WIRE_PATH_MAX];
-    axl_snprintf(mkdir_path, sizeof(mkdir_path), "/files%s?mkdir", path);
+    axl_snprintf(mkdir_path, sizeof(mkdir_path), "/files%s", path);
 
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "POST", mkdir_path, NULL, NULL, 0,
+    int rc = webfs_http_request(priv, "POST", mkdir_path, "mkdir", NULL, NULL, 0,
                                 &resp);
     if (rc != 0 || resp == NULL) return -1;
     *out_status = resp->status_code;
@@ -241,7 +241,7 @@ proto_remove(WebFsPrivate *priv, const char *path, size_t *out_status)
     axl_snprintf(file_path, sizeof(file_path), "/files%s", path);
 
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "DELETE", file_path, NULL, NULL, 0,
+    int rc = webfs_http_request(priv, "DELETE", file_path, NULL, NULL, NULL, 0,
                                 &resp);
     if (rc != 0) {
         if (resp != NULL) axl_http_client_response_free(resp);
@@ -260,18 +260,18 @@ static int
 proto_rename(WebFsPrivate *priv, const char *old_path,
              const char *new_name, size_t *out_status)
 {
-    /* URL-encode the new basename so spaces / + / & / # / etc.
-       survive the query string. webfs_http_request URL-encodes the
-       path portion but leaves the query verbatim, so anything past
-       the ? is on us. */
-    char new_name_enc[256 * 3];
-    axl_url_encode(new_name, new_name_enc, sizeof(new_name_enc));
-    char rename_path[WEBFS_WIRE_PATH_MAX + sizeof(new_name_enc)];
-    axl_snprintf(rename_path, sizeof(rename_path),
-                 "/files%s?rename=%s", old_path, new_name_enc);
+    /* The query is ours to encode: URL-encode the new basename so
+       spaces / + / & / # / etc. survive it. */
+    char new_name_enc[WEBFS_NAME_SIZE * 3];
+    char query[sizeof(new_name_enc) + 8];
+    char rename_path[WEBFS_WIRE_PATH_MAX];
+    if (axl_url_encode(new_name, new_name_enc, sizeof(new_name_enc)) < 0)
+        return -1;
+    axl_snprintf(query, sizeof(query), "rename=%s", new_name_enc);
+    axl_snprintf(rename_path, sizeof(rename_path), "/files%s", old_path);
 
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "POST", rename_path, NULL, NULL, 0,
+    int rc = webfs_http_request(priv, "POST", rename_path, query, NULL, NULL, 0,
                                 &resp);
     if (rc != 0) {
         if (resp != NULL) axl_http_client_response_free(resp);

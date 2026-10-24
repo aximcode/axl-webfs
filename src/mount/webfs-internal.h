@@ -216,9 +216,21 @@ int  dir_cache_fetch(WebFsPrivate *priv, const char *path, DirEntry **entries, s
 int  dir_cache_lookup_entry(WebFsPrivate *priv, const char *dir_path, const char *name, DirEntry *entry);
 void dir_cache_invalidate(WebFsPrivate *priv, const char *path);
 
-/// Issue an HTTP request with automatic reconnect on connection error.
+/// Room for any URL webfs_request_url builds: base_url + a percent-encoded
+/// wire path (3x) + a query (a rename's encoded new name, 3x a name).
+#define WEBFS_URL_MAX \
+    (280 + WEBFS_WIRE_PATH_MAX * 3 + WEBFS_NAME_SIZE * 3 + 16)
+
+/// The URL for mount path @p path: base_url, then @p path percent-encoded
+/// whole ('/' kept; a '?' or '#' in a name is a name byte), then
+/// "?" @p query when @p query is non-NULL (already encoded by the
+/// caller). false -- logged, never cut -- when it does not fit, or when
+/// the request target would exceed what the SDK client sends whole.
+bool webfs_request_url(WebFsPrivate *priv, const char *path, const char *query, char *url, size_t size);
+
+/// Issue an HTTP request for @p path (+ "?" @p query, NULL for none).
 /// Caller must free *response with axl_http_client_response_free().
-int webfs_http_request(WebFsPrivate *priv, const char *method, const char *path, AxlHashTable *extra_headers, const void *body, size_t body_len, AxlHttpClientResponse **response);
+int webfs_http_request(WebFsPrivate *priv, const char *method, const char *path, const char *query, AxlHashTable *extra_headers, const void *body, size_t body_len, AxlHttpClientResponse **response);
 
 /// Streaming-PUT/POST variant: builds the URL exactly like
 /// webfs_http_request, then ships the body in chunks through

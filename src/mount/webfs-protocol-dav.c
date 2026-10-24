@@ -80,7 +80,7 @@ static int
 proto_probe(WebFsPrivate *priv)
 {
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "OPTIONS", "/", NULL, NULL, 0, &resp);
+    int rc = webfs_http_request(priv, "OPTIONS", "/", NULL, NULL, NULL, 0, &resp);
     if (rc != 0 || resp == NULL) return -1;
 
     int ok = 0;
@@ -141,18 +141,16 @@ dav_entry_emit(const DavEntry *e, const char *parent_path,
 
     /* Skip the self entry — PROPFIND Depth:1 returns the queried
        resource plus its children. The self entry is whichever <href>
-       resolves to the parent_path (modulo trailing slash). Both sides
-       have to compare in the same encoding; decode_href already
-       percent-decoded e->href, so percent-decode parent_path here
-       too. Non-ASCII / +-containing paths would otherwise leak the
-       directory itself into the listing as a child. */
-    char parent_dec[MAX_PATH_LEN];
-    axl_url_decode(parent_path, parent_dec, sizeof(parent_dec));
+       resolves to the parent_path (modulo trailing slash). decode_href
+       percent-decoded e->href; parent_path is the mount's own path,
+       raw bytes already -- decoding it again would turn a directory
+       named "100%41" into "100A" and leak the directory into its own
+       listing as a child. */
     size_t hlen = axl_strlen(e->href);
-    size_t plen = axl_strlen(parent_dec);
+    size_t plen = axl_strlen(parent_path);
     while (hlen > 1 && e->href[hlen - 1] == '/') hlen--;
-    while (plen > 1 && parent_dec[plen - 1] == '/') plen--;
-    if (hlen == plen && axl_memcmp(e->href, parent_dec, hlen) == 0)
+    while (plen > 1 && parent_path[plen - 1] == '/') plen--;
+    if (hlen == plen && axl_memcmp(e->href, parent_path, hlen) == 0)
         return false;
 
     axl_memset(out, 0, sizeof(*out));
@@ -178,7 +176,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
                           axl_strdup("application/xml; charset=\"utf-8\""));
 
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "PROPFIND", path, hdrs,
+    int rc = webfs_http_request(priv, "PROPFIND", path, NULL, hdrs,
                                 k_propfind_allprop,
                                 sizeof(k_propfind_allprop) - 1, &resp);
     axl_free(axl_hash_table_lookup(hdrs, "depth"));
@@ -383,7 +381,7 @@ proto_read_range(WebFsPrivate *priv, const char *path,
     }
 
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "GET", path, hdrs, NULL, 0, &resp);
+    int rc = webfs_http_request(priv, "GET", path, NULL, hdrs, NULL, 0, &resp);
     axl_free(axl_hash_table_lookup(hdrs, "range"));
     if (out_digest_hex != NULL) {
         axl_free(axl_hash_table_lookup(hdrs, "want-digest"));
@@ -457,7 +455,7 @@ static int
 proto_mkdir(WebFsPrivate *priv, const char *path, size_t *out_status)
 {
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "MKCOL", path, NULL, NULL, 0, &resp);
+    int rc = webfs_http_request(priv, "MKCOL", path, NULL, NULL, NULL, 0, &resp);
     if (rc != 0 || resp == NULL) return -1;
     *out_status = resp->status_code;
     axl_http_client_response_free(resp);
@@ -472,7 +470,7 @@ static int
 proto_remove(WebFsPrivate *priv, const char *path, size_t *out_status)
 {
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "DELETE", path, NULL, NULL, 0, &resp);
+    int rc = webfs_http_request(priv, "DELETE", path, NULL, NULL, NULL, 0, &resp);
     if (rc != 0) {
         if (resp != NULL) axl_http_client_response_free(resp);
         return -1;
@@ -495,23 +493,20 @@ proto_rename(WebFsPrivate *priv, const char *old_path,
        servers accept either the full URL or the path-only form;
        wsgidav, Apache mod_dav, and NextCloud all accept full URL
        so that's the safe shape. */
-    char old_dir[MAX_PATH_LEN];
-    axl_strlcpy(old_dir, old_path, sizeof(old_dir));
-    size_t dlen = axl_strlen(old_dir);
-    while (dlen > 1 && old_dir[dlen - 1] != '/') {
-        old_dir[--dlen] = '\0';
-    }
-
-    /* Worst-case bound: base_url (sizeof(priv->base_url)) +
-       old_dir (MAX_PATH_LEN) + URL-encoded new_name (3× of the
-       256-byte basename → 768) + NUL. Round up; truncation here
-       would silently produce a malformed Destination header. */
-    char new_name_enc[768];
-    axl_url_encode(new_name, new_name_enc, sizeof(new_name_enc));
-    char dest_url[sizeof(priv->base_url) + MAX_PATH_LEN
-                  + sizeof(new_name_enc) + 1];
-    axl_snprintf(dest_url, sizeof(dest_url), "%s%s%s",
-                 priv->base_url, old_dir, new_name_enc);
+    /* The new path is the old one's directory plus the new name, and
+       the URL is built -- the WHOLE path percent-encoded -- exactly as
+       a request URL is: a directory named with a space, '%' or a
+       non-ASCII byte must reach the server as that name. */
+    char   new_path[MAX_PATH_LEN];
+    size_t dlen = axl_strlen(old_path);
+    while (dlen > 1 && old_path[dlen - 1] != '/')
+        dlen--;
+    int n = axl_snprintf(new_path, sizeof(new_path), "%.*s%s",
+                         (int)dlen, old_path, new_name);
+    char dest_url[WEBFS_URL_MAX];
+    if (n < 0 || (size_t)n >= sizeof(new_path) ||
+        !webfs_request_url(priv, new_path, NULL, dest_url, sizeof(dest_url)))
+        return -1;
 
     AxlHashTable *hdrs = axl_hash_table_new_str();
     if (hdrs == NULL) return -1;
@@ -519,7 +514,7 @@ proto_rename(WebFsPrivate *priv, const char *old_path,
     axl_hash_table_insert(hdrs, "overwrite", axl_strdup("T"));
 
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "MOVE", old_path, hdrs, NULL, 0, &resp);
+    int rc = webfs_http_request(priv, "MOVE", old_path, NULL, hdrs, NULL, 0, &resp);
     axl_free(axl_hash_table_lookup(hdrs, "destination"));
     axl_free(axl_hash_table_lookup(hdrs, "overwrite"));
     axl_hash_table_free(hdrs);

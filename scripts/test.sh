@@ -940,6 +940,29 @@ NSHEOF
             fail "$T: CDATA" "no 'part1&part2.txt' row in: ${LM_OUT:0:300}"
         rm -f "$LM_LOG"
 
+        # A name is encoded WHOLE in a request: a '?' is a name byte
+        # (%3F), not the start of a query the server splits off; and a
+        # directory's own name is not percent-decoded again when its
+        # PROPFIND self entry is matched -- "pct%41dir" would read as
+        # "pctAdir", and the directory list itself as its own child.
+        for LM_PROTO in json dav; do
+            T="$LM_ARCH name encoding ($LM_PROTO)"
+            info "QEMU" "$T: Booting mount test..."
+            listing_mount entities "$LM_PROTO" \
+                "echo === Q ===" 'type fs1:\what?.txt' "echo === R ===" 'ls -r fs1:\'
+            Q_OUT=$(echo "$LM_OUT" | sed -n 's/.*=== Q ===\(.*\)=== R ===.*/\1/p')
+            [ "$Q_OUT" = "question" ] && \
+                pass "$T: a name with '?' is read whole" || \
+                fail "$T: '?' in a name" "expected 'question', got '${Q_OUT:0:120}'"
+            PCT_BLOCK=$(sed -n '/=== R ===/,/=== OUT DONE ===/p' "$LM_LOG" | tr -d '\r' | \
+                sed -n '/^Directory of: FS1:\\pct%41dir\\$/,/Dir(s)$/p' | \
+                grep -E "File\(s\)|Dir\(s\)" | tr -s ' ' | tr '\n' '|')
+            [ "$PCT_BLOCK" = " 1 File(s) 5 bytes| 0 Dir(s)|" ] && \
+                pass "$T: a directory named 'pct%41dir' lists only its own child" || \
+                fail "$T: '%' in a directory name" "expected ' 1 File(s) 5 bytes| 0 Dir(s)|', got '$PCT_BLOCK'"
+            rm -f "$LM_LOG"
+        done
+
         # A big directory lists completely: 151 files, a JSON listing of
         # ~19 KB and a PROPFIND of ~50 KB, past both a 4 KB body and a
         # 64-entry table.
