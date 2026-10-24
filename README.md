@@ -231,8 +231,11 @@ FS0:\> ls fs1:
 ```
 
 A path with a space is quoted (`"http://host:9876/my share/"`). One
-with a `.`, `..` or empty segment, or an encoded separator (`%2F`), is
-refused: the server would read it as another place.
+with a `.`, `..` or empty segment, an encoded separator (`%2F`, `%5C`)
+or a backslash is refused: the server would read it as another place.
+So is a share the server does not have, or a path naming a file rather
+than a directory: the mount fails with a message instead of showing an
+empty volume.
 
 ### `serve`
 
