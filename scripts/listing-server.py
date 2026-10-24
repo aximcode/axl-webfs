@@ -17,6 +17,7 @@ Each --case builds a tree no real host directory can stand in for:
   entities    WebDAV displaynames that need decoding: one spelled with
               `&amp;`/`&lt;`/`&gt;`, one split by a CDATA section into
               three text tokens.
+  big         150 files: a listing well past 4 KB and past 64 entries.
 
 Usage:
     ./listing-server.py --case long-names --port 9877 [--webdav]
@@ -70,6 +71,9 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
             Entry("part1&part2.txt", b"parts",
                   displayname="part1<![CDATA[&part2]]>.txt"),
         ]}
+    if case == "big":
+        files = [Entry(f"big-{i:03d}-{'p' * 40}.txt", b"big!\n") for i in range(150)]
+        return {"/": [readme, *files]}
     raise ValueError(f"unknown case {case!r}")
 
 
@@ -195,7 +199,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Serve a synthetic tree to the axl-webfs mount driver.")
     parser.add_argument("--case", required=True,
-                        choices=["long-names", "entities"])
+                        choices=["long-names", "entities", "big"])
     parser.add_argument("--port", type=int, default=9877)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--webdav", action="store_true",

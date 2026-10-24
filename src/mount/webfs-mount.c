@@ -180,9 +180,7 @@ mount_setup(AxlLoop *loop, void *user)
         }
     }
 
-    priv->dir_cache = axl_cache_new(DIR_CACHE_MAX_SLOTS,
-                                    sizeof(DirCacheSlot),
-                                    DIR_CACHE_TTL_MS);
+    priv->dir_cache = dir_cache_new();
     if (priv->dir_cache == NULL) {
         axl_http_client_free(priv->http_client);
         axl_free(priv);
@@ -217,7 +215,7 @@ mount_setup(AxlLoop *loop, void *user)
     if (!probed_ok) {
         axl_printf("axl-webfs-mount: server validation failed "
                    "(no %s endpoint reachable)\n", proto_cfg);
-        axl_cache_free(priv->dir_cache);
+        dir_cache_free(priv->dir_cache);
         axl_http_client_free(priv->http_client);
         axl_free(priv);
         return AXL_ERR;
@@ -238,7 +236,7 @@ mount_setup(AxlLoop *loop, void *user)
     if (axl_fs_provider_publish(&provider, &g_webfs_vendor_guid,
                                 &priv->fs_handle) != AXL_OK) {
         axl_printf("axl-webfs-mount: provider publish failed\n");
-        axl_cache_free(priv->dir_cache);
+        dir_cache_free(priv->dir_cache);
         axl_http_client_free(priv->http_client);
         axl_free(priv);
         return AXL_ERR;
@@ -264,7 +262,7 @@ mount_teardown(void *user)
     if (priv->fs_handle != NULL) {
         axl_fs_provider_unpublish(priv->fs_handle);
     }
-    if (priv->dir_cache != NULL)   axl_cache_free(priv->dir_cache);
+    if (priv->dir_cache != NULL)   dir_cache_free(priv->dir_cache);
     if (priv->http_client != NULL) axl_http_client_free(priv->http_client);
     axl_free(priv);
 

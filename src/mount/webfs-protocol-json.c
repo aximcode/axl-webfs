@@ -34,11 +34,8 @@ proto_probe(WebFsPrivate *priv)
 // ----------------------------------------------------------------------------
 
 static int
-proto_list_dir(WebFsPrivate *priv, const char *path,
-               DirEntry *out, size_t max, size_t *out_count)
+proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
 {
-    *out_count = 0;
-
     char list_path[MAX_PATH_LEN];
     axl_snprintf(list_path, sizeof(list_path), "/list%s", path);
 
@@ -51,34 +48,27 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
         return -1;
     }
 
-    size_t body_size = response->body_size;
-    if (body_size >= HTTP_BODY_BUF_SIZE) body_size = HTTP_BODY_BUF_SIZE - 1;
-    char *body_buf = axl_malloc(body_size + 1);
-    if (body_buf == NULL) {
-        axl_http_client_response_free(response);
-        return -1;
-    }
-    axl_memcpy(body_buf, response->body, body_size);
-    body_buf[body_size] = '\0';
-    axl_http_client_response_free(response);
-
+    /* The whole body, however big: parsed in place (the reader takes a
+       length) while the response is alive. */
     AxlJsonReader ctx;
-    if (!axl_json_parse(body_buf, body_size, AXL_JSON_RELAXED, &ctx)) {
-        axl_free(body_buf);
+    if (!axl_json_parse(response->body, response->body_size,
+                        AXL_JSON_RELAXED, &ctx)) {
+        axl_http_client_response_free(response);
         return -1;
     }
 
     AxlJsonArrayIter iter;
     if (!axl_json_value_array_begin(&ctx, &iter)) {
         axl_json_free(&ctx);
-        axl_free(body_buf);
+        axl_http_client_response_free(response);
         return -1;
     }
 
-    size_t n = 0;
+    int           ret = 0;
     AxlJsonReader elem;
-    while (axl_json_array_next(&iter, &elem) && n < max) {
-        DirEntry *e = &out[n];
+    while (axl_json_array_next(&iter, &elem)) {
+        DirEntry  entry;
+        DirEntry *e = &entry;
         axl_memset(e, 0, sizeof(*e));
         /* A name that does not fit is skipped, not cut (WEBFS_NAME_SIZE):
            axl_json_get_string truncates and still succeeds. */
@@ -96,14 +86,15 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
         axl_json_get_bool(&elem, "dir", &e->is_dir);
         axl_json_get_string(&elem, "modified", e->modified,
                             sizeof(e->modified));
-        if (e->name[0] != '\0') n++;
+        if (e->name[0] != '\0' && axl_array_append(out, e) != AXL_OK) {
+            ret = -1;   /* OOM: a short listing would pass for a whole one */
+            break;
+        }
     }
 
     axl_json_free(&ctx);
-    axl_free(body_buf);
-
-    *out_count = n;
-    return 0;
+    axl_http_client_response_free(response);
+    return ret;
 }
 
 // ----------------------------------------------------------------------------

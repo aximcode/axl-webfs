@@ -48,10 +48,10 @@ typedef struct {
     /// to choose at runtime.
     int (*probe)(WebFsPrivate *priv);
 
-    /// Fetch a directory listing. Caller passes a buffer of
-    /// DirEntry; fills @p out_count.
-    int (*list_dir)(WebFsPrivate *priv, const char *path,
-                    DirEntry *out, size_t max, size_t *out_count);
+    /// Fetch a directory listing, appending every entry to @p out (an
+    /// AxlArray of DirEntry) -- the whole listing, however big; an
+    /// entry is left out only by the WEBFS_NAME_SIZE skip rule.
+    int (*list_dir)(WebFsPrivate *priv, const char *path, AxlArray *out);
 
     /// Fetch a byte range. Caller's @p buf has room for @p len bytes;
     /// @p out_got is set to the number actually returned (≤ len).

@@ -169,11 +169,8 @@ dav_entry_emit(const DavEntry *e, const char *parent_path,
 }
 
 static int
-proto_list_dir(WebFsPrivate *priv, const char *path,
-               DirEntry *out, size_t max, size_t *out_count)
+proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
 {
-    *out_count = 0;
-
     AxlHashTable *hdrs = axl_hash_table_new_str();
     if (hdrs == NULL) return -1;
     axl_hash_table_insert(hdrs, "depth", axl_strdup("1"));
@@ -229,7 +226,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
     bool   in_displayname    = false;
     bool   in_resourcetype   = false;
     bool   in_size           = false;
-    size_t n = 0;
+    bool   oom = false;
     /* An element's text can arrive as several TEXT tokens -- a CDATA
        section splits it ("a<![CDATA[&b]]>c" is three) -- so href and
        displayname accumulate here and are taken whole at the element's
@@ -242,7 +239,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
     }
 
     AxlXmlToken tok;
-    while (axl_xml_reader_next(r, &tok) && n < max) {
+    while (!oom && axl_xml_reader_next(r, &tok)) {
         if (tok.type == AXL_XML_TOKEN_START_ELEMENT) {
             if (axl_xml_token_local_name_eq(&tok, "response")) {
                 dav_entry_reset(&cur);
@@ -338,7 +335,10 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
             } else if (in_response &&
                        axl_xml_token_local_name_eq(&tok, "response")) {
                 in_response = false;
-                if (dav_entry_emit(&cur, path, &out[n])) n++;
+                DirEntry entry;
+                if (dav_entry_emit(&cur, path, &entry) &&
+                    axl_array_append(out, &entry) != AXL_OK)
+                    oom = true;   /* a short listing would pass for whole */
             }
         }
     }
@@ -353,8 +353,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
         return -1;
     }
 
-    *out_count = n;
-    return 0;
+    return oom ? -1 : 0;
 }
 
 // ----------------------------------------------------------------------------

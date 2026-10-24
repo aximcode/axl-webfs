@@ -931,6 +931,24 @@ NSHEOF
             pass "$T: a displayname split by CDATA is joined whole" || \
             fail "$T: CDATA" "no 'part1&part2.txt' row in: ${LM_OUT:0:300}"
         rm -f "$LM_LOG"
+
+        # A big directory lists completely: 151 files, a JSON listing of
+        # ~19 KB and a PROPFIND of ~50 KB, past both a 4 KB body and a
+        # 64-entry table.
+        for LM_PROTO in json dav; do
+            T="$LM_ARCH big listing ($LM_PROTO)"
+            info "QEMU" "$T: Booting mount test..."
+            listing_mount big "$LM_PROTO" 'ls fs1:\'
+            BIG_FILES=$(echo "$LM_OUT" | grep -oE "[0-9]+ File\(s\)" || true)
+            [ "$BIG_FILES" = "151 File(s)" ] && \
+                pass "$T: all 151 files listed" || \
+                fail "$T: count" "expected '151 File(s)', got '$BIG_FILES'"
+            BIG_LAST="big-149-$(printf 'p%.0s' $(seq 1 40)).txt"
+            echo "$LM_OUT" | grep -qF "$BIG_LAST" && \
+                pass "$T: the last entry is listed" || \
+                fail "$T: last entry" "$BIG_LAST not listed"
+            rm -f "$LM_LOG"
+        done
     done
 
     # ========================================================================

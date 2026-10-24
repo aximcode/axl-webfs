@@ -123,18 +123,67 @@ webfs_http_request_buf_streaming(
 // Directory listing cache
 // ----------------------------------------------------------------------------
 
-/* `entries` borrow window: callers must finish iterating the
-   returned pointer before issuing another dir_cache_fetch on this
-   WebFsPrivate. The pointer aliases into this file-static slot,
-   which is overwritten on every call (hit OR miss). Today's callers
-   (read_dir copies immediately into its own DirEntry array;
-   lookup_entry iterates and returns by value within one function)
-   honor that. Safe under the single-threaded UEFI model — the
-   dispatcher is single-armed, only one EFI_FILE_PROTOCOL call runs
-   at a time, so reentrant overwrite isn't a concern; the borrow
-   window is purely sequential. */
-static DirCacheSlot mLastSlot;
+/* A cached listing. path NULL = a free slot. */
+typedef struct {
+    char     *path;
+    AxlArray *entries;      ///< of DirEntry
+    uint64_t  fetched_ms;   ///< for the TTL
+    uint64_t  used;         ///< LRU tick
+} DirCacheSlot;
 
+struct DirCache {
+    DirCacheSlot slots[DIR_CACHE_MAX_SLOTS];
+    uint64_t     tick;
+};
+
+DirCache *
+dir_cache_new(void)
+{
+    return axl_calloc(1, sizeof(DirCache));
+}
+
+static void
+dir_cache_slot_clear(DirCacheSlot *slot)
+{
+    axl_free(slot->path);
+    axl_array_free(slot->entries);
+    axl_memset(slot, 0, sizeof(*slot));
+}
+
+void
+dir_cache_free(DirCache *cache)
+{
+    if (cache == NULL) return;
+    for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++)
+        dir_cache_slot_clear(&cache->slots[i]);
+    axl_free(cache);
+}
+
+/* The live slot for @p path, or NULL. An expired one is cleared. */
+static DirCacheSlot *
+dir_cache_find(DirCache *cache, const char *path)
+{
+    uint64_t now = axl_time_get_ms();
+    for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
+        DirCacheSlot *slot = &cache->slots[i];
+        if (slot->path == NULL || !axl_streql(slot->path, path))
+            continue;
+        if (now - slot->fetched_ms > DIR_CACHE_TTL_MS) {
+            dir_cache_slot_clear(slot);
+            return NULL;
+        }
+        return slot;
+    }
+    return NULL;
+}
+
+/* `entries` borrow window: callers must finish iterating the returned
+   pointer before the next dir_cache_fetch or dir_cache_invalidate on
+   this WebFsPrivate -- either may evict or clear the slot it points
+   into. Today's callers (read_dir copies immediately into its own
+   DirEntry array; lookup_entry iterates and returns by value within
+   one function) honor that, and UEFI's single-armed dispatcher runs one
+   EFI_FILE_PROTOCOL call at a time. */
 int
 dir_cache_fetch(
     WebFsPrivate *priv,
@@ -143,27 +192,35 @@ dir_cache_fetch(
     size_t       *count
 )
 {
-    if (priv->dir_cache != NULL &&
-        axl_cache_get(priv->dir_cache, path, &mLastSlot) == AXL_OK) {
-        *entries = mLastSlot.entries;
-        *count   = mLastSlot.entry_count;
-        return 0;
-    }
+    DirCache     *cache = priv->dir_cache;
+    DirCacheSlot *slot  = dir_cache_find(cache, path);
 
-    /* Miss — fetch via the active protocol's list_dir. */
-    DirCacheSlot fresh;
-    axl_memset(&fresh, 0, sizeof(fresh));
-    const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
-    if (ops->list_dir(priv, path, fresh.entries,
-                      DIR_CACHE_MAX_ENTRIES, &fresh.entry_count) != 0)
-        return -1;
-
-    if (priv->dir_cache != NULL) {
-        axl_cache_put(priv->dir_cache, path, &fresh);
+    if (slot == NULL) {
+        /* Miss -- fetch the whole listing via the active protocol. */
+        AxlArray *fresh = axl_array_new(sizeof(DirEntry));
+        char     *key   = axl_strdup(path);
+        const WebfsProtocolOps *ops = webfs_protocol_ops(priv->protocol);
+        if (fresh == NULL || key == NULL ||
+            ops->list_dir(priv, path, fresh) != 0) {
+            axl_array_free(fresh);
+            axl_free(key);
+            return -1;
+        }
+        /* A free slot, else the least recently used. */
+        slot = &cache->slots[0];
+        for (size_t i = 0; i < DIR_CACHE_MAX_SLOTS; i++) {
+            DirCacheSlot *s = &cache->slots[i];
+            if (s->path == NULL) { slot = s; break; }
+            if (s->used < slot->used) slot = s;
+        }
+        dir_cache_slot_clear(slot);
+        slot->path       = key;
+        slot->entries    = fresh;
+        slot->fetched_ms = axl_time_get_ms();
     }
-    mLastSlot = fresh;
-    *entries = mLastSlot.entries;
-    *count   = mLastSlot.entry_count;
+    slot->used = ++cache->tick;
+    *entries = axl_array_data(slot->entries);
+    *count   = axl_array_len(slot->entries);
     return 0;
 }
 
@@ -195,8 +252,9 @@ dir_cache_invalidate(
     const char   *path
 )
 {
-    if (priv->dir_cache != NULL)
-        axl_cache_invalidate(priv->dir_cache, path);
+    DirCacheSlot *slot = dir_cache_find(priv->dir_cache, path);
+    if (slot != NULL)
+        dir_cache_slot_clear(slot);
 }
 
 // ----------------------------------------------------------------------------

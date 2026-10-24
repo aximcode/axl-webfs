@@ -25,7 +25,6 @@
 #define WEBFS_INTERNAL_H_
 
 #include <axl.h>
-#include <axl/axl-cache.h>
 #include <axl/axl-digest.h>
 #include <axl/axl-fs-provider.h>
 #include <axl/axl-json.h>
@@ -41,7 +40,6 @@
 
 #define DIR_CACHE_TTL_MS             2000     ///< 2 second directory cache TTL.
 #define DIR_CACHE_MAX_SLOTS          16       ///< Maximum cached directories.
-#define DIR_CACHE_MAX_ENTRIES        64       ///< Max files per cached directory.
 #define READAHEAD_BUF_SIZE           (64 * 1024)
 #define MAX_PATH_LEN                 512
 /* Size of every entry-name buffer the mount carries (DirEntry.name, the
@@ -54,7 +52,6 @@
    TODO: size from the SDK's AXL_FS_NAME_MAX once it exists (it widens
    AxlFsEntry.name to 766 bytes, FAT's 255 UTF-16 units). */
 #define WEBFS_NAME_SIZE              256
-#define HTTP_BODY_BUF_SIZE           4096
 /* axl-webfs's chosen default. Picked to avoid the well-trodden
    8080 / 3000 / 5000 / 9000 dev-tool zone — those collide with
    Jenkins, dev servers, SonarQube, Tomcat, etc., especially on
@@ -93,13 +90,11 @@ typedef struct {
     char       modified[32];   ///< ISO 8601 timestamp from server.
 } DirEntry;
 
-/// One cached directory listing. Stored in axl-sdk's AxlCache
-/// (TTL + LRU eviction); webfs-cache.c just wraps the SDK with the
-/// listing-fetch glue.
-typedef struct {
-    DirEntry   entries[DIR_CACHE_MAX_ENTRIES];
-    size_t     entry_count;
-} DirCacheSlot;
+/// The directory listing cache (TTL + LRU), webfs-cache.c. Its own,
+/// not the SDK's AxlCache: a listing is any size (an AxlArray), and
+/// AxlCache stores fixed-size values with no hook to free one it
+/// evicts.
+typedef struct DirCache DirCache;
 
 // ---------------------------------------------------------------------------
 // Per-mount state. Lives in AxlFsProvider.backend_ctx; threaded
@@ -124,7 +119,7 @@ typedef struct WebFsPrivate {
     int                                 protocol;
 
     /// Directory listing cache (TTL + LRU).
-    AxlCache                           *dir_cache;
+    DirCache                           *dir_cache;
 } WebFsPrivate;
 
 // ---------------------------------------------------------------------------
@@ -193,6 +188,8 @@ extern const AxlFsProvider webfs_provider;
 // Forward declarations -- webfs-cache.c
 // ---------------------------------------------------------------------------
 
+DirCache *dir_cache_new(void);
+void dir_cache_free(DirCache *cache);   ///< NULL-safe
 int  dir_cache_fetch(WebFsPrivate *priv, const char *path, DirEntry **entries, size_t *count);
 int  dir_cache_lookup_entry(WebFsPrivate *priv, const char *dir_path, const char *name, DirEntry *entry);
 void dir_cache_invalidate(WebFsPrivate *priv, const char *path);

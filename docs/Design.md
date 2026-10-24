@@ -211,7 +211,11 @@ buffers are to be sized from the SDK's `AXL_FS_NAME_MAX` once it exists.
 1. **Directory cache** — cache `GET /list/<path>` results for 2 seconds.
    Invalidated on any write/delete to that directory. Entries are copied
    into each file handle to avoid stale pointer issues during cache
-   eviction. 16 slots, LRU eviction.
+   eviction. 16 slots, LRU eviction. A listing is cached WHOLE, however
+   big: the protocols append every entry to an `AxlArray`, the JSON body
+   is parsed at its full size, and the cache (`webfs-cache.c`) owns each
+   listing's array -- not the SDK's `AxlCache`, whose fixed-size values
+   could not hold one, and which has no hook to free one it evicts.
 
 2. **Read-ahead buffer** — when reading a file, prefetch 64 KB into a
    buffer. Sequential reads hit the buffer instead of issuing per-8KB
