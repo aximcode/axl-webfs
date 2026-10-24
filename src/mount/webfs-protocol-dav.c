@@ -32,29 +32,21 @@ AXL_LOG_DOMAIN("webfs-dav-client");
 /// in place to UTF-8 bytes the mount layer expects, then strip the
 /// scheme://host prefix if present so we keep just the path portion.
 static bool
-decode_href(const char *href, size_t href_len, char *out, size_t out_size)
+decode_href(const char *href, char *out, size_t out_size)
 {
-    /* The ENCODED href may be up to three times the decoded path, so it
-       is copied whole -- a cut here cuts the basename. Only the decoded
-       path is held to @p out_size, and one that does not fit is
-       refused (false), never cut. */
-    char *tmp = axl_malloc(href_len + 1);
-    if (tmp == NULL) return false;
-    axl_memcpy(tmp, href, href_len);
-    tmp[href_len] = '\0';
-
-    /* Strip http(s)://host/ if present. */
-    const char *p = tmp;
+    /* @p href is the WHOLE encoded text, however long (it may be three
+       times the decoded path). Only the decoded path is held to
+       @p out_size, and one that does not fit is refused (false), never
+       cut: a cut here cuts the basename. */
+    const char *p = href;
     if (axl_strncmp(p, "http://", 7) == 0) p += 7;
     else if (axl_strncmp(p, "https://", 8) == 0) p += 8;
-    if (p != tmp) {
+    if (p != href) {
         const char *slash = p;
         while (*slash && *slash != '/') slash++;
         p = (*slash == '/') ? slash : "/";
     }
-    bool ok = axl_url_decode(p, out, out_size) >= 0;
-    axl_free(tmp);
-    return ok;
+    return axl_url_decode(p, out, out_size) >= 0;
 }
 
 /// Extract the basename from a path (last "/"-delimited component).
@@ -238,6 +230,16 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
     bool   in_resourcetype   = false;
     bool   in_size           = false;
     size_t n = 0;
+    /* An element's text can arrive as several TEXT tokens -- a CDATA
+       section splits it ("a<![CDATA[&b]]>c" is three) -- so href and
+       displayname accumulate here and are taken whole at the element's
+       END. The reader has already decoded the entities. */
+    AxlString *text = axl_string_new(NULL);
+    if (text == NULL) {
+        axl_xml_reader_free(r);
+        axl_http_client_response_free(resp);
+        return -1;
+    }
 
     AxlXmlToken tok;
     while (axl_xml_reader_next(r, &tok) && n < max) {
@@ -249,6 +251,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
                 /* outside <response>, ignore */
             } else if (axl_xml_token_local_name_eq(&tok, "href")) {
                 in_href = true;
+                axl_string_clear(text);
             } else if (axl_xml_token_local_name_eq(&tok, "propstat")) {
                 in_propstat = true;
                 propstat_ok = true;
@@ -258,6 +261,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
                 in_status = true;
             } else if (axl_xml_token_local_name_eq(&tok, "displayname")) {
                 in_displayname = true;
+                axl_string_clear(text);
             } else if (axl_xml_token_local_name_eq(&tok, "resourcetype")) {
                 in_resourcetype = true;
                 cur.have_resourcetype = true;
@@ -280,19 +284,10 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
                     }
                 }
                 propstat_ok = ok;
-            } else if (in_href) {
-                if (!decode_href(tok.text, tok.text_len, cur.href,
-                                 sizeof(cur.href)))
-                    cur.too_long = true;
-                cur.have_href = true;
-            } else if (in_displayname) {
-                if (tok.text_len >= sizeof(cur.name)) {
-                    cur.too_long = true;
-                    cur.name[0] = '\0';
-                } else {
-                    axl_memcpy(cur.name, tok.text, tok.text_len);
-                    cur.name[tok.text_len] = '\0';
-                }
+            } else if (in_href || in_displayname) {
+                if (axl_string_append_len(text, tok.text, tok.text_len)
+                        != AXL_OK)
+                    cur.too_long = true;   /* OOM: skip, never cut */
             } else if (in_size) {
                 /* getcontentlength text is ASCII digits */
                 cur.size = 0;
@@ -307,12 +302,24 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
             if (in_href &&
                 axl_xml_token_local_name_eq(&tok, "href")) {
                 in_href = false;
+                if (!decode_href(axl_string_str(text), cur.href,
+                                 sizeof(cur.href)))
+                    cur.too_long = true;
+                cur.have_href = true;
             } else if (in_status &&
                        axl_xml_token_local_name_eq(&tok, "status")) {
                 in_status = false;
             } else if (in_displayname &&
                        axl_xml_token_local_name_eq(&tok, "displayname")) {
                 in_displayname = false;
+                size_t len = axl_string_len(text);
+                if (len >= sizeof(cur.name)) {
+                    cur.too_long = true;
+                    cur.name[0] = '\0';
+                } else {
+                    axl_memcpy(cur.name, axl_string_str(text), len);
+                    cur.name[len] = '\0';
+                }
             } else if (in_size &&
                        axl_xml_token_local_name_eq(&tok,
                                                    "getcontentlength")) {
@@ -337,6 +344,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path,
     }
 
     bool parse_err = axl_xml_reader_error(r, NULL, NULL, NULL);
+    axl_string_free(text);
     axl_xml_reader_free(r);
     axl_http_client_response_free(resp);
 

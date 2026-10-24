@@ -831,62 +831,71 @@ NSHEOF
     fi
 
     # ========================================================================
-    # Over-long names (WEBFS_NAME_SIZE): a name that does not fit the
-    # mount's 256-byte name buffers is SKIPPED, never cut -- a cut name can
-    # equal a sibling's. long-name-server.py serves names no Linux
-    # filesystem can hold: a 255-byte name that fits, the same name plus
-    # one byte (256 -- its cut IS the first), and, over WebDAV, a 255-byte
-    # name whose every-byte-percent-encoded href is 765 characters.
+    # Synthetic trees (scripts/listing-server.py): listings no real host
+    # directory can stand in for. listing_mount CASE PROTO CMD... boots one
+    # mount of the fixture, runs the shell CMDs between "=== OUT ===" and
+    # "=== OUT DONE ===", and leaves that span, with line breaks removed
+    # (a long name can wrap on the console), in $LM_OUT and the whole log
+    # in $LM_LOG.
     # ========================================================================
 
-    LN_PORT=$((SERVER_PORT + 3))
-    for LN_PROTO in json dav; do
-        LN_FLAG=""
-        [ "$LN_PROTO" = "dav" ] && LN_FLAG="--webdav"
-        python3 "$SCRIPT_DIR/long-name-server.py" --port "$LN_PORT" \
-            --bind 0.0.0.0 $LN_FLAG >/tmp/long-name-server.log 2>&1 &
-        LN_PID=$!
+    LM_PORT=$((SERVER_PORT + 3))
+    listing_mount() {
+        local lm_case="$1" lm_proto="$2"
+        shift 2
+        local lm_flag=""
+        [ "$lm_proto" = "dav" ] && lm_flag="--webdav"
+        python3 "$SCRIPT_DIR/listing-server.py" --case "$lm_case" \
+            --port "$LM_PORT" --bind 0.0.0.0 $lm_flag \
+            >/tmp/listing-server.log 2>&1 &
+        local lm_pid=$!
         sleep 0.5
+        local lm_nsh
+        lm_nsh=$(mktemp --suffix=.nsh)
+        {
+            echo "@echo -off"
+            echo "fs0:"
+            echo "axl-webfs.efi mount --protocol $lm_proto http://10.0.2.2:${LM_PORT}/"
+            echo "map -r"
+            echo "echo === OUT ==="
+            printf '%s\n' "$@"
+            echo "echo === OUT DONE ==="
+            echo "axl-webfs.efi umount"
+            echo "reset -s"
+        } > "$lm_nsh"
+        LM_LOG=$(mktemp)
+        "$RUN_QEMU_SH" --arch "$LM_ARCH" --timeout 40 --raw --net \
+            --nsh "$lm_nsh" --serial-log "$LM_LOG" \
+            "$LM_EFI" > /dev/null 2>&1 || true
+        rm -f "$lm_nsh"
+        kill "$lm_pid" 2>/dev/null || true
+        wait "$lm_pid" 2>/dev/null || true
+        LM_OUT=$(sed -n '/=== OUT ===/,/=== OUT DONE ===/p' "$LM_LOG" \
+            2>/dev/null | tr -d '\r\n')
+    }
 
-        for QEMU_ARCH in "${QEMU_ARCHS[@]}"; do
-            ARCH_DIR=$(echo "$QEMU_ARCH" | tr '[:upper:]' '[:lower:]')
-            [ "$ARCH_DIR" = "aarch64" ] && ARCH_DIR="aa64"
-            APP_EFI="$PROJECT_ROOT/build/axl/$ARCH_DIR/axl-webfs.efi"
-            if [ ! -f "$APP_EFI" ]; then continue; fi
-            T="$QEMU_ARCH long names ($LN_PROTO)"
+    for LM_ARCH in "${QEMU_ARCHS[@]}"; do
+        LM_DIR=$(echo "$LM_ARCH" | tr '[:upper:]' '[:lower:]')
+        [ "$LM_DIR" = "aarch64" ] && LM_DIR="aa64"
+        LM_EFI="$PROJECT_ROOT/build/axl/$LM_DIR/axl-webfs.efi"
+        if [ ! -f "$LM_EFI" ]; then continue; fi
 
-            LN_NSH=$(mktemp --suffix=.nsh)
-            cat > "$LN_NSH" <<NSHEOF
-@echo -off
-fs0:
-axl-webfs.efi mount --protocol $LN_PROTO http://10.0.2.2:${LN_PORT}/
-map -r
-echo === LS ===
-ls fs1:\\
-echo === LS DONE ===
-axl-webfs.efi umount
-reset -s
-NSHEOF
-            SERIAL_LOG=$(mktemp)
+        # Over-long names (WEBFS_NAME_SIZE): a name that does not fit the
+        # mount's 256-byte name buffers is SKIPPED, never cut -- a cut
+        # name can equal a sibling's.
+        for LM_PROTO in json dav; do
+            T="$LM_ARCH long names ($LM_PROTO)"
             info "QEMU" "$T: Booting mount test..."
-            "$RUN_QEMU_SH" --arch "$QEMU_ARCH" --timeout 30 --raw --net \
-                --nsh "$LN_NSH" --serial-log "$SERIAL_LOG" \
-                "$APP_EFI" > /dev/null 2>&1 || true
-            rm -f "$LN_NSH"
-
-            # The listing, with line breaks removed: a 255-character name
-            # can wrap on the console.
-            LS_OUT=$(sed -n '/=== LS ===/,/=== LS DONE ===/p' "$SERIAL_LOG" \
-                2>/dev/null | tr -d '\r\n')
+            listing_mount long-names "$LM_PROTO" 'ls fs1:\'
 
             # Control: the listing was fetched and shown at all.
-            echo "$LS_OUT" | grep -q "readme.txt" && \
+            echo "$LM_OUT" | grep -q "readme.txt" && \
                 pass "$T: listing shows readme.txt" || \
                 fail "$T: listing" "readme.txt not in the ls output"
 
             # The 255-byte name is listed once, whole, with ITS size (5):
             # never the cut 256-byte one (size 6) in its place or beside it.
-            LN_SEEN=$(echo "$LS_OUT" | grep -oE "[0-9]+  LONGNAME-a*" | \
+            LN_SEEN=$(echo "$LM_OUT" | grep -oE "[0-9]+  LONGNAME-a*" | \
                 sed -E 's/^([0-9]+)  (.*)$/\1 \2/' | \
                 awk '{print $1 ":" length($2)}' | tr '\n' ' ')
             [ "$LN_SEEN" = "5:255 " ] && \
@@ -894,23 +903,34 @@ NSHEOF
                 fail "$T: 255-byte name" \
                      "expected '5:255 ' (size:name-length), got '$LN_SEEN'"
 
-            grep -qa "skipping an entry whose name" "$SERIAL_LOG" && \
+            grep -qa "skipping an entry whose name" "$LM_LOG" && \
                 pass "$T: the 256-byte name is skipped, not cut" || \
                 fail "$T: 256-byte name" "no 'skipping an entry' warning"
 
-            if [ "$LN_PROTO" = "dav" ]; then
-                LN_HREF_SEEN=$(echo "$LS_OUT" | grep -oE 'HREFNAME-b*' | \
+            if [ "$LM_PROTO" = "dav" ]; then
+                LN_HREF_SEEN=$(echo "$LM_OUT" | grep -oE 'HREFNAME-b*' | \
                     awk '{print length}' | tr '\n' ' ')
                 [ "$LN_HREF_SEEN" = "255 " ] && \
                     pass "$T: a 765-character href yields its whole 255-byte name" || \
                     fail "$T: long href" \
                          "expected one 255-byte HREFNAME, got lengths '$LN_HREF_SEEN'"
             fi
-            rm -f "$SERIAL_LOG"
+            rm -f "$LM_LOG"
         done
 
-        kill "$LN_PID" 2>/dev/null || true
-        wait "$LN_PID" 2>/dev/null || true
+        # WebDAV displaynames are XML text: "R&amp;D &lt;notes&gt;.txt"
+        # names "R&D <notes>.txt", and "part1<![CDATA[&part2]]>.txt" --
+        # three text tokens -- names "part1&part2.txt".
+        T="$LM_ARCH dav displayname"
+        info "QEMU" "$T: Booting mount test..."
+        listing_mount entities dav 'ls fs1:\'
+        echo "$LM_OUT" | grep -qF "5  R&D <notes>.txt" && \
+            pass "$T: &amp; / &lt; / &gt; decode to 'R&D <notes>.txt'" || \
+            fail "$T: entities" "no 'R&D <notes>.txt' row in: ${LM_OUT:0:300}"
+        echo "$LM_OUT" | grep -qF "5  part1&part2.txt" && \
+            pass "$T: a displayname split by CDATA is joined whole" || \
+            fail "$T: CDATA" "no 'part1&part2.txt' row in: ${LM_OUT:0:300}"
+        rm -f "$LM_LOG"
     done
 
     # ========================================================================
