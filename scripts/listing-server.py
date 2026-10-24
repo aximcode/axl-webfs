@@ -26,6 +26,14 @@ Each --case builds a tree no real host directory can stand in for:
   huge        16385 files: one past the mount's WEBFS_LIST_MAX_ENTRIES.
   relaxed     JSON only: a root listing with a trailing comma -- valid
               JSON5, not RFC 8259 -- which a strict client refuses.
+  based       WebDAV, served under --base: a root whose PROPFIND carries
+              hrefs a client must normalize -- relative ("rel.txt"), with
+              a "." segment ("<base>/./dot.txt"), one outside the share
+              ("/elsewhere/foreign.txt"), one climbing out of it
+              ("<base>/../evil.txt"), and one that is no child of the
+              listed directory ("<base>/sp ace/a.txt" in the root) -- and
+              a directory "sp ace" to rename in. Only dot.txt, readme.txt,
+              rel.txt and "sp ace" are entries of the root.
   deep        A file whose path is 505 bytes -- "/files" + it is a 511-byte
               request target -- and a sibling whose path is 511 and
               starts with those 505 bytes: a client that cut
@@ -33,8 +41,14 @@ Each --case builds a tree no real host directory can stand in for:
               for the second. A third, 520 bytes, is DEEP_LONG plus 9: a
               path cut at 511 bytes anywhere reads DEEP_LONG instead.
 
+--base PATH serves the whole tree under PATH (decoded, e.g. "/my share"):
+requests must name it, hrefs carry it ("{B}" in an Entry's href is the
+encoded base), and a MOVE's logged Destination includes it. --no-self
+leaves the queried collection out of every PROPFIND.
+
 Usage:
     ./listing-server.py --case long-names --port 9877 [--webdav]
+        [--base PATH] [--no-self]
 """
 
 from __future__ import annotations
@@ -113,6 +127,16 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
            "/sp ace": [Entry("a.txt", b"rename me")]}
     if case == "relaxed":
         return {"/": [readme]}
+    if case == "based":
+        return {"/": [
+            readme,
+            Entry("rel.txt", b"rel", href="rel.txt"),
+            Entry("dot.txt", b"dot", href="{B}/./dot.txt"),
+            Entry("foreign.txt", b"x", href="/elsewhere/foreign.txt"),
+            Entry("evil.txt", b"x", href="{B}/../evil.txt"),
+            Entry("a.txt", b"x", href="{B}/sp%20ace/a.txt"),
+            Entry("sp ace"),
+        ], "/sp ace": [Entry("a.txt", b"rename me")]}
     if case == "huge":
         return {"/": [Entry(f"h-{i:05d}.txt", b"h") for i in range(16385)]}
     if case == "big":
@@ -137,6 +161,16 @@ class ListingHandler(BaseHTTPRequestHandler):
     webdav: bool = False
     tree: dict[str, list[Entry]] = {}
     case: str = ""
+    base: str = ""          # decoded share prefix, "" for the root
+    no_self: bool = False
+
+    def _local(self, url_path: str) -> str | None:
+        """The tree path @p url_path (decoded) names under the base, or None."""
+        if not self.base:
+            return url_path
+        if url_path == self.base or url_path.startswith(self.base + "/"):
+            return url_path[len(self.base):] or "/"
+        return None
 
     def _send(self, status: int, body: bytes, ctype: str,
               extra: dict[str, str] | None = None) -> None:
@@ -181,7 +215,11 @@ class ListingHandler(BaseHTTPRequestHandler):
         self._send(200, data, "application/octet-stream")
 
     def do_GET(self) -> None:
-        path = unquote(urlparse(self.path).path)
+        local = self._local(unquote(urlparse(self.path).path))
+        if local is None:
+            self._send(404, b"not found\n", "text/plain")
+            return
+        path = local
         if self.webdav:
             self._send_file(path)
         elif path == "/info":
@@ -218,9 +256,15 @@ class ListingHandler(BaseHTTPRequestHandler):
             print(f"  MOVE-DEST-INVALID {raw!r}", flush=True)
             self._send(400, b"bad destination\n", "text/plain")
             return
-        src = unquote(urlparse(self.path).path).rstrip("/")
-        dest = unquote(urlparse(raw).path).rstrip("/")
-        print(f"  MOVE-DEST {dest}", flush=True)
+        full_dest = unquote(urlparse(raw).path).rstrip("/")
+        print(f"  MOVE-DEST {full_dest}", flush=True)
+        src_local = self._local(unquote(urlparse(self.path).path))
+        dest_local = self._local(full_dest)
+        if src_local is None or dest_local is None:
+            self._send(409, b"conflict\n", "text/plain")
+            return
+        src = src_local.rstrip("/")
+        dest = dest_local.rstrip("/")
         entry = self._lookup(src) if self.webdav else None
         src_dir, _, _ = src.rpartition("/")
         dst_dir, _, dst_name = dest.rpartition("/")
@@ -256,16 +300,17 @@ class ListingHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length > 0:
             self.rfile.read(length)
-        path = unquote(urlparse(self.path).path)
-        entries = self._entries(path) if self.webdav else None
-        if entries is None:
+        local = self._local(unquote(urlparse(self.path).path))
+        entries = self._entries(local) if self.webdav and local is not None else None
+        if local is None or entries is None:
             self._send(404, b"not found\n", "text/plain")
             return
-        base = path.rstrip("/")
-        parts = [self._response(quote(base + "/"), "", None)]
+        base = (self.base + local).rstrip("/")
+        parts = [] if self.no_self else [self._response(quote(base + "/"), "", None)]
         if self.headers.get("Depth", "1") != "0":
             for e in entries:
-                href = e.href if e.href is not None else quote(f"{base}/{e.name}")
+                href = (e.href.replace("{B}", quote(self.base)) if e.href is not None
+                        else quote(f"{base}/{e.name}"))
                 disp = e.displayname if e.displayname is not None else escape(e.name)
                 parts.append(self._response(href, disp, e))
         body = ('<?xml version="1.0" encoding="utf-8"?>'
@@ -281,7 +326,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Serve a synthetic tree to the axl-webfs mount driver.")
     parser.add_argument("--case", required=True,
-                        choices=["long-names", "entities", "big", "huge", "relaxed", "deep"])
+                        choices=["long-names", "entities", "big", "huge", "relaxed",
+                                 "based", "deep"])
+    parser.add_argument("--base", default="",
+                        help="serve the tree under this (decoded) path prefix")
+    parser.add_argument("--no-self", action="store_true",
+                        help="leave the queried collection out of each PROPFIND")
     parser.add_argument("--port", type=int, default=9877)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--webdav", action="store_true",
@@ -290,6 +340,8 @@ def main() -> None:
     ListingHandler.webdav = args.webdav
     ListingHandler.tree = build_tree(args.case)
     ListingHandler.case = args.case
+    ListingHandler.base = args.base.rstrip("/")
+    ListingHandler.no_self = args.no_self
     server = HTTPServer((args.bind, args.port), ListingHandler)
     try:
         server.serve_forever()
