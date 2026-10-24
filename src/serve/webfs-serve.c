@@ -680,6 +680,10 @@ static void        *m_put_ctx     = NULL;   /* webfs_put_open's; NULL = none */
 static uint64_t     m_put_id      = 0;      /* request holding it; 0 = none */
 static int          m_put_status  = 0;      /* 0 = no failure yet */
 static const char  *m_put_msg     = NULL;   /* body for m_put_status; NULL = by status */
+/* The parent directory THIS PUT made (one level, the REST PUT's extra),
+   taken back if the PUT then fails; "" = it made none. */
+static FtVolume     m_put_vol;
+static char         m_put_parent[FT_PATH_MAX];
 /* Optional upload integrity via a "Content-Digest: sha-256=<hex>"
    request header: the stream is hashed, and a mismatch DISCARDS the
    write and answers 400 -- the header, hex format and status /dav
@@ -814,14 +818,22 @@ put_status_for(int rc, int fallback)
     }
 }
 
-/* Reset the per-upload state; discard a write still open. */
+/* End the upload: discard a write still open, take back the parent
+   directory it made unless it @p stored (removed only while empty -- a
+   directory that has gained an entry meanwhile is no longer this PUT's
+   to take), and clear the state. */
 static void
-put_reset(void)
+put_end(bool stored)
 {
     if (m_put_ctx != NULL) {
         webfs_put_close(m_put_ctx, true);
         m_put_ctx = NULL;
     }
+    if (!stored && m_put_parent[0] != '\0' &&
+        ft_rmdir(&m_put_vol, m_put_parent) != 0)
+        axl_warning("PUT failed; the directory it made, %s:%s, is not "
+                    "empty and stays", m_put_vol.name, m_put_parent);
+    m_put_parent[0] = '\0';
     if (m_put_hash != NULL) {
         axl_checksum_free(m_put_hash);
         m_put_hash = NULL;
@@ -845,7 +857,7 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
        another connection's hang-up says nothing about this one. */
     if (aborted) {
         if (m_put_id != 0 && m_put_id == req->request_id)
-            put_reset();
+            put_end(false);
         return 0;
     }
 
@@ -879,11 +891,17 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
             m_put_msg    = prc == PATH_BAD ? "Bad path\n" : NULL;
         } else {
             /* The REST PUT has always made a missing PARENT directory
-               (one level) for the upload; keep that. */
+               (one level) for the upload; keep that, and remember it is
+               this PUT's, to take back should the PUT fail. */
             char *parent = axl_path_get_dirname(sub);
+            bool  exists = false;
             if (parent != NULL && parent[0] != '\0' &&
-                !axl_streql(parent, "/") && !axl_streql(parent, "."))
-                ft_mkdir(&vol, parent);
+                !axl_streql(parent, "/") && !axl_streql(parent, ".") &&
+                ft_is_dir(&vol, parent, &exists) != 0 &&
+                ft_mkdir(&vol, parent) == 0) {
+                m_put_vol = vol;
+                axl_strlcpy(m_put_parent, parent, sizeof(m_put_parent));
+            }
             axl_free(parent);
             int rc = webfs_put_open(&vol, sub, &m_put_ctx);
             if (rc != AXL_OK) {
@@ -953,7 +971,7 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
         response_set_header(resp, "Retry-After", "1");
     publish_request(opts->loop, req, resp);
 
-    put_reset();
+    put_end(status == 201);
     return 0;
 }
 

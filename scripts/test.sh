@@ -2247,6 +2247,51 @@ NSHEOF
                         fail "serve rest digest: '${DG_HDR:0:40}'" \
                              "expected $DG_WANT + '$DG_EXPECT', got $HTTP_CODE + '${CONTENT:0:60}'"
                 done
+
+                # ----------------------------------------------------
+                # The REST PUT makes a missing parent (one level) for its
+                # upload -- and a PUT that then fails, for any reason,
+                # takes back the directory IT made (only while empty);
+                # a parent that was already there stays.
+                # ----------------------------------------------------
+                dir_code() {
+                    curl -s -o /dev/null -w "%{http_code}" \
+                        -H "Accept: application/json" "$BASE/fs0/$1/" 2>/dev/null || true
+                }
+                BAD_DG="sha-256=0000000000000000000000000000000000000000000000000000000000000000"
+                HTTP_CODE=$(printf '%s' "ok" | curl -s -o /dev/null -w "%{http_code}" \
+                    -T - "$BASE/fs0/nd-ok/f.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && [ "$(dir_code nd-ok)" = "200" ] && \
+                    pass "serve rest parent: a PUT makes its missing parent" || \
+                    fail "serve rest parent: made" "expected 201 + dir 200, got $HTTP_CODE + $(dir_code nd-ok)"
+                HTTP_CODE=$(printf '%s' "x" | curl -s -o /dev/null -w "%{http_code}" \
+                    -H "Content-Digest: $BAD_DG" -T - "$BASE/fs0/nd-mis/f.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "400" ] && [ "$(dir_code nd-mis)" = "404" ] && \
+                    pass "serve rest parent: a mismatched PUT takes back the parent it made" || \
+                    fail "serve rest parent: mismatch" "expected 400 + dir 404, got $HTTP_CODE + $(dir_code nd-mis)"
+                HTTP_CODE=$(printf '%s' "x" | curl -s -o /dev/null -w "%{http_code}" \
+                    -T - "$BASE/fs0/nd-ref/bad%3Cname" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "500" ] && [ "$(dir_code nd-ref)" = "404" ] && \
+                    pass "serve rest parent: a refused PUT (500) takes back the parent it made" || \
+                    fail "serve rest parent: refused" "expected 500 + dir 404, got $HTTP_CODE + $(dir_code nd-ref)"
+                HTTP_CODE=$(printf '%s' "x" | curl -s -o /dev/null -w "%{http_code}" \
+                    -H "Content-Digest: $BAD_DG" -T - "$BASE/fs0/nd-ok/g.txt" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "400" ] && [ "$(dir_code nd-ok)" = "200" ] && \
+                    pass "serve rest parent: a failed PUT leaves a parent it did not make" || \
+                    fail "serve rest parent: existing parent" "expected 400 + dir 200, got $HTTP_CODE + $(dir_code nd-ok)"
+                if exec 7<>"/dev/tcp/${DAV_HOSTPORT%%:*}/${DAV_HOSTPORT##*:}"; then
+                    printf 'PUT /fs0/nd-hup/f.txt HTTP/1.1\r\nHost: %s\r\nContent-Length: 1048576\r\n\r\n' \
+                        "$DAV_HOSTPORT" >&7
+                    head -c 196608 /dev/zero >&7
+                    sleep 2
+                    exec 7>&-
+                    sleep 2
+                    [ "$(dir_code nd-hup)" = "404" ] && \
+                        pass "serve rest parent: a hung-up PUT takes back the parent it made" || \
+                        fail "serve rest parent: hang-up" "expected dir 404, got $(dir_code nd-hup)"
+                else
+                    fail "serve rest parent: hang-up" "could not connect to $DAV_HOSTPORT"
+                fi
             else
                 fail "serve: driver did not start within 30s"
             fi
