@@ -18,11 +18,6 @@ AXL_LOG_DOMAIN("webfs-mount-http");
 // HTTP request with auto-reconnect
 // ----------------------------------------------------------------------------
 
-/* axl_http_request writes the request target (path + "?" + query) into
-   512 bytes and silently CUTS a longer one (axl-http-client.c,
-   full_path[512]), so a longer target is refused here instead. */
-#define WEBFS_REQUEST_TARGET_MAX  512
-
 bool
 webfs_request_url(WebFsPrivate *priv, const char *path, const char *query,
                   char *url, size_t size)
@@ -30,15 +25,16 @@ webfs_request_url(WebFsPrivate *priv, const char *path, const char *query,
     /* The share's base path, then the mount path, encoded WHOLE -- a '?'
        or '#' in a name is a name byte (%3F, %23), never the start of a
        query a server would split off; the query is the caller's,
-       passed apart. */
+       passed apart. The SDK client sends a request target whole, however
+       long, so the only limits are the mount path's own (MAX_PATH_LEN,
+       refused at open), the base path's buffer and the URL buffer --
+       each refused here, never cut. */
     char full[sizeof(priv->base_path) + WEBFS_WIRE_PATH_MAX];
     char enc[sizeof(full) * 3];
     int  n = -1;
     int  f = axl_snprintf(full, sizeof(full), "%s%s", priv->base_path, path);
     if (f > 0 && (size_t)f < sizeof(full) &&
-        axl_url_encode(full, enc, sizeof(enc)) >= 0 &&
-        axl_strlen(enc) + (query != NULL ? 1 + axl_strlen(query) : 0)
-            < WEBFS_REQUEST_TARGET_MAX)
+        axl_url_encode(full, enc, sizeof(enc)) >= 0)
         n = axl_snprintf(url, size, "%s%s%s%s", priv->base_url, enc,
                          query != NULL ? "?" : "", query != NULL ? query : "");
     if (n < 0 || (size_t)n >= size) {

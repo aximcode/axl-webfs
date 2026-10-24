@@ -226,8 +226,7 @@ void dir_cache_invalidate(WebFsPrivate *priv, const char *path);
 /// The URL for mount path @p path: base_url, then @p path percent-encoded
 /// whole ('/' kept; a '?' or '#' in a name is a name byte), then
 /// "?" @p query when @p query is non-NULL (already encoded by the
-/// caller). false -- logged, never cut -- when it does not fit, or when
-/// the request target would exceed what the SDK client sends whole.
+/// caller). false -- logged, never cut -- when it does not fit.
 bool webfs_request_url(WebFsPrivate *priv, const char *path, const char *query, char *url, size_t size);
 
 /// Issue an HTTP request for @p path (+ "?" @p query, NULL for none).

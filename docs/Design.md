@@ -213,23 +213,23 @@ buffers are to be sized from the SDK's `AXL_FS_NAME_MAX` once it exists.
 
 **Path length is refused, never cut.** A mount path is at most 511
 bytes (`MAX_PATH_LEN`); `open` and `rename` refuse a longer one with an
-error. Each request is checked once more as it is built: the SDK's HTTP
-client writes the request target (encoded path plus query) into 512
-bytes and silently cuts a longer one, so `webfs_request_url` refuses a
-target that would not fit. A cut path names another entry -- in the
-JSON protocol `/files` plus a 511-byte path cut to 511 IS `/files` plus
-its 505-byte prefix -- whose bytes would be read, or overwritten,
-instead. In practice the request target is the tighter limit: a JSON
-mount reaches paths up to 505 bytes (less once percent-encoded).
+error. That is the mount's one path limit. A request goes out whole
+however long its target grows -- the share's base path, a protocol prefix
+such as `/files`, percent-encoding: the SDK's HTTP client sends the
+request target whole and never cuts it (axl-sdk e6477e85), and
+`webfs_request_url` refuses, never cuts, only a URL past its own buffer,
+which a path within `MAX_PATH_LEN` under a base within its 255 bytes
+cannot reach. A cut path would name another entry -- `/files` plus a
+511-byte path cut to 511 bytes IS `/files` plus its 505-byte prefix --
+which the `long path` test pins: both are read, each as itself.
 
-The fs-provider in front of the mount no longer cuts: since axl-sdk
+The fs-provider in front of the mount does not cut either: since axl-sdk
 019f25fc it refuses an EFI file name of 512 or more characters
 (`resolve_efi_path`) instead of cutting it to fit, and hands the mount
 paths of up to `AXL_FS_PROVIDER_PATH_MAX` bytes, which `webfs_open`
-refuses past `MAX_PATH_LEN`. The `long path (dav)` test pins the outcome
-over WebDAV, where a request carries no `/files` prefix to push it past
-the limit: a 520-byte path whose 511-byte cut is an existing file is
-refused, and no request for the cut is sent.
+refuses past `MAX_PATH_LEN`. The `long path (dav)` test pins that: a
+520-byte path whose 511-byte cut is an existing file is refused, and no
+request for the cut is sent.
 
 ### Caching Strategy
 

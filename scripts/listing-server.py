@@ -27,13 +27,11 @@ Each --case builds a tree no real host directory can stand in for:
   relaxed     JSON only: a root listing with a trailing comma -- valid
               JSON5, not RFC 8259 -- which a strict client refuses.
   deep        A file whose path is 505 bytes -- "/files" + it is a 511-byte
-              request target, the longest the SDK's HTTP client sends --
-              and a sibling whose path is 511 and starts with those 505
-              bytes: a client that lets "/files<path>" be cut at 511 reads
-              the first file when asked for the second. A third, 520
-              bytes, is DEEP_LONG plus 9: a path cut at 511 bytes
-              anywhere -- over WebDAV, with no "/files" prefix to push
-              the request over the limit -- reads DEEP_LONG instead.
+              request target -- and a sibling whose path is 511 and
+              starts with those 505 bytes: a client that cut
+              "/files<path>" at 511 would read the first file when asked
+              for the second. A third, 520 bytes, is DEEP_LONG plus 9: a
+              path cut at 511 bytes anywhere reads DEEP_LONG instead.
 
 Usage:
     ./listing-server.py --case long-names --port 9877 [--webdav]

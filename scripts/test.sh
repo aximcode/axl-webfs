@@ -1030,12 +1030,12 @@ NSHEOF
             rm -f "$LM_LOG"
         done
 
-        # A request path is refused, never cut. The SDK's HTTP client
-        # sends at most a 511-byte request target, and "/files" + 505 is
-        # 511: the 505-byte path is read, while "/files" + the 511-byte
-        # sibling (which starts with those 505 bytes) would be cut to
-        # exactly the first one -- whose bytes ("short-file") a cutting
-        # client returns for it.
+        # A request path is sent whole, never cut. "/files" + the 505-byte
+        # path is a 511-byte request target and "/files" + its 511-byte
+        # sibling a 517-byte one, which starts with the first: a client
+        # that cut targets at 511 bytes would read "short-file" for the
+        # sibling. Both are read, each as itself; the mount's own limit
+        # is its 511-byte path (MAX_PATH_LEN), not the request's size.
         T="$LM_ARCH long path"
         info "QEMU" "$T: Booting mount test..."
         DEEP_DIR="$(printf 'd%.0s' $(seq 1 250))\\$(printf 'e%.0s' $(seq 1 250))"
@@ -1049,10 +1049,10 @@ NSHEOF
             fail "$T: 505-byte path" "no 'short-file' in: ${DEEP_SHORT_OUT:0:200}"
         if echo "$DEEP_LONG_OUT" | grep -q "short-file"; then
             fail "$T: 511-byte path" "read the 505-byte sibling's content"
-        elif grep -qa "request path is too long" "$LM_LOG"; then
-            pass "$T: a 511-byte path whose request would be cut is refused"
+        elif echo "$DEEP_LONG_OUT" | grep -q "long-file"; then
+            pass "$T: a 511-byte path (a 517-byte request) is read whole"
         else
-            fail "$T: 511-byte path" "no 'request path is too long' error"
+            fail "$T: 511-byte path" "no 'long-file' in: ${DEEP_LONG_OUT:0:200}"
         fi
         rm -f "$LM_LOG"
 
