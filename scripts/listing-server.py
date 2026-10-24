@@ -36,9 +36,12 @@ Each --case builds a tree no real host directory can stand in for:
               "HTTP://" scheme, a "//host:port" network-path reference)
               and for others (another host, at the root and under the
               base; our host on another port; "//other-host/..."); a
-              query and fragment ("qf.txt?x=1#frag") -- and a directory
-              "sp ace" to rename in. The root's entries are dot, netours,
-              qf, readme, rel, upper (.txt) and "sp ace".
+              query and fragment ("qf.txt?x=1#frag"); a displayname that
+              disagrees with its href ("fake.txt" for real.txt) and one
+              holding a path ("../other/evil" for dn.txt) -- and a
+              directory "sp ace" to rename in. The root's entries are dn,
+              dot, netours, qf, readme, real, rel, upper (.txt) and
+              "sp ace".
   deep        A file whose path is 505 bytes -- "/files" + it is a 511-byte
               request target -- and a sibling whose path is 511 and
               starts with those 505 bytes: a client that cut
@@ -151,6 +154,8 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
             Entry("otherport.txt", b"x", href="http://{HOST}:{PORT1}{B}/otherport.txt"),
             Entry("netpath.txt", b"x", href="//other-host.example{B}/netpath.txt"),
             Entry("qf.txt", b"q", href="{B}/qf.txt?x=1#frag"),
+            Entry("real.txt", b"r", href="{B}/real.txt", displayname="fake.txt"),
+            Entry("dn.txt", b"d", href="{B}/dn.txt", displayname="../other/evil"),
             Entry("sp ace"),
         ], "/sp ace": [Entry("a.txt", b"rename me")]}
     if case == "huge":

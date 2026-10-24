@@ -307,14 +307,21 @@ dav_entry_emit(const DavEntry *e, const char *parent_path,
         return false;
     }
 
+    /* The name is the HREF's: every later request for the entry is built
+       from it, so a <displayname> that differs ("fake.txt" for
+       /real.txt, or one holding a '/' or '\\') would address another
+       resource. Nothing is lost by it -- the href IS the resource's name
+       on the server; a displayname is only a label -- so a disagreeing
+       one is logged and ignored, not a reason to refuse the listing. */
     axl_memset(out, 0, sizeof(*out));
-    if (e->name[0] != '\0') {
-        axl_strlcpy(out->name, e->name, sizeof(out->name));   /* fits */
-    } else if (!href_basename(e->href, out->name, sizeof(out->name))) {
+    if (!href_basename(e->href, out->name, sizeof(out->name))) {
         axl_warning("listing %s: skipping an entry whose name is longer "
                     "than %zu bytes", parent_path, sizeof(out->name) - 1);
         return false;
     }
+    if (e->name[0] != '\0' && !axl_streql(e->name, out->name))
+        axl_warning("listing %s: '%s' is labelled '%s'; the href's name is "
+                    "used", parent_path, out->name, e->name);
     out->is_dir = e->is_collection;
     out->size   = e->is_collection ? 0 : e->size;
     return out->name[0] != '\0';
@@ -485,9 +492,10 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
             } else if (in_displayname &&
                        axl_xml_token_local_name_eq(&tok, "displayname")) {
                 in_displayname = false;
+                /* Kept only to compare with the href's name; a
+                   displayname that does not fit is simply not kept. */
                 size_t len = axl_string_len(text);
                 if (len >= sizeof(cur.name)) {
-                    cur.too_long = true;
                     cur.name[0] = '\0';
                 } else {
                     axl_memcpy(cur.name, axl_string_str(text), len);

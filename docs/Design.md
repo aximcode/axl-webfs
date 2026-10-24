@@ -200,6 +200,13 @@ shown short or empty: an href that cannot be read at all, or an answer
 without the listed collection's own entry (then nothing says the rest
 are its children).
 
+An entry's name is its href's last segment, never its `<displayname>`:
+every later request is built from the name, so a label that differs
+("fake.txt" for `/real.txt`, or one holding a `/`) would address another
+resource. The href is the resource's name on the server and the
+displayname only a label, so nothing is lost; a disagreeing displayname
+is logged and ignored rather than failing the listing.
+
 The mount driver supplies an `AxlFsProvider` callback table; the
 SDK invokes the callbacks for each `EFI_FILE_PROTOCOL` op the
 Shell makes, marshalling CHAR16 paths to UTF-8 and the result
