@@ -2090,17 +2090,23 @@ NSHEOF
                         done
                         printf '%s' "mvsrc" | curl -s -o /dev/null -T - \
                             "$BASE/fs0/mv-src.txt" 2>/dev/null || true
-                        for LT_DST in "$BASE/dav/fs0/$TEMP_NAME/" \
-                                      "$BASE/dav/fs0/.\\$TEMP_NAME" \
-                                      "$BASE/dav/fs0/$TEMP_LC" \
-                                      "$BASE/dav/fs0/$TEMP_NAME."; do
+                        # A raw '\\' or a FAT-trimmed component in the
+                        # Destination is refused by the SDK itself (400,
+                        # an unparsable Destination) before the op; the
+                        # rest reach webfs's MOVE, which refuses them 403.
+                        for LT_MV in "403|$BASE/dav/fs0/$TEMP_NAME/" \
+                                     "400|$BASE/dav/fs0/.\\$TEMP_NAME" \
+                                     "403|$BASE/dav/fs0/$TEMP_LC" \
+                                     "400|$BASE/dav/fs0/$TEMP_NAME."; do
+                            LT_WANT="${LT_MV%%|*}"
+                            LT_DST="${LT_MV#*|}"
                             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
                                 -X MOVE -H "Destination: $LT_DST" -H "Overwrite: T" \
                                 "$BASE/dav/fs0/mv-src.txt" 2>/dev/null || true)
-                            [ "$HTTP_CODE" = "403" ] && \
-                                pass "serve live temp: MOVE onto ${LT_DST#$BASE} is 403" || \
+                            [ "$HTTP_CODE" = "$LT_WANT" ] && \
+                                pass "serve live temp: MOVE onto ${LT_DST#$BASE} is $LT_WANT" || \
                                 fail "serve live temp: MOVE onto ${LT_DST#$BASE}" \
-                                     "expected 403, got $HTTP_CODE"
+                                     "expected $LT_WANT, got $HTTP_CODE"
                         done
                         CONTENT=$(curl -sf "$BASE/fs0/mv-src.txt" 2>/dev/null || true)
                         [ "$CONTENT" = "mvsrc" ] && \
