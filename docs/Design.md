@@ -179,8 +179,10 @@ The mount URL may name a share below the server's root -- e.g.
 -- and every request then goes under that base path. A share path with a
 `.`, `..` or empty segment, or an encoded separator (`%2F`, `%5C`), is
 refused at mount time: the server would normalize it to another place.
-The WebDAV probe also asks for the share's root collection, so a share
-the server does not have is no mount rather than an empty volume.
+The WebDAV probe also asks for the share's root collection (PROPFIND
+Depth: 0, with the listing's Content-Type) and needs its 207 to say
+`<collection/>`, so a share the server does not have, or a share path
+naming a file, is no mount rather than an empty volume.
 
 A PROPFIND href is read as RFC 3986 says. An absolute URI (a scheme in
 any case) or a network-path reference (`//host/...`) is parsed with

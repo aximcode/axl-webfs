@@ -51,8 +51,9 @@ requests must name it, hrefs carry it ("{B}" in an Entry's href is the
 encoded base, "{HOST}" the request's Host without its port, "{PORT}" this
 server's port and "{PORT1}" the next one), and a MOVE's logged Destination
 includes it. --no-self leaves the queried collection out of every
-PROPFIND; --extra-href HREF (repeatable, templated the same way) adds a
-raw href to the root's.
+Depth: 1 PROPFIND (a listing; a Depth: 0 one still answers for it); --extra-href HREF (repeatable, templated the same way) adds a
+raw href to the root's. A PROPFIND naming a FILE answers 207 with the
+file's own, non-collection response.
 
 Usage:
     ./listing-server.py --case long-names --port 9877 [--webdav]
@@ -326,13 +327,21 @@ class ListingHandler(BaseHTTPRequestHandler):
             self.rfile.read(length)
         local = self._local(unquote(urlparse(self.path).path))
         entries = self._entries(local) if self.webdav and local is not None else None
-        if local is None or entries is None:
+        file_entry = (self._lookup(local.rstrip("/")) if self.webdav and local is not None
+                      and entries is None else None)
+        if local is not None and file_entry is not None and file_entry.content is not None:
+            # A file answers for itself, as no collection.
+            href = quote((self.base + local).rstrip("/"))
+            parts = [self._response(href, escape(file_entry.name), file_entry)]
+        elif local is None or entries is None:
             self._send(404, b"not found\n", "text/plain")
             return
         else:
             base = (self.base + local).rstrip("/")
-            parts = [] if self.no_self else [self._response(quote(base + "/"), "", None)]
-            if self.headers.get("Depth", "1") != "0":
+            depth0 = self.headers.get("Depth", "1") == "0"
+            parts = ([] if self.no_self and not depth0
+                     else [self._response(quote(base + "/"), "", None)])
+            if not depth0:
                 for e in entries:
                     href = (self._href(e.href) if e.href is not None
                             else quote(f"{base}/{e.name}"))
@@ -359,7 +368,7 @@ def main() -> None:
     parser.add_argument("--base", default="",
                         help="serve the tree under this (decoded) path prefix")
     parser.add_argument("--no-self", action="store_true",
-                        help="leave the queried collection out of each PROPFIND")
+                        help="leave the queried collection out of each Depth: 1 PROPFIND")
     parser.add_argument("--extra-href", action="append", default=[],
                         help="a raw href to add to the root's PROPFIND (templated)")
     parser.add_argument("--port", type=int, default=9877)

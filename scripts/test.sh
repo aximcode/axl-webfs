@@ -1065,6 +1065,23 @@ NSHEOF
             rm -f "$LM_LOG"
         done
 
+        # A share path that names a FILE is no share: the probe's 207 for
+        # it carries no <collection/>, and the mount is refused.
+        T="$LM_ARCH share names a file (dav)"
+        info "QEMU" "$T: Booting mount test..."
+        LM_FIXTURE_ARGS=(--base "/my share")
+        LM_URL_PATH="/my share/readme.txt"
+        listing_mount based dav "echo === ROOT ===" 'ls fs1:\' "echo === END ==="
+        LM_FIXTURE_ARGS=()
+        unset LM_URL_PATH
+        if grep -qa "axl-webfs-mount: the share is no WebDAV collection on the server" "$LM_LOG" && \
+           ! grep -qa "axl-webfs-mount: mounted" "$LM_LOG"; then
+            pass "$T: a share path naming a file is not mounted"
+        else
+            fail "$T: file as share" "expected the refusal line and no mount"
+        fi
+        rm -f "$LM_LOG"
+
         # A share that does not exist on the server is no mount: the probe
         # asks for its root collection, and a 404 refuses the mount rather
         # than show an empty volume.

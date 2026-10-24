@@ -195,19 +195,36 @@ proto_probe(WebFsPrivate *priv)
     if (!ok)
         return -1;
 
-    /* OPTIONS answers for any path; the share must EXIST as a collection
-       (PROPFIND Depth: 0 of its root is 207), or every listing of it
-       would fail and the Shell show the volume empty. */
+    /* OPTIONS answers for any path; the share must EXIST as a COLLECTION
+       (PROPFIND Depth: 0 of its root is 207 and says <collection/>), or
+       every listing of it would fail -- a missing share, or a share path
+       naming a file -- and the Shell show the volume empty. The request
+       carries the same Content-Type a listing does. */
     AxlHashTable *hdrs = axl_hash_table_new_str();
     if (hdrs == NULL) return -1;
     axl_hash_table_insert(hdrs, "depth", axl_strdup("0"));
+    axl_hash_table_insert(hdrs, "content-type",
+                          axl_strdup("application/xml; charset=\"utf-8\""));
     resp = NULL;
     rc = webfs_http_request(priv, "PROPFIND", "/", NULL, hdrs,
                             k_propfind_allprop, sizeof(k_propfind_allprop) - 1,
                             &resp);
     axl_free(axl_hash_table_lookup(hdrs, "depth"));
+    axl_free(axl_hash_table_lookup(hdrs, "content-type"));
     axl_hash_table_free(hdrs);
     ok = rc == 0 && resp != NULL && resp->status_code == 207;
+    if (ok) {
+        bool          collection = false;
+        AxlXmlReader *r = axl_xml_reader_new(resp->body, resp->body_size);
+        AxlXmlToken   tok;
+        while (r != NULL && !collection && axl_xml_reader_next(r, &tok)) {
+            if (tok.type == AXL_XML_TOKEN_START_ELEMENT &&
+                axl_xml_token_local_name_eq(&tok, "collection"))
+                collection = true;
+        }
+        axl_xml_reader_free(r);
+        ok = collection;
+    }
     if (resp != NULL) axl_http_client_response_free(resp);
     if (!ok)
         axl_printf("axl-webfs-mount: the share is no WebDAV collection on "
