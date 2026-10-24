@@ -746,6 +746,8 @@ NSHEOF
         echo "webdav mount test content" > "$DAV_TEST_DIR/readme.txt"
         mkdir -p "$DAV_TEST_DIR/tools"
         echo "tool data via dav" > "$DAV_TEST_DIR/tools/sample.txt"
+        mkdir -p "$DAV_TEST_DIR/sp ace"
+        echo "rename me" > "$DAV_TEST_DIR/sp ace/a.txt"
 
         python3 "$SCRIPT_DIR/xfer-server.py" --webdav \
             --root "$DAV_TEST_DIR" --port $DAV_PORT --bind 0.0.0.0 \
@@ -760,6 +762,8 @@ NSHEOF
             if [ ! -f "$APP_EFI" ]; then continue; fi
 
             cp "$APP_EFI" "$DAV_TEST_DIR/TestApp.efi"
+            rm -f "$DAV_TEST_DIR/sp ace/b.txt"
+            echo "rename me" > "$DAV_TEST_DIR/sp ace/a.txt"
 
             DAV_NSH=$(mktemp --suffix=.nsh)
             cat > "$DAV_NSH" <<NSHEOF
@@ -777,6 +781,8 @@ echo "written via dav" > fs0:\\dav_write.txt
 cp fs0:\\dav_write.txt fs1:\\from_uefi_dav.txt
 echo === TEST: read subdir ===
 ls fs1:\\tools\\
+echo === TEST: rename ===
+mv "fs1:\\sp ace\\a.txt" "fs1:\\sp ace\\b.txt"
 echo === TEST: umount ===
 axl-webfs.efi umount
 echo === TESTS COMPLETE ===
@@ -822,6 +828,14 @@ NSHEOF
             grep -q "sample.txt" "$SERIAL_LOG" 2>/dev/null && \
                 pass "$QEMU_ARCH dav: subdir PROPFIND works" || \
                 fail "$QEMU_ARCH dav: subdir" "sample.txt not found"
+
+            # A rename over WebDAV to a real server: its MOVE carries a
+            # Destination with our host:port, which the server checks
+            # against the request's Host -- so Host must carry the port
+            # too (a mismatch is 502 Bad Gateway).
+            [ -f "$DAV_TEST_DIR/sp ace/b.txt" ] && [ ! -e "$DAV_TEST_DIR/sp ace/a.txt" ] && \
+                pass "$QEMU_ARCH dav: Shell mv renames on the server" || \
+                fail "$QEMU_ARCH dav: rename" "expected 'sp ace/b.txt' and no 'sp ace/a.txt' on the server"
 
             grep -qE "axl-webfs-mount: unmounted" \
                 "$SERIAL_LOG" 2>/dev/null && \
