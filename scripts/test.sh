@@ -1040,12 +1040,15 @@ NSHEOF
         rm -f "$LM_LOG"
 
         # The same tree over WebDAV, where a request carries no "/files"
-        # prefix: a 511-byte path is read whole, and a 520-byte one --
-        # whose 511-byte cut IS that file -- must be refused, never
-        # read as it. The axl-sdk fs-provider cuts an over-long EFI name
-        # (resolve_efi_path) before the mount sees it; until the SDK
-        # refuses it instead, that case is an expected failure, reported
-        # as a SKIP that names the fix, and turns into a PASS by itself.
+        # prefix: a 511-byte path is read whole. A 520-byte one -- whose
+        # 511-byte cut IS that file -- would be read as it if it reached
+        # the mount, because the axl-sdk fs-provider cuts an over-long EFI
+        # name (resolve_efi_path) before the mount sees it. What this
+        # GUARDS is that it does not reach the mount: the UEFI Shell
+        # refuses the path itself ("Cannot open file") and no request
+        # for the cut is sent. Should the Shell ever pass it on and the
+        # cut be read, that is reported as an expected failure (SKIP)
+        # naming the SDK fix.
         T="$LM_ARCH long path (dav)"
         info "QEMU" "$T: Booting mount test..."
         listing_mount deep dav \
@@ -1060,8 +1063,12 @@ NSHEOF
             skip "$T: XFAIL a 520-byte path is read as its 511-byte cut -- needs the axl-sdk fix to resolve_efi_path (refuse an EFI name whose UTF-8 form does not fit, never cut it)"
         elif echo "$DEEP_LONG_OUT" | grep -q "over-file"; then
             fail "$T: 520-byte path" "read whole past the mount's own limit"
+        elif echo "$DEEP_LONG_OUT" | grep -q "Cannot open file" && \
+             [ "$(grep -c '/ffgggggg HTTP' /tmp/listing-server.log)" = "1" ]; then
+            pass "$T: the Shell refuses a 520-byte path before the mount sees it"
         else
-            pass "$T: a 520-byte path is refused, not read as its 511-byte cut"
+            fail "$T: 520-byte path" \
+                 "expected the Shell's 'Cannot open file' and no request for the cut, got: ${DEEP_LONG_OUT:0:200}"
         fi
         rm -f "$LM_LOG"
     done
