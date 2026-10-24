@@ -500,10 +500,16 @@ NSHEOF
             grep -i "error\|fail\|axl-webfs-mount" "$SERIAL_LOG" 2>/dev/null | head -5 || true
         fi
 
-
-        grep -q "readme.txt" "$SERIAL_LOG" 2>/dev/null && \
+        # The `ls fs1:\` output only, and a listing ROW for readme.txt
+        # (its size, two spaces, the name, end of line): the name alone
+        # also appears in the script's own `type fs1:\readme.txt` and in
+        # any error that names it, so a bare grep passes on an empty
+        # listing.
+        LS_ROOT=$(sed -n '/=== TEST: ls mounted volume ===/,/=== TEST: read file ===/p' \
+            "$SERIAL_LOG" 2>/dev/null | tr -d '\r')
+        echo "$LS_ROOT" | grep -qE "^.* [0-9]+  readme\.txt$" && \
             pass "$QEMU_ARCH: ls shows remote files (readme.txt)" || \
-            fail "$QEMU_ARCH: ls" "readme.txt not found"
+            fail "$QEMU_ARCH: ls" "no readme.txt row in: ${LS_ROOT:0:300}"
 
         grep -q "mount test content" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: type reads remote file content" || \
