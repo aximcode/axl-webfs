@@ -2420,6 +2420,17 @@ NSHEOF
                 [ "$HTTP_CODE" = "404" ] && \
                     pass "serve rest status: the 409 PUT made no directory" || \
                     fail "serve rest status: nope1" "expected 404, got $HTTP_CODE"
+
+                # The guest must still be running here: one that died
+                # early (a crash, its own timeout) would otherwise only
+                # show as the checks above failing with 000 -- and the
+                # teardown's `kill || true` would hide that it was gone.
+                if kill -0 "$QEMU_PID" 2>/dev/null && \
+                   [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$BASE/" 2>/dev/null)" = "200" ]; then
+                    pass "serve: the guest is alive and answering at the end of the block"
+                else
+                    fail "serve: guest liveness" "the guest died or stopped answering before teardown"
+                fi
             else
                 fail "serve: driver did not start within 30s"
             fi
