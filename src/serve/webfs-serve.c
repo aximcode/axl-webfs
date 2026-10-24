@@ -686,6 +686,7 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
 #define PUT_DIGEST_HEX_MAX  (64 * 2 + 1)
 
 static void        *m_put_ctx     = NULL;   /* webfs_put_open's; NULL = none */
+static bool         m_put_in_place = false; /* the backend's answer at the open */
 static uint64_t     m_put_id      = 0;      /* request holding it; 0 = none */
 static int          m_put_status  = 0;      /* 0 = no failure yet */
 static const char  *m_put_msg     = NULL;   /* body for m_put_status; NULL = by status */
@@ -835,9 +836,14 @@ static void
 put_end(bool stored)
 {
     if (m_put_ctx != NULL) {
-        webfs_put_close(m_put_ctx, true);
+        /* An abort: no response goes out, so a write in place that the
+           discard could not restore is reported here, in the log. */
+        if (webfs_put_close(m_put_ctx, true) != AXL_OK && m_put_in_place)
+            axl_error("PUT ended part-way: the resource is partially "
+                      "written");
         m_put_ctx = NULL;
     }
+    m_put_in_place = false;
     if (!stored && m_put_parent[0] != '\0' &&
         ft_rmdir(&m_put_vol, m_put_parent) != 0)
         axl_warning("PUT failed; the directory it made, %s:%s, is not "
@@ -912,7 +918,15 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
                 axl_strlcpy(m_put_parent, parent, sizeof(m_put_parent));
             }
             axl_free(parent);
-            int rc = webfs_put_open(&vol, sub, &m_put_ctx);
+            /* The body's length as the request states it, as /dav
+               passes it: unknown for a chunked body. */
+            const char *te = (req->headers != NULL)
+                ? axl_hash_table_lookup(req->headers, "transfer-encoding") : NULL;
+            uint64_t length = (te != NULL && axl_strcasecmp(te, "chunked") == 0)
+                ? AXL_WEBDAV_LENGTH_UNKNOWN
+                : (uint64_t)axl_http_get_content_length(req->headers);
+            int rc = webfs_put_open(&vol, sub, length, &m_put_ctx,
+                                    &m_put_in_place);
             if (rc != AXL_OK) {
                 m_put_ctx    = NULL;
                 m_put_status = put_status_for(rc, 409);
@@ -957,8 +971,20 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
         bool discard = m_put_status != 0;
         int  rc      = webfs_put_close(m_put_ctx, discard);
         m_put_ctx    = NULL;
-        if (!discard && rc != AXL_OK)
+        if (!discard && rc != AXL_OK) {
             m_put_status = put_status_for(rc, 500);
+            if (m_put_in_place)
+                m_put_msg = "PUT failed part-way: the resource is partially "
+                            "written\n";
+        } else if (discard && rc != AXL_OK && m_put_in_place) {
+            /* A write in place the discard could not restore: say what
+               the resource now holds, as the /dav PUT does. */
+            m_put_msg = (m_put_status == 400)
+                ? "Content-Digest mismatch: the resource now holds the body "
+                  "that did not match\n"
+                : "PUT failed part-way: the resource is partially written\n";
+            axl_error("PUT %s: %s", req->path, m_put_msg);
+        }
     }
 
     int         status = m_put_status != 0 ? m_put_status : 201;

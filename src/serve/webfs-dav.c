@@ -68,6 +68,7 @@ typedef enum {
    lands, so the commit can drop that path's cached digest. */
 typedef struct {
     void     *inner;
+    bool      in_place;   ///< the SDK backend's answer at write_open
     FtVolume  vol;
     char      sub[512];
 } WebfsPut;
@@ -434,9 +435,11 @@ dav_log_put_temp(AxlFsRoot *root, const WebfsPut *w, const char *dir,
 }
 
 int
-webfs_put_open(const FtVolume *vol, const char *sub, void **out_ctx)
+webfs_put_open(const FtVolume *vol, const char *sub, uint64_t length,
+               void **out_ctx, bool *in_place)
 {
-    *out_ctx = NULL;
+    *out_ctx  = NULL;
+    *in_place = false;
     AxlFsRoot *root = dav_root_for(vol);
     if (root == NULL)
         return AXL_ERR;
@@ -454,12 +457,13 @@ webfs_put_open(const FtVolume *vol, const char *sub, void **out_ctx)
     size_t n_before = dir != NULL
                       ? dav_live_temps_in(root, vol, dir, before, 8) : 0;
 
-    int rc = m_fs->write_open(root, sub, &w->inner);
+    int rc = m_fs->write_open(root, sub, length, &w->inner, &w->in_place);
     if (rc != AXL_OK) {
         axl_free(dir);
         axl_free(w);
         return rc;
     }
+    *in_place = w->in_place;   /* what the backend declared, never assumed */
     if (dir != NULL)
         dav_log_put_temp(root, w, dir, before, n_before);
     axl_free(dir);
@@ -477,9 +481,12 @@ webfs_put_write(void *ctx, const void *data, size_t len)
 /* discard=false COMMITS: the SDK flushes the temp and replaces the
    target, and its status is the PUT's. discard=true DISCARDS: the SDK
    deletes the temp through its handle and the target is left as it was.
-   Either way the ctx is dead afterwards. A commit changes the path's
-   bytes, so its cached digest goes with it -- the cache is keyed by
-   size, which a same-size replace does not change. */
+   The discard's return means something only for a write the backend
+   declared in place: AXL_OK when the resource is as it was, anything
+   else when it holds what was written. Either way the ctx is dead
+   afterwards. A commit -- or a failed in-place discard -- changes the
+   path's bytes, so its cached digest goes with it: the cache is keyed
+   by size, which a same-size write does not change. */
 int
 webfs_put_close(void *ctx, bool discard)
 {
@@ -487,14 +494,15 @@ webfs_put_close(void *ctx, bool discard)
     if (w == NULL)
         return AXL_ERR;
     int rc = m_fs->write_close(w->inner, discard);
-    if (!discard && rc == AXL_OK)
+    if ((!discard && rc == AXL_OK) || (discard && w->in_place && rc != AXL_OK))
         invalidate_file_digest(&w->vol, w->sub);
     axl_free(w);
     return rc;
 }
 
 static int
-dav_write_open(void *user, const char *path, void **out_ctx)
+dav_write_open(void *user, const char *path, uint64_t length,
+               void **out_ctx, bool *in_place)
 {
     (void)user;
     *out_ctx = NULL;
@@ -504,7 +512,7 @@ dav_write_open(void *user, const char *path, void **out_ctx)
     char       sub[512];
     switch (parse_dav_path(path, &vol, &root, sub, sizeof(sub))) {
         case PATH_OBJECT:
-            return webfs_put_open(&vol, sub, out_ctx);
+            return webfs_put_open(&vol, sub, length, out_ctx, in_place);
         case PATH_VOLUME:
             return AXL_IS_DIR;      /* 409: a collection at the target */
         default:
