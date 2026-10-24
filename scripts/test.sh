@@ -1044,8 +1044,9 @@ NSHEOF
         rm -f "$LM_LOG"
 
         # An href that cannot be read fails the whole listing -- never a
-        # short one: an absolute href with no host.
-        for BAD_HREF in 'http:///x.txt'; do
+        # short one: a %00 in it (it would decode to a name cut at the
+        # NUL), and an absolute href with no host.
+        for BAD_HREF in '{B}/a%00evil.txt' 'http:///x.txt'; do
             T="$LM_ARCH unreadable href (dav) $BAD_HREF"
             info "QEMU" "$T: Booting mount test..."
             LM_FIXTURE_ARGS=(--base "/my share" --extra-href "$BAD_HREF")

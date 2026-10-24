@@ -189,7 +189,8 @@ mount's own host and port: another host or port is no entry, and one
 that does not parse fails the listing. A relative reference resolves
 against the
 collection URL the PROPFIND was sent to (always with its trailing
-separator). The decoded path is normalized (`.`, `..`) BEFORE it is matched against the share's base. An href outside the share -- including
+separator). The decoded path -- a `%00` makes the href unreadable -- is
+normalized (`.`, `..`) BEFORE it is matched against the share's base. An href outside the share -- including
 one that climbs out with `..` -- is no entry; one that is no direct
 child of the listed directory is no entry either, never shown under its
 basename. A listing that cannot be represented whole is refused, never

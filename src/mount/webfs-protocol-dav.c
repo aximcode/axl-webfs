@@ -64,7 +64,8 @@ href_has_scheme(const char *href)
 ///   - A relative path reference resolves against @p req_dir, the
 ///     decoded directory the PROPFIND was sent to (RFC 3986 5.2):
 ///     "rel.txt" in a listing of "/my share/" is "/my share/rel.txt".
-/// The path is percent-decoded and normalized ("." and "..") BEFORE it is
+/// The path is percent-decoded -- a %00 (the decode's length is not the
+/// string's) is HREF_BAD -- and normalized ("." and "..") BEFORE it is
 /// matched against the share's base, so "<base>/../x" is the sibling it
 /// names, outside the share, never a child "x".
 static HrefKind
@@ -113,7 +114,7 @@ href_to_mount_path(const WebFsPrivate *priv, const char *req_dir,
     char  *dec = axl_malloc(cap);
     char  *res = axl_malloc(MAX_PATH_LEN * 4);
     int    n   = dec != NULL ? axl_url_decode(raw, dec, cap) : -1;
-    if (n >= 0 && axl_strlen(dec) < cap && res != NULL &&
+    if (n >= 0 && axl_strlen(dec) == (size_t)n && res != NULL &&
         axl_path_resolve(req_dir, dec, res, MAX_PATH_LEN * 4) == AXL_OK) {
         const char *base = priv->base_path;
         size_t      blen = axl_strlen(base);
