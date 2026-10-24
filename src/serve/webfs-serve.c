@@ -1029,8 +1029,15 @@ handle_post_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
         return 0;
     }
 
-    status = webfs_live_temp(&volume, sub_path)
-             ? -1 : ft_mkdir(&volume, sub_path);
+    /* A live PUT temp is no resource: 404, as GET and DELETE answer --
+       not the 500 the mkdir over an existing file would fail with. */
+    if (webfs_live_temp(&volume, sub_path)) {
+        axl_http_response_set_text(resp, "Not found\n");
+        axl_http_response_set_status(resp, 404);
+        publish_request(opts->loop, req, resp);
+        return 0;
+    }
+    status = ft_mkdir(&volume, sub_path);
     if (status != 0) {
         axl_http_response_set_text(resp, "mkdir failed\n");
         axl_http_response_set_status(resp, 500);

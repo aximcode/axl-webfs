@@ -500,14 +500,16 @@ NSHEOF
             grep -i "error\|fail\|axl-webfs-mount" "$SERIAL_LOG" 2>/dev/null | head -5 || true
         fi
 
-        # The `ls fs1:\` output only, and a listing ROW for readme.txt
-        # (its size, two spaces, the name, end of line): the name alone
-        # also appears in the script's own `type fs1:\readme.txt` and in
-        # any error that names it, so a bare grep passes on an empty
-        # listing.
+        # The `ls fs1:\` output only, and readme.txt's WHOLE listing row:
+        # the name alone also appears in the script's own
+        # `type fs1:\readme.txt` and in any error that names it, so a bare
+        # grep passes on an empty listing. The row is deterministic: the
+        # mount reports no modification time (00/00/0000 00:00) and the
+        # file is "mount test content\n", 19 bytes.
         LS_ROOT=$(sed -n '/=== TEST: ls mounted volume ===/,/=== TEST: read file ===/p' \
             "$SERIAL_LOG" 2>/dev/null | tr -d '\r')
-        echo "$LS_ROOT" | grep -qE "^.* [0-9]+  readme\.txt$" && \
+        LS_ROW=$(printf '00/00/0000  00:00%20s  readme.txt' 19)
+        echo "$LS_ROOT" | grep -qxF "$LS_ROW" && \
             pass "$QEMU_ARCH: ls shows remote files (readme.txt)" || \
             fail "$QEMU_ARCH: ls" "no readme.txt row in: ${LS_ROOT:0:300}"
 
@@ -1976,6 +1978,12 @@ NSHEOF
                             pass "serve live temp: REST PUT onto it is 403" || \
                             fail "serve live temp: REST PUT onto it" \
                                  "expected 403, got $HTTP_CODE"
+                        HTTP_CODE=$(curl -s -o /dev/null -X POST -w "%{http_code}" \
+                            "$BASE/fs0/$TEMP_NAME?mkdir" 2>/dev/null || true)
+                        [ "$HTTP_CODE" = "404" ] && \
+                            pass "serve live temp: REST ?mkdir of it is 404" || \
+                            fail "serve live temp: REST ?mkdir of it" \
+                                 "expected 404, got $HTTP_CODE"
                         # Every other spelling of the temp is refused too:
                         # a backslash or ':' is UEFI path syntax, not a
                         # name byte, so a REST path decoding to one is 400;
@@ -2081,6 +2089,15 @@ NSHEOF
                     pass "serve rest atomic: digest-mismatch PUT (400) keeps the old file" || \
                     fail "serve rest atomic: digest mismatch" \
                          "expected 400 + 'REST-V2', got $HTTP_CODE + '${CONTENT:0:60}'"
+                LISTING=$(curl -s -H "Accept: application/json" \
+                    "$BASE/fs0/" 2>/dev/null || true)
+                if echo "$LISTING" | grep -q "rest-atomic.txt" && \
+                   ! echo "$LISTING" | grep -qi "~AP"; then
+                    pass "serve rest atomic: the mismatched PUT's temp is removed"
+                else
+                    fail "serve rest atomic: temp after mismatch" \
+                         "expected rest-atomic.txt and no ~AP file, got: ${LISTING:0:300}"
+                fi
 
                 if exec 7<>"/dev/tcp/${DAV_HOSTPORT%%:*}/${DAV_HOSTPORT##*:}"; then
                     printf 'PUT /fs0/rest-atomic.txt HTTP/1.1\r\nHost: %s\r\nContent-Length: 1048576\r\n\r\n' \
@@ -2099,6 +2116,15 @@ NSHEOF
                         pass "serve rest atomic: hang-up mid-PUT keeps the old file" || \
                         fail "serve rest atomic: hang-up mid-PUT" \
                              "expected 'REST-V2', got '${CONTENT:0:60}'"
+                    LISTING=$(curl -s -H "Accept: application/json" \
+                        "$BASE/fs0/" 2>/dev/null || true)
+                    if echo "$LISTING" | grep -q "rest-atomic.txt" && \
+                       ! echo "$LISTING" | grep -qi "~AP"; then
+                        pass "serve rest atomic: the hung-up PUT's temp is removed"
+                    else
+                        fail "serve rest atomic: temp after hang-up" \
+                             "expected rest-atomic.txt and no ~AP file, got: ${LISTING:0:300}"
+                    fi
                 else
                     fail "serve rest atomic: hang-up mid-PUT" \
                          "could not connect to $DAV_HOSTPORT"
@@ -2310,6 +2336,28 @@ NSHEOF
                 else
                     fail "serve rest parent: hang-up" "could not connect to $DAV_HOSTPORT"
                 fi
+
+                # ----------------------------------------------------
+                # REST PUT statuses, exact: a parent missing more than
+                # one level down is 409 (and makes nothing); a
+                # directory at the target is 409; an unknown volume is
+                # 404. (507 needs a full volume; not provoked here.)
+                # ----------------------------------------------------
+                for ST in "409|/fs0/nope1/nope2/f.txt" "409|/fs0/EFI" "404|/fs99/f.txt"; do
+                    ST_WANT="${ST%%|*}"
+                    ST_PATH="${ST#*|}"
+                    HTTP_CODE=$(printf '%s' "x" | curl -s -o /dev/null -w "%{http_code}" \
+                        -T - "$BASE$ST_PATH" 2>/dev/null || true)
+                    [ "$HTTP_CODE" = "$ST_WANT" ] && \
+                        pass "serve rest status: PUT $ST_PATH is $ST_WANT" || \
+                        fail "serve rest status: PUT $ST_PATH" \
+                             "expected $ST_WANT, got $HTTP_CODE"
+                done
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    -H "Accept: application/json" "$BASE/fs0/nope1/" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "404" ] && \
+                    pass "serve rest status: the 409 PUT made no directory" || \
+                    fail "serve rest status: nope1" "expected 404, got $HTTP_CODE"
             else
                 fail "serve: driver did not start within 30s"
             fi

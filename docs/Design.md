@@ -503,8 +503,7 @@ up, a chunk failed, the `Content-Digest` did not match) deletes the
 temp through the writer's own handle and leaves the old file exactly as
 it was. While a PUT is in flight its temp is no resource, on either
 surface: a /dav request naming it finds nothing (the SDK), a REST GET,
-HEAD or DELETE naming it is 404 and a `?mkdir` of it fails
-(`webfs_live_temp`), a REST PUT onto it is 403 (the SDK's write path
+HEAD, DELETE or `?mkdir` naming it is 404 (`webfs_live_temp`), a REST PUT onto it is 403 (the SDK's write path
 refuses it), a /dav MOVE onto it is 403, and the
 PROPFIND and REST listings (`ft_set_list_filter`) leave it out -- a
 temp-shaped name the SDK's stat refuses is a live temp, since the SDK
