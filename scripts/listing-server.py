@@ -35,9 +35,10 @@ Each --case builds a tree no real host directory can stand in for:
               absolute hrefs for our own host and port (an upper-case
               "HTTP://" scheme, a "//host:port" network-path reference)
               and for others (another host, at the root and under the
-              base; our host on another port; "//other-host/..."); --
-              and a directory "sp ace" to rename in. The root's entries
-              are dot, netours, readme, rel, upper (.txt) and "sp ace".
+              base; our host on another port; "//other-host/..."); a
+              query and fragment ("qf.txt?x=1#frag") -- and a directory
+              "sp ace" to rename in. The root's entries are dot, netours,
+              qf, readme, rel, upper (.txt) and "sp ace".
   deep        A file whose path is 505 bytes -- "/files" + it is a 511-byte
               request target -- and a sibling whose path is 511 and
               starts with those 505 bytes: a client that cut
@@ -148,6 +149,7 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
             Entry("other2.txt", b"x", href="http://other-host.example/other2.txt"),
             Entry("otherport.txt", b"x", href="http://{HOST}:{PORT1}{B}/otherport.txt"),
             Entry("netpath.txt", b"x", href="//other-host.example{B}/netpath.txt"),
+            Entry("qf.txt", b"q", href="{B}/qf.txt?x=1#frag"),
             Entry("sp ace"),
         ], "/sp ace": [Entry("a.txt", b"rename me")]}
     if case == "huge":

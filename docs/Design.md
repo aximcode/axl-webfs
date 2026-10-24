@@ -186,8 +186,8 @@ A PROPFIND href is read as RFC 3986 says. An absolute URI (a scheme in
 any case) or a network-path reference (`//host/...`) is parsed with
 `axl_url_parse`, and is the share's only when it is `http` on the
 mount's own host and port: another host or port is no entry, and one
-that does not parse fails the listing. A relative reference resolves
-against the
+that does not parse fails the listing. A path reference loses its
+`?query` and `#fragment`, and a relative one resolves against the
 collection URL the PROPFIND was sent to (always with its trailing
 separator). The decoded path -- a `%00` makes the href unreadable -- is
 normalized (`.`, `..`) BEFORE it is matched against the share's base. An href outside the share -- including

@@ -995,7 +995,8 @@ NSHEOF
         # these are entries: dot.txt (a "." segment), readme.txt, rel.txt
         # (relative, resolved against the request), upper.txt (our host
         # and port under an upper-case "HTTP://"), netours.txt (a
-        # "//host:port" reference to us) and "sp ace". Not entries: the
+        # "//host:port" reference to us), qf.txt (its "?x=1#frag" is no
+        # part of the name) and "sp ace". Not entries: the
         # self entry, an href outside the share,
         # one climbing out of it with "..", one that is no child of the
         # root, and every href for another host or port -- absolute or
@@ -1012,9 +1013,9 @@ NSHEOF
         LM_FIXTURE_ARGS=()
         unset LM_URL_PATH
         BASE_ROOT=$(lm_rows "=== ROOT ===" "=== MV ===" | tr '\n' '|')
-        BASE_WANT="dot.txt|netours.txt|readme.txt|rel.txt|sp ace|upper.txt|"
+        BASE_WANT="dot.txt|netours.txt|qf.txt|readme.txt|rel.txt|sp ace|upper.txt|"
         [ "$BASE_ROOT" = "$BASE_WANT" ] && \
-            pass "$T: the root lists exactly its six entries" || \
+            pass "$T: the root lists exactly its seven entries" || \
             fail "$T: root" "expected '$BASE_WANT', got '$BASE_ROOT'"
         MV_DEST=$(grep -a "MOVE-DEST" /tmp/listing-server.log | sed 's/^ *MOVE-DEST //')
         BASE_SUB=$(lm_rows "=== SUB ===" "=== END ===" | tr '\n' '|')

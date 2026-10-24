@@ -61,9 +61,10 @@ href_has_scheme(const char *href)
 ///     host and EFFECTIVE port are the mount's: another host or port is
 ///     HREF_FOREIGN, an href that does not parse HREF_BAD. Its query and
 ///     fragment are no part of the path.
-///   - A relative path reference resolves against @p req_dir, the
-///     decoded directory the PROPFIND was sent to (RFC 3986 5.2):
-///     "rel.txt" in a listing of "/my share/" is "/my share/rel.txt".
+///   - A path reference loses its "?query" and "#fragment", and a
+///     relative one resolves against @p req_dir, the decoded directory
+///     the PROPFIND was sent to (RFC 3986 5.2): "rel.txt" in a listing of
+///     "/my share/" is "/my share/rel.txt".
 /// The path is percent-decoded -- a %00 (the decode's length is not the
 /// string's) is HREF_BAD -- and normalized ("." and "..") BEFORE it is
 /// matched against the share's base, so "<base>/../x" is the sibling it
@@ -105,7 +106,10 @@ href_to_mount_path(const WebFsPrivate *priv, const char *req_dir,
         raw = axl_strdup(u->path != NULL ? u->path : "/");
         axl_url_free(u);
     } else {
-        raw = axl_strdup(href);
+        size_t len = 0;
+        while (href[len] != '\0' && href[len] != '?' && href[len] != '#')
+            len++;
+        raw = axl_strndup(href, len);
     }
     if (raw == NULL)
         return HREF_BAD;
