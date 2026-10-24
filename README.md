@@ -245,11 +245,10 @@ Uploads (`PUT`) optionally carry a `Content-Digest: sha-256=<hex>`
 header; when present the server verifies the streamed body against it
 and rejects a mismatch with `400`. The same header, hex format, and
 status apply on both the REST and `/dav` surfaces, mirroring the
-`Want-Digest`/`Digest` integrity offered on `GET`. A `/dav` PUT is
-atomic: the body goes to a temp file and replaces the target only once
-it is complete, so a mismatch or a client hang-up leaves the previous
-file exactly as it was. A REST PUT writes in place, so a mismatch
-deletes the partial file instead.
+`Want-Digest`/`Digest` integrity offered on `GET`. A PUT is atomic on
+both surfaces: the body goes to a temp file and replaces the target
+only once it is complete, so a mismatch or a client hang-up leaves the
+previous file exactly as it was.
 
 </details>
 

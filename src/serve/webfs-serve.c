@@ -605,30 +605,30 @@ handle_get_path(AxlHttpRequest *req, AxlHttpResponse *resp, void *data)
  * dispatcher is single-armed, so only one upload runs at a time
  * and these statics don't race.
  *
+ * The PUT is ATOMIC, through the same SDK write path as /dav
+ * (webfs_put_open, webfs-dav.c): the body goes to a temp sibling and
+ * replaces the target only on the commit, so a hang-up or a
+ * Content-Digest mismatch DISCARDS the body and leaves the previous
+ * file exactly as it was.
+ *
  * Read-only enforcement runs in permission_middleware, which the
  * SDK now invokes ahead of upload routes (1eb3fc0).
  *
  * Failure handling: we keep consuming bytes after a per-chunk error
  * (just don't write them) so the dispatcher reaches the final call
  * with a clean state machine and we can emit the right status code
- * (404 / 500 / 201) explicitly. Returning non-zero mid-stream would
- * force a generic 500 from the SDK and lose our error context.
+ * explicitly. Returning non-zero mid-stream would force a generic 500
+ * from the SDK and lose our error context.
  */
-static FtWriteCtx   m_put_ctx;
-static bool         m_put_open    = false;
-static bool         m_put_failed  = false;
-static int          m_put_status  = 201;
+static void        *m_put_ctx     = NULL;   /* webfs_put_open's; NULL = none */
+static bool         m_put_started = false;
+static int          m_put_status  = 0;      /* 0 = no failure yet */
 /* Optional upload integrity via a "Content-Digest: sha-256=<hex>"
-   request header. When the client advertises a body digest, hash the
-   stream and verify on close; a mismatch deletes the partial file and
-   returns 400 -- the same header name, hex format, and status the SDK's
-   WebDAV PUT uses on /dav, so REST and /dav share one contract.
-   m_put_vol/m_put_sub are retained from the first chunk so the final
-   call can delete the partial on mismatch. */
+   request header: the stream is hashed, and a mismatch DISCARDS the
+   write and answers 400 -- the header, hex format and status /dav
+   uses, so REST and /dav share one contract. */
 static AxlChecksum *m_put_hash    = NULL;
 static char         m_put_expect[65];     /* expected lowercase hex; "" = none */
-static FtVolume     m_put_vol;
-static char         m_put_sub[512];
 
 /* Extract a 64-char hex SHA-256 from a request "Content-Digest:
    sha-256=<hex>" header (scheme case-insensitive, "sha-256" or
@@ -659,6 +659,39 @@ parse_content_digest(AxlHttpRequest *req, char *out, size_t out_size)
     out[n] = '\0';
 }
 
+/* The HTTP status for a webfs_put_open / webfs_put_close failure @p rc,
+   as the SDK's /dav PUT maps it; @p fallback for any other code (409
+   at the open: no parent collection; 500 at the commit). */
+static int
+put_status_for(int rc, int fallback)
+{
+    switch (rc) {
+        case AXL_DENIED:       return 403;
+        case AXL_IS_DIR:
+        case AXL_EXISTS:       return 409;
+        case AXL_NO_RESOURCES: return 507;
+        case AXL_BUSY:         return 503;
+        default:               return fallback;
+    }
+}
+
+/* Reset the per-upload state; discard a write still open. */
+static void
+put_reset(void)
+{
+    if (m_put_ctx != NULL) {
+        webfs_put_close(m_put_ctx, true);
+        m_put_ctx = NULL;
+    }
+    if (m_put_hash != NULL) {
+        axl_checksum_free(m_put_hash);
+        m_put_hash = NULL;
+    }
+    m_put_started   = false;
+    m_put_status    = 0;
+    m_put_expect[0] = '\0';
+}
+
 static int
 handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
                  const void *chunk, size_t chunk_size, void *data,
@@ -667,49 +700,46 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
     ServeOpts *opts = (ServeOpts *)data;
 
     /* Abort: TCP teardown mid-upload. resp is NOT transmitted on
-       this call -- our only job is to release per-request state. */
+       this call -- discard the body (the target stays as it was) and
+       release per-request state. */
     if (aborted) {
-        if (m_put_open) {
-            ft_close_write(&m_put_ctx);
-            m_put_open = false;
-        }
-        if (m_put_hash != NULL) {
-            axl_checksum_free(m_put_hash);
-            m_put_hash = NULL;
-        }
-        m_put_failed = false;
-        m_put_status = 201;
-        m_put_expect[0] = '\0';
+        put_reset();
         return 0;
     }
 
     bool is_final = (chunk == NULL && chunk_size == 0);
 
-    /* First chunk OR final-with-empty-body: parse path + open file. */
-    if (!m_put_open && !m_put_failed) {
-        if (parse_volume_path(req->path, &m_put_vol, m_put_sub,
-                              sizeof(m_put_sub)) != 0) {
-            m_put_failed = true;
+    /* First chunk OR final-with-empty-body: parse path + open the PUT. */
+    if (!m_put_started) {
+        m_put_started = true;
+        FtVolume vol;
+        char     sub[512];
+        if (parse_volume_path(req->path, &vol, sub, sizeof(sub)) != 0) {
             m_put_status = 404;
-        } else if (ft_open_write(&m_put_vol, m_put_sub, NULL, NULL,
-                                 &m_put_ctx) != 0) {
-            m_put_failed = true;
-            m_put_status = 500;
         } else {
-            m_put_open = true;
-            /* If the client advertised a body digest, hash the stream
-               so the final call can verify it. */
-            parse_content_digest(req, m_put_expect, sizeof(m_put_expect));
-            if (m_put_expect[0] != '\0')
-                m_put_hash = axl_checksum_new(AXL_CHECKSUM_SHA256);
+            /* The REST PUT has always made a missing PARENT directory
+               (one level) for the upload; keep that. */
+            char *parent = axl_path_get_dirname(sub);
+            if (parent != NULL && parent[0] != '\0' &&
+                !axl_streql(parent, "/") && !axl_streql(parent, "."))
+                ft_mkdir(&vol, parent);
+            axl_free(parent);
+            int rc = webfs_put_open(&vol, sub, &m_put_ctx);
+            if (rc != AXL_OK) {
+                m_put_ctx    = NULL;
+                m_put_status = put_status_for(rc, 409);
+            } else {
+                parse_content_digest(req, m_put_expect, sizeof(m_put_expect));
+                if (m_put_expect[0] != '\0')
+                    m_put_hash = axl_checksum_new(AXL_CHECKSUM_SHA256);
+            }
         }
     }
 
-    /* Stream chunk to disk. Failure flips us into "consume but don't
-       write" until the final call. */
-    if (!is_final && m_put_open && !m_put_failed) {
-        if (ft_write_chunk(&m_put_ctx, chunk, chunk_size) != 0) {
-            m_put_failed = true;
+    /* Stream the chunk to the temp. A failure flips us into "consume
+       but don't write" until the final call. */
+    if (!is_final && m_put_ctx != NULL && m_put_status == 0) {
+        if (webfs_put_write(m_put_ctx, chunk, chunk_size) != AXL_OK) {
             m_put_status = 500;
         } else if (m_put_hash != NULL) {
             axl_checksum_update(m_put_hash, chunk, chunk_size);
@@ -720,55 +750,47 @@ handle_put_chunk(AxlHttpRequest *req, AxlHttpResponse *resp,
         return 0;
     }
 
-    /* Final call -- close, verify digest, respond, reset.
-       The close flushes, and that flush is where the bytes actually
-       reach the volume: every chunk can be accepted and the close
-       still fail on a full volume, write-protected media, or a device
-       error. Fold it into m_put_failed BEFORE the status is chosen, or
-       we answer 201 Created for a file that is not on disk. An already
-       recorded failure (404 / 400 / write error) keeps its status. */
-    if (m_put_open) {
-        if (ft_close_write(&m_put_ctx) != 0 && !m_put_failed) {
-            m_put_failed = true;
-            m_put_status = 500;
-        }
-        m_put_open = false;
-    }
-
-    /* Integrity: compare the streamed SHA-256 against the client's
-       advertised digest. On mismatch, delete the partial so a corrupt
-       upload never lands. Skipped when the write already failed. */
-    if (!m_put_failed && m_put_hash != NULL) {
+    /* Final call. The digest is checked BEFORE the commit, so a
+       mismatch discards the body rather than storing and then removing
+       it. The commit (flush + replace) is where the bytes become the
+       resource, and its status is the PUT's: 201 only once it held. */
+    if (m_put_status == 0 && m_put_hash != NULL) {
         const char *got = axl_checksum_get_string(m_put_hash);
-        if (got == NULL || axl_strcasecmp(got, m_put_expect) != 0) {
-            ft_delete(&m_put_vol, m_put_sub);
-            m_put_failed = true;
+        if (got == NULL || axl_strcasecmp(got, m_put_expect) != 0)
             m_put_status = 400;
-        }
     }
-    if (m_put_hash != NULL) {
-        axl_checksum_free(m_put_hash);
-        m_put_hash = NULL;
+    if (m_put_ctx != NULL) {
+        bool discard = m_put_status != 0;
+        int  rc      = webfs_put_close(m_put_ctx, discard);
+        m_put_ctx    = NULL;
+        if (!discard && rc != AXL_OK)
+            m_put_status = put_status_for(rc, 500);
     }
 
+    int         status = m_put_status != 0 ? m_put_status : 201;
     const char *body;
-    if (!m_put_failed) {
-        body = "Created\n";
-    } else if (m_put_status == 404) {
-        body = "Volume not found\n";
-    } else if (m_put_status == 400) {
-        body = "Content-Digest mismatch\n";
-    } else {
-        body = "Write failed\n";
+    switch (status) {
+        case 201: body = "Created\n";                 break;
+        case 404: body = "Volume not found\n";        break;
+        case 400: body = "Content-Digest mismatch\n"; break;
+        case 403: body = "Forbidden\n";               break;
+        case 409: body = "Conflict\n";                break;
+        case 503: body = "Busy\n";                    break;
+        case 507: body = "Insufficient storage\n";    break;
+        default:  body = "Write failed\n";            break;
     }
     axl_http_response_set_text(resp, body);
-    axl_http_response_set_status(resp, (size_t)m_put_status);
+    axl_http_response_set_status(resp, (size_t)status);
+    if (status == 503) {
+        if (resp->headers == NULL)
+            resp->headers = axl_hash_table_new_str();
+        if (resp->headers != NULL)
+            axl_hash_table_insert(resp->headers, "Retry-After",
+                                  axl_strdup("1"));
+    }
     publish_request(opts->loop, req, resp);
 
-    /* Reset for the next upload. */
-    m_put_failed = false;
-    m_put_status = 201;
-    m_put_expect[0] = '\0';
+    put_reset();
     return 0;
 }
 

@@ -63,13 +63,13 @@ typedef enum {
     PATH_INVALID,           ///< unknown volume name
 } DavPathKind;
 
-/* A PUT in flight: the SDK's write ctx, plus where it lands, so the
-   commit can drop that path's cached digest. */
+/* A PUT in flight (REST or /dav): the SDK's write ctx, plus where it
+   lands, so the commit can drop that path's cached digest. */
 typedef struct {
     void     *inner;
     FtVolume  vol;
     char      sub[512];
-} DavWriteCtx;
+} WebfsPut;
 
 /* One AxlFsRoot ("<vol>:") per volume ft_init found, index-parallel to
    ft_get_volume(). Created by webfs_dav_register, freed by
@@ -136,6 +136,17 @@ parse_dav_path(const char *url, FtVolume *vol, AxlFsRoot **root,
     /* p now points at '/' starting the sub-path. Copy as-is. */
     axl_strlcpy(sub, p, sub_size);
     return PATH_OBJECT;
+}
+
+/* Open volume-relative directory @p sub ("/" or "/a/b") on @p vol. */
+static AxlDir *
+dav_dir_open(const FtVolume *vol, const char *sub)
+{
+    char full[512];
+    axl_snprintf(full, sizeof(full), "%s:%s", vol->name, sub);
+    for (char *q = full; *q; q++)
+        if (*q == '/') *q = '\\';
+    return axl_dir_open(full);
 }
 
 /* Whether @p name has the shape of the SDK's PUT temp, "~APxxxxx.TMP"
@@ -235,13 +246,10 @@ dav_list_dir(void *user, const char *path, AxlFsEntry *out,
        trailing separator, so for a bare volume ("fs0:") its list_dir
        opens "fs0:" -- which lists nothing -- rather than "fs0:\".
        dav_live_temp keeps an in-flight PUT's temp out, as that op
-       would. */
-    char dir_full[512];
-    axl_snprintf(dir_full, sizeof(dir_full), "%s:%s", vol.name, sub);
-    for (char *q = dir_full; *q; q++)
-        if (*q == '/') *q = '\\';
-
-    AxlDir *dir = axl_dir_open(dir_full);
+       would. TODO: forward to m_fs->list_dir once the SDK's
+       axl_fs_root_new keeps a bare volume's separator (being fixed in
+       axl-sdk). */
+    AxlDir *dir = dav_dir_open(&vol, sub);
     if (dir == NULL)
         return AXL_ERR;
 
@@ -324,6 +332,70 @@ dav_read_open(void *user, const char *path, uint64_t offset, void **out_ctx)
 // Streaming write (PUT) -- atomic, by the SDK's temp + replace
 // ----------------------------------------------------------------------------
 
+/* The AxlFsRoot of @p vol (by name), or NULL. */
+static AxlFsRoot *
+dav_root_for(const FtVolume *vol)
+{
+    size_t n = ft_get_volume_count();
+    for (size_t j = 0; j < n && j < FT_MAX_VOLUMES; j++) {
+        FtVolume v;
+        if (ft_get_volume(j, &v) == 0 && axl_streql(v.name, vol->name))
+            return m_roots[j];
+    }
+    return NULL;
+}
+
+int
+webfs_put_open(const FtVolume *vol, const char *sub, void **out_ctx)
+{
+    *out_ctx = NULL;
+    AxlFsRoot *root = dav_root_for(vol);
+    if (root == NULL)
+        return AXL_ERR;
+    if (sub[0] == '\0' || (sub[0] == '/' && sub[1] == '\0'))
+        return AXL_IS_DIR;          /* the volume root is a collection */
+
+    WebfsPut *w = axl_calloc(1, sizeof(*w));
+    if (w == NULL)
+        return AXL_NO_RESOURCES;
+    w->vol = *vol;
+    axl_strlcpy(w->sub, sub, sizeof(w->sub));
+
+    int rc = m_fs->write_open(root, sub, &w->inner);
+    if (rc != AXL_OK) {
+        axl_free(w);
+        return rc;
+    }
+    *out_ctx = w;
+    return AXL_OK;
+}
+
+int
+webfs_put_write(void *ctx, const void *data, size_t len)
+{
+    WebfsPut *w = ctx;
+    return m_fs->write_chunk(w->inner, data, len);
+}
+
+/* discard=false COMMITS: the SDK flushes the temp and replaces the
+   target, and its status is the PUT's. discard=true DISCARDS: the SDK
+   deletes the temp through its handle and the target is left as it was.
+   Either way the ctx is dead afterwards. A commit changes the path's
+   bytes, so its cached digest goes with it -- the cache is keyed by
+   size, which a same-size replace does not change. */
+int
+webfs_put_close(void *ctx, bool discard)
+{
+    WebfsPut *w = ctx;
+    if (w == NULL)
+        return AXL_ERR;
+    int rc = m_fs->write_close(w->inner, discard);
+    if (!discard && rc == AXL_OK)
+        invalidate_file_digest(&w->vol, w->sub);
+    axl_free(w);
+    return rc;
+}
+
 static int
 dav_write_open(void *user, const char *path, void **out_ctx)
 {
@@ -335,52 +407,12 @@ dav_write_open(void *user, const char *path, void **out_ctx)
     char       sub[512];
     switch (parse_dav_path(path, &vol, &root, sub, sizeof(sub))) {
         case PATH_OBJECT:
-            break;
+            return webfs_put_open(&vol, sub, out_ctx);
         case PATH_VOLUME:
             return AXL_IS_DIR;      /* 409: a collection at the target */
         default:
             return AXL_ERR;         /* 409: no such parent collection */
     }
-
-    DavWriteCtx *w = axl_calloc(1, sizeof(*w));
-    if (w == NULL)
-        return AXL_NO_RESOURCES;
-    int rc = m_fs->write_open(root, sub, &w->inner);
-    if (rc != AXL_OK) {
-        axl_free(w);
-        return rc;
-    }
-    w->vol = vol;
-    axl_strlcpy(w->sub, sub, sizeof(w->sub));
-    *out_ctx = w;
-    return AXL_OK;
-}
-
-static int
-dav_write_chunk(void *ctx, const void *data, size_t len)
-{
-    DavWriteCtx *w = ctx;
-    return m_fs->write_chunk(w->inner, data, len);
-}
-
-/* aborted=false COMMITS: the SDK flushes the temp and replaces the
-   target, and its status is what makes PUT answer 201 or 4xx/5xx.
-   aborted=true DISCARDS: the SDK deletes the temp and the target is
-   left as it was (the return is ignored there). Either way the ctx is
-   dead afterwards. A commit changes the path's bytes, so its cached
-   digest goes with it -- the cache is keyed by size, which a same-size
-   replace does not change. */
-static int
-dav_write_close(void *ctx, bool aborted)
-{
-    DavWriteCtx *w = ctx;
-    if (w == NULL)
-        return AXL_ERR;
-    int rc = m_fs->write_close(w->inner, aborted);
-    if (!aborted && rc == AXL_OK)
-        invalidate_file_digest(&w->vol, w->sub);
-    axl_free(w);
-    return rc;
 }
 
 // ----------------------------------------------------------------------------
@@ -499,14 +531,8 @@ dav_move(void *user, const char *src, const char *dst, bool overwrite)
 static bool
 dav_hide_entry(const FtVolume *vol, const char *dir, const char *name)
 {
-    size_t n = ft_get_volume_count();
-    for (size_t j = 0; j < n && j < FT_MAX_VOLUMES; j++) {
-        FtVolume v;
-        if (ft_get_volume(j, &v) == 0 && axl_streql(v.name, vol->name))
-            return m_roots[j] != NULL &&
-                   dav_hidden_child(m_roots[j], &v, dir, name);
-    }
-    return false;
+    AxlFsRoot *root = dav_root_for(vol);
+    return root != NULL && dav_hidden_child(root, vol, dir, name);
 }
 
 // ----------------------------------------------------------------------------
@@ -540,8 +566,8 @@ webfs_dav_register(AxlHttpServer *server, const char *prefix, uint32_t auth_flag
         .read_chunk   = m_fs->read_chunk,
         .read_close   = m_fs->read_close,
         .write_open   = dav_write_open,
-        .write_chunk  = dav_write_chunk,
-        .write_close  = dav_write_close,
+        .write_chunk  = webfs_put_write,
+        .write_close  = webfs_put_close,
         .mkdir        = dav_mkdir,
         .remove       = dav_remove,
         .move         = dav_move,

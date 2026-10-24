@@ -500,6 +500,7 @@ NSHEOF
             grep -i "error\|fail\|axl-webfs-mount" "$SERIAL_LOG" 2>/dev/null | head -5 || true
         fi
 
+
         grep -q "readme.txt" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: ls shows remote files (readme.txt)" || \
             fail "$QEMU_ARCH: ls" "readme.txt not found"
@@ -1844,6 +1845,67 @@ NSHEOF
                     fi
                 else
                     fail "serve dav atomic: hang-up mid-PUT" \
+                         "could not connect to $DAV_HOSTPORT"
+                fi
+
+                # ----------------------------------------------------
+                # The REST PUT is atomic too: same temp + replace as
+                # /dav, the same discard on a hang-up or a digest
+                # mismatch, the same digest-cache invalidation.
+                # ----------------------------------------------------
+                REST_URL="$BASE/fs0/rest-atomic.txt"
+                printf '%s' "the original, longer REST contents" | \
+                    curl -s -o /dev/null -T - "$REST_URL" 2>/dev/null || true
+                HTTP_CODE=$(printf '%s' "rest-v1" | \
+                    curl -s -o /dev/null -w "%{http_code}" -T - \
+                    "$REST_URL" 2>/dev/null || true)
+                CONTENT=$(curl -sf "$REST_URL" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "201" ] && [ "$CONTENT" = "rest-v1" ] && \
+                    pass "serve rest atomic: a shorter replace leaves no stale tail" || \
+                    fail "serve rest atomic: shorter replace" \
+                         "expected 201 + 'rest-v1', got $HTTP_CODE + '${CONTENT:0:60}'"
+
+                # Prime the digest cache, then replace with a same-size body.
+                curl -sI -H "Want-Digest: sha-256" "$REST_URL" >/dev/null 2>&1 || true
+                printf '%s' "REST-V2" | curl -s -o /dev/null -T - "$REST_URL" \
+                    2>/dev/null || true
+                WANT_HEX=$(printf '%s' "REST-V2" | sha256sum | cut -d' ' -f1)
+                GOT_DIGEST=$(curl -sI -H "Want-Digest: sha-256" "$REST_URL" \
+                    2>/dev/null | tr -d '\r' | grep -i '^Digest:' || true)
+                [ "$GOT_DIGEST" = "Digest: sha-256=$WANT_HEX" ] && \
+                    pass "serve rest atomic: a same-size replace serves a fresh digest" || \
+                    fail "serve rest atomic: digest after replace" \
+                         "expected 'Digest: sha-256=$WANT_HEX', got '$GOT_DIGEST'"
+
+                HTTP_CODE=$(printf '%s' "a REST body that must not land" | \
+                    curl -s -o /dev/null -w "%{http_code}" \
+                    -H "Content-Digest: sha-256=0000000000000000000000000000000000000000000000000000000000000000" \
+                    -T - "$REST_URL" 2>/dev/null || true)
+                CONTENT=$(curl -sf "$REST_URL" 2>/dev/null || true)
+                [ "$HTTP_CODE" = "400" ] && [ "$CONTENT" = "REST-V2" ] && \
+                    pass "serve rest atomic: digest-mismatch PUT (400) keeps the old file" || \
+                    fail "serve rest atomic: digest mismatch" \
+                         "expected 400 + 'REST-V2', got $HTTP_CODE + '${CONTENT:0:60}'"
+
+                if exec 7<>"/dev/tcp/${DAV_HOSTPORT%%:*}/${DAV_HOSTPORT##*:}"; then
+                    printf 'PUT /fs0/rest-atomic.txt HTTP/1.1\r\nHost: %s\r\nContent-Length: 1048576\r\n\r\n' \
+                        "$DAV_HOSTPORT" >&7
+                    head -c 196608 /dev/zero | tr '\0' 'X' >&7
+                    sleep 2
+                    CONTENT=$(curl -sf "$REST_URL" 2>/dev/null || true)
+                    [ "$CONTENT" = "REST-V2" ] && \
+                        pass "serve rest atomic: target untouched while a PUT streams" || \
+                        fail "serve rest atomic: target during PUT" \
+                             "expected 'REST-V2', got '${CONTENT:0:60}'"
+                    exec 7>&-
+                    sleep 2
+                    CONTENT=$(curl -sf "$REST_URL" 2>/dev/null || true)
+                    [ "$CONTENT" = "REST-V2" ] && \
+                        pass "serve rest atomic: hang-up mid-PUT keeps the old file" || \
+                        fail "serve rest atomic: hang-up mid-PUT" \
+                             "expected 'REST-V2', got '${CONTENT:0:60}'"
+                else
+                    fail "serve rest atomic: hang-up mid-PUT" \
                          "could not connect to $DAV_HOSTPORT"
                 fi
             else

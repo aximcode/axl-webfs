@@ -37,13 +37,6 @@ typedef struct {
     void        *progress_ctx;
 } FtReadCtx;
 
-typedef struct {
-    AxlStream   *stream;
-    uint64_t     bytes_written;
-    FtProgressCb progress_cb;
-    void        *progress_ctx;
-} FtWriteCtx;
-
 int    ft_init(void);
 size_t ft_get_volume_count(void);
 int    ft_get_volume(size_t index, FtVolume *vol);
@@ -63,12 +56,6 @@ int    ft_list_dir(FtVolume *vol, const char *path, bool as_json, bool read_only
 int    ft_open_read(FtVolume *vol, const char *path, uint64_t offset, FtProgressCb cb, void *ctx, FtReadCtx *rctx);
 int    ft_read_chunk(FtReadCtx *rctx, void *buf, size_t buf_size, size_t *bytes_read);
 void   ft_close_read(FtReadCtx *rctx);
-
-int    ft_open_write(FtVolume *vol, const char *path, FtProgressCb cb, void *ctx, FtWriteCtx *wctx);
-int    ft_write_chunk(FtWriteCtx *wctx, const void *data, size_t len);
-/* Returns 0 when the bytes reached the volume, -1 when the final
-   flush failed -- callers that report upload success must check it. */
-int    ft_close_write(FtWriteCtx *wctx);
 
 int    ft_delete(FtVolume *vol, const char *path);
 int    ft_rmdir(FtVolume *vol, const char *path);

@@ -354,14 +354,12 @@ curl -k -u admin:s3cret -H "Content-Digest: sha-256=$H" \
 
 Upload integrity: when a `PUT` carries `Content-Digest: sha-256=<hex>`,
 `handle_put_chunk` hashes the streamed body through an `AxlChecksum`
-and, on close, compares it to the advertised value — a mismatch
-deletes the partial file and returns `400`. This is the upload-side
-peer of the `Want-Digest`/`Digest` emission already done on `GET`. The
-WebDAV `/dav` surface answers the same header with the same `400`, but
-the SDK checks it itself, over the body as it streams and BEFORE the
-commit: a mismatch discards the write (`write_close(true)`), and since a
-`/dav` PUT is atomic (below) the previous file is left exactly as it was
-rather than deleted.
+and compares it to the advertised value BEFORE the commit — a mismatch
+discards the write and returns `400`. This is the upload-side peer of
+the `Want-Digest`/`Digest` emission already done on `GET`. The WebDAV
+`/dav` surface answers the same header with the same `400`; there the
+SDK checks it itself, also before the commit. Both PUTs are atomic
+(below), so a rejected body leaves the previous file exactly as it was.
 
 ## Project Layout
 
@@ -485,8 +483,11 @@ identity by what the volume stores, so a case-only rename with
 here too, to share `webfs-serve.c`'s digest cache with the REST
 surface.
 
-The REST `PUT /<vol>/<path>` still writes in place (`ft_open_write`):
-it is not atomic.
+The REST `PUT /<vol>/<path>` is atomic the same way and by the same
+code: `handle_put_chunk` drives `webfs_put_open` / `webfs_put_write` /
+`webfs_put_close` (`webfs-dav.h`), the wrapper over that SDK write path
+-- one atomic writer, not two. It keeps the REST PUT's one extra: a
+missing parent directory (one level) is created for the upload.
 
 ### Two AxlServices, One Launcher Binary
 `mount` and `serve` both need a persistent protocol that survives
