@@ -252,6 +252,14 @@ typedef struct {
     bool     have_size;
 } DavEntry;
 
+/// Entries of one listing whose displayname differs from their href's
+/// name: counted, with the first, so the listing logs them once.
+typedef struct {
+    size_t count;
+    char   name[WEBFS_NAME_SIZE];    ///< the first one's (href) name
+    char   label[WEBFS_NAME_SIZE];   ///< and its displayname
+} DavLabelNote;
+
 static void
 dav_entry_reset(DavEntry *e)
 {
@@ -263,7 +271,7 @@ dav_entry_reset(DavEntry *e)
 /// Returns true iff the entry should be appended.
 static bool
 dav_entry_emit(const DavEntry *e, const char *parent_path,
-               DirEntry *out, bool *is_self)
+               DirEntry *out, bool *is_self, DavLabelNote *note)
 {
     *is_self = false;
     if (!e->have_href) return false;
@@ -312,16 +320,21 @@ dav_entry_emit(const DavEntry *e, const char *parent_path,
        /real.txt, or one holding a '/' or '\\') would address another
        resource. Nothing is lost by it -- the href IS the resource's name
        on the server; a displayname is only a label -- so a disagreeing
-       one is logged and ignored, not a reason to refuse the listing. */
+       one is ignored, not a reason to refuse the listing, and noted for
+       the listing's single report: a server whose labels differ only
+       trivially (another Unicode normalization, another case) must not
+       log a line per entry on every listing. */
     axl_memset(out, 0, sizeof(*out));
     if (!href_basename(e->href, out->name, sizeof(out->name))) {
         axl_warning("listing %s: skipping an entry whose name is longer "
                     "than %zu bytes", parent_path, sizeof(out->name) - 1);
         return false;
     }
-    if (e->name[0] != '\0' && !axl_streql(e->name, out->name))
-        axl_warning("listing %s: '%s' is labelled '%s'; the href's name is "
-                    "used", parent_path, out->name, e->name);
+    if (e->name[0] != '\0' && !axl_streql(e->name, out->name) &&
+        note->count++ == 0) {
+        axl_strlcpy(note->name, out->name, sizeof(note->name));
+        axl_strlcpy(note->label, e->name, sizeof(note->label));
+    }
     out->is_dir = e->is_collection;
     out->size   = e->is_collection ? 0 : e->size;
     return out->name[0] != '\0';
@@ -403,6 +416,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
     bool   in_size           = false;
     bool   failed = false;   /* over the cap, out of memory, a bad href */
     bool   saw_self = false;
+    DavLabelNote labels = {0};
     /* An element's text can arrive as several TEXT tokens -- a CDATA
        section splits it ("a<![CDATA[&b]]>c" is three) -- so href and
        displayname accumulate here and are taken whole at the element's
@@ -525,7 +539,8 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
                     axl_error("listing %s: an href cannot be read; refused",
                               path);
                     failed = true;   /* never a short listing */
-                } else if (dav_entry_emit(&cur, path, &entry, &self) &&
+                } else if (dav_entry_emit(&cur, path, &entry, &self,
+                                          &labels) &&
                            webfs_listing_append(out, &entry, path) != 0) {
                     failed = true;   /* never a short listing */
                 }
@@ -533,6 +548,15 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
             }
         }
     }
+
+    if (labels.count > 0)
+        axl_warning("listing %s: %zu %s (first '%s', labelled '%s'); the "
+                    "%s used", path, labels.count,
+                    labels.count == 1
+                        ? "entry is labelled otherwise than its href"
+                        : "entries are labelled otherwise than their hrefs",
+                    labels.name, labels.label,
+                    labels.count == 1 ? "href's name is" : "hrefs' names are");
 
     bool parse_err = axl_xml_reader_error(r, NULL, NULL, NULL);
     axl_string_free(text);

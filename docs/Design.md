@@ -188,14 +188,17 @@ A PROPFIND href is read as RFC 3986 says. An absolute URI (a scheme in
 any case) or a network-path reference (`//host/...`) is parsed with
 `axl_url_parse`, and is the share's only when it is `http` on the
 mount's own host and port: another host or port is no entry, and one
-that does not parse fails the listing. A path reference loses its
-`?query` and `#fragment`, and a relative one resolves against the
-collection URL the PROPFIND was sent to (always with its trailing
-separator). The decoded path -- a `%00` makes the href unreadable -- is
-normalized (`.`, `..`) BEFORE it is matched against the share's base. An href outside the share -- including
-one that climbs out with `..` -- is no entry; one that is no direct
-child of the listed directory is no entry either, never shown under its
-basename. A listing that cannot be represented whole is refused, never
+that does not parse fails the listing. The mount is http-only, so both
+the `http` comparison and the `http:` that completes a `//host/...`
+reference are literal; should the mount gain https, both must take the
+mount's own scheme instead. A path reference loses its `?query` and
+`#fragment`, and a relative one resolves against the collection URL the
+PROPFIND was sent to (always with its trailing separator). The decoded
+path -- a `%00` makes the href unreadable -- is normalized (`.`, `..`)
+BEFORE it is matched against the share's base. An href outside the
+share -- including one that climbs out with `..` -- is no entry; one
+that is no direct child of the listed directory is no entry either,
+never shown under its basename. A listing that cannot be represented whole is refused, never
 shown short or empty: an href that cannot be read at all, or an answer
 without the listed collection's own entry (then nothing says the rest
 are its children).
@@ -205,7 +208,10 @@ every later request is built from the name, so a label that differs
 ("fake.txt" for `/real.txt`, or one holding a `/`) would address another
 resource. The href is the resource's name on the server and the
 displayname only a label, so nothing is lost; a disagreeing displayname
-is logged and ignored rather than failing the listing.
+is ignored rather than failing the listing. The disagreements are logged
+once per listing, as a count with the first example, so a server whose
+labels differ only trivially (another Unicode normalization, another
+case) does not log a line per entry on every listing.
 
 The mount driver supplies an `AxlFsProvider` callback table; the
 SDK invokes the callbacks for each `EFI_FILE_PROTOCOL` op the

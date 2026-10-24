@@ -949,18 +949,22 @@ NSHEOF
             rm -f "$LM_LOG"
         done
 
-        # WebDAV displaynames are XML text: "R&amp;D &lt;notes&gt;.txt"
-        # names "R&D <notes>.txt", and "part1<![CDATA[&part2]]>.txt" --
-        # three text tokens -- names "part1&part2.txt".
+        # WebDAV names are XML text: "R&amp;D &lt;notes&gt;.txt" names
+        # "R&D <notes>.txt". An entry is named by its href; its
+        # displayname is only compared with that name, so the
+        # displayname "part1<![CDATA[&part2]]>.txt" -- three text tokens
+        # -- must be joined whole to "part1&part2.txt" for no difference
+        # to be reported.
         T="$LM_ARCH dav displayname"
         info "QEMU" "$T: Booting mount test..."
         listing_mount entities dav 'ls fs1:\'
         echo "$LM_OUT" | grep -qF "5  R&D <notes>.txt" && \
             pass "$T: &amp; / &lt; / &gt; decode to 'R&D <notes>.txt'" || \
             fail "$T: entities" "no 'R&D <notes>.txt' row in: ${LM_OUT:0:300}"
-        echo "$LM_OUT" | grep -qF "5  part1&part2.txt" && \
-            pass "$T: a displayname split by CDATA is joined whole" || \
-            fail "$T: CDATA" "no 'part1&part2.txt' row in: ${LM_OUT:0:300}"
+        LABEL_LINES=$(grep -ac "labelled" "$LM_LOG" || true)
+        echo "$LM_OUT" | grep -qF "5  part1&part2.txt" && [ "$LABEL_LINES" = "0" ] && \
+            pass "$T: a displayname split by CDATA is joined whole, matching its href" || \
+            fail "$T: CDATA" "expected a 'part1&part2.txt' row and no 'labelled' line, got $LABEL_LINES lines in: ${LM_OUT:0:300}"
         rm -f "$LM_LOG"
 
         # A name is encoded WHOLE in a request: a '?' is a name byte
@@ -1032,6 +1036,14 @@ NSHEOF
         [ "$BASE_ROOT" = "$BASE_WANT" ] && \
             pass "$T: the root lists exactly its nine entries" || \
             fail "$T: root" "expected '$BASE_WANT', got '$BASE_ROOT'"
+        # The two entries whose displaynames differ from their hrefs are
+        # reported once per listing, with a count and the first example,
+        # never one line per entry.
+        LABEL_WANT="listing /: 2 entries are labelled otherwise than their hrefs (first 'real.txt', labelled 'fake.txt'); the hrefs' names are used"
+        LABEL_GOT=$(grep -a "labelled" "$LM_LOG" | tr -d '\r' | sed 's/^.*listing /listing /' | sort -u || true)
+        [ "$LABEL_GOT" = "$LABEL_WANT" ] && \
+            pass "$T: differing displaynames are reported once per listing" || \
+            fail "$T: labels" "expected only '$LABEL_WANT', got '$LABEL_GOT'"
         MV_DEST=$(grep -a "MOVE-DEST" /tmp/listing-server.log | sed 's/^ *MOVE-DEST //')
         BASE_SUB=$(lm_rows "=== SUB ===" "=== END ===" | tr '\n' '|')
         [ "$MV_DEST" = "/my share/sp ace/b.txt" ] && [ "$BASE_SUB" = "b.txt|" ] && \
