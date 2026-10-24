@@ -50,6 +50,8 @@ const AxlConfigDesc mount_descs[] = {
 
 #ifdef AXL_SERVICE_BUILD_DRIVER
 
+AXL_LOG_DOMAIN("webfs-mount");
+
 /// Vendor GUID for axl-webfs's filesystem-provider device-path node.
 /// Used by umount callers (axl-webfs's launcher and Shell users) to
 /// recognize the mounted volume's handle.
@@ -88,12 +90,34 @@ parse_url(
        separator ("" for the server root), and prefixed to every
        request -- refused, never cut, when it does not fit. */
     const char *url_path = (parsed->path != NULL) ? parsed->path : "";
-    int         n        = axl_url_decode(url_path, base_path, base_path_size);
+    /* An encoded separator would become a real one once decoded -- a
+       different resource on the server than the URL spelled. */
+    bool encoded_sep = axl_strstr(url_path, "%2F") != NULL ||
+                       axl_strstr(url_path, "%2f") != NULL ||
+                       axl_strstr(url_path, "%5C") != NULL ||
+                       axl_strstr(url_path, "%5c") != NULL;
+    int  n = axl_url_decode(url_path, base_path, base_path_size);
     axl_url_free(parsed);
     if (n < 0 || axl_strlen(base_path) != (size_t)n)
         return -1;
     while (n > 0 && base_path[n - 1] == '/')
         base_path[--n] = '\0';
+    /* A ".", ".." or empty segment is one the server normalizes to
+       another place: the hrefs it answers with would then sit outside the
+       share as spelled, and the share list as empty. Refused -- the mount
+       does not guess what was meant. */
+    if (encoded_sep || axl_strchr(base_path, '\\') != NULL)
+        return -2;
+    for (const char *seg = base_path; *seg == '/'; ) {
+        const char *end = seg + 1;
+        while (*end != '\0' && *end != '/')
+            end++;
+        size_t len = (size_t)(end - seg - 1);
+        if (len == 0 || (len == 1 && seg[1] == '.') ||
+            (len == 2 && seg[1] == '.' && seg[2] == '.'))
+            return -2;
+        seg = end;
+    }
     return 0;
 }
 
@@ -114,8 +138,17 @@ mount_setup(AxlLoop *loop, void *user)
     }
     priv->read_only = m->read_only;
 
-    if (parse_url(m->url, priv->server_addr, &priv->server_port,
-                  priv->base_path, sizeof(priv->base_path)) != 0) {
+    int prc = parse_url(m->url, priv->server_addr, &priv->server_port,
+                        priv->base_path, sizeof(priv->base_path));
+    if (prc == -2) {
+        axl_printf("axl-webfs-mount: refused: the share path in the URL has a "
+                   "'.', '..' or empty segment, or an encoded separator: %s\n",
+                   m->url);
+        axl_error("mount %s: the share path is refused", m->url);
+        axl_free(priv);
+        return AXL_ERR;
+    }
+    if (prc != 0) {
         axl_printf("axl-webfs-mount: invalid URL: %s\n", m->url);
         axl_free(priv);
         return AXL_ERR;
@@ -287,6 +320,5 @@ const AxlService webfs_mount = {
 };
 
 #ifdef AXL_SERVICE_BUILD_DRIVER
-AXL_LOG_DOMAIN("webfs-mount");
 AXL_SERVICE_DRIVER(webfs_mount);
 #endif

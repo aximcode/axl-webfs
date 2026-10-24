@@ -28,16 +28,27 @@ AXL_LOG_DOMAIN("webfs-dav-client");
 // Path helpers
 // ----------------------------------------------------------------------------
 
-/// PROPFIND <D:href> bodies always carry the URL-encoded path. Decode
-/// in place to UTF-8 bytes the mount layer expects, then strip the
-/// scheme://host prefix if present so we keep just the path portion.
-static bool
-decode_href(const char *href, char *out, size_t out_size)
+/* What an href is to the listing of one directory. */
+typedef enum {
+    HREF_ENTRY,      ///< a path in the share; DavEntry.href holds it
+    HREF_FOREIGN,    ///< outside the share (or climbs out of it): no entry
+    HREF_TOO_LONG,   ///< its mount path does not fit MAX_PATH_LEN: skipped
+    HREF_BAD,        ///< cannot be read (bad escape, ".." above the root)
+} HrefKind;
+
+/// Turn a PROPFIND <D:href> into a mount path ("/" + share-relative) in
+/// @p out. An absolute URI loses its scheme://authority; a relative
+/// reference resolves against @p req_dir, the decoded directory the
+/// PROPFIND was sent to (RFC 3986 5.2) -- "rel.txt" in a listing of
+/// "/my share/" is "/my share/rel.txt". The decoded path is normalized
+/// ("." and ".." resolved) BEFORE it is matched against the share's
+/// @p base, so "<base>/../x" is the sibling it names, outside the share,
+/// never a child "x". The whole encoded text is read, however long (it
+/// may be three times the decoded path).
+static HrefKind
+href_to_mount_path(const char *base, const char *req_dir, const char *href,
+                   char *out, size_t out_size)
 {
-    /* @p href is the WHOLE encoded text, however long (it may be three
-       times the decoded path). Only the decoded path is held to
-       @p out_size, and one that does not fit is refused (false), never
-       cut: a cut here cuts the basename. */
     const char *p = href;
     if (axl_strncmp(p, "http://", 7) == 0) p += 7;
     else if (axl_strncmp(p, "https://", 8) == 0) p += 8;
@@ -46,26 +57,32 @@ decode_href(const char *href, char *out, size_t out_size)
         while (*slash && *slash != '/') slash++;
         p = (*slash == '/') ? slash : "/";
     }
-    return axl_url_decode(p, out, out_size) >= 0;
-}
-
-/// Make decoded server path @p href relative to the share: strip @p base
-/// (the mount's base path, "" for the server root), so "/dav/fs0/a" with
-/// base "/dav/fs0" becomes "/a" and the base itself "/". false for a path
-/// outside the base -- no entry of this share.
-static bool
-strip_base(const char *base, char *href)
-{
-    size_t blen = axl_strlen(base);
-    if (blen == 0)
-        return true;
-    if (axl_strncmp(href, base, blen) != 0 ||
-        (href[blen] != '\0' && href[blen] != '/'))
-        return false;
-    axl_memmove(href, href + blen, axl_strlen(href + blen) + 1);
-    if (href[0] == '\0')
-        axl_strlcpy(href, "/", 2);
-    return true;
+    size_t cap = axl_strlen(p) + 1;
+    char  *dec = axl_malloc(cap);
+    char  *res = axl_malloc(MAX_PATH_LEN * 4);
+    HrefKind kind = HREF_BAD;
+    if (dec != NULL && res != NULL &&
+        axl_url_decode(p, dec, cap) >= 0 && axl_strlen(dec) < cap &&
+        axl_path_resolve(req_dir, dec, res, MAX_PATH_LEN * 4) == AXL_OK) {
+        size_t blen = axl_strlen(base);
+        const char *rel = res;
+        if (blen > 0) {
+            if (axl_strncmp(res, base, blen) != 0 ||
+                (res[blen] != '\0' && res[blen] != '/'))
+                rel = NULL;
+            else
+                rel = res + blen;
+        }
+        if (rel == NULL)
+            kind = HREF_FOREIGN;
+        else if (axl_strlcpy(out, rel[0] != '\0' ? rel : "/", out_size) >= out_size)
+            kind = HREF_TOO_LONG;
+        else
+            kind = HREF_ENTRY;
+    }
+    axl_free(dec);
+    axl_free(res);
+    return kind;
 }
 
 /// Extract the basename from a path (last "/"-delimited component).
@@ -91,6 +108,14 @@ href_basename(const char *path, char *out, size_t out_size)
     return true;
 }
 
+/* The PROPFIND body asks for "allprop" -- works against every
+   WebDAV server we care about (wsgidav, Apache mod_dav, NextCloud,
+   IIS). Strict servers that return more verbose listings just give
+   us more fields to ignore; pull-token parsing is robust to that. */
+static const char k_propfind_allprop[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<D:propfind xmlns:D=\"DAV:\"><D:allprop/></D:propfind>";
+
 // ----------------------------------------------------------------------------
 // probe — OPTIONS / and check for DAV: header
 // ----------------------------------------------------------------------------
@@ -109,6 +134,26 @@ proto_probe(WebFsPrivate *priv)
         if (dav != NULL && dav[0] != '\0') ok = 1;
     }
     axl_http_client_response_free(resp);
+    if (!ok)
+        return -1;
+
+    /* OPTIONS answers for any path; the share must EXIST as a collection
+       (PROPFIND Depth: 0 of its root is 207), or every listing of it
+       would fail and the Shell show the volume empty. */
+    AxlHashTable *hdrs = axl_hash_table_new_str();
+    if (hdrs == NULL) return -1;
+    axl_hash_table_insert(hdrs, "depth", axl_strdup("0"));
+    resp = NULL;
+    rc = webfs_http_request(priv, "PROPFIND", "/", NULL, hdrs,
+                            k_propfind_allprop, sizeof(k_propfind_allprop) - 1,
+                            &resp);
+    axl_free(axl_hash_table_lookup(hdrs, "depth"));
+    axl_hash_table_free(hdrs);
+    ok = rc == 0 && resp != NULL && resp->status_code == 207;
+    if (resp != NULL) axl_http_client_response_free(resp);
+    if (!ok)
+        axl_printf("axl-webfs-mount: the share is no WebDAV collection on "
+                   "the server\n");
     return ok ? 0 : -1;
 }
 
@@ -116,13 +161,6 @@ proto_probe(WebFsPrivate *priv)
 // list_dir — PROPFIND Depth: 1
 // ----------------------------------------------------------------------------
 
-/* The PROPFIND body asks for "allprop" -- works against every
-   WebDAV server we care about (wsgidav, Apache mod_dav, NextCloud,
-   IIS). Strict servers that return more verbose listings just give
-   us more fields to ignore; pull-token parsing is robust to that. */
-static const char k_propfind_allprop[] =
-    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-    "<D:propfind xmlns:D=\"DAV:\"><D:allprop/></D:propfind>";
 
 /// PROPFIND parser state: one <D:response> at a time, accumulating
 /// the four fields we need before the matching </D:response> closes.
@@ -133,7 +171,8 @@ typedef struct {
     bool     is_collection;
     bool     have_href;
     bool     too_long;          ///< href or displayname did not fit: skip
-    bool     foreign;           ///< href outside the share's base path: skip
+    bool     foreign;           ///< href outside the share: no entry
+    bool     bad;               ///< href unreadable: the listing fails
     bool     have_resourcetype;
     bool     have_size;
 } DavEntry;
@@ -149,11 +188,13 @@ dav_entry_reset(DavEntry *e)
 /// Returns true iff the entry should be appended.
 static bool
 dav_entry_emit(const DavEntry *e, const char *parent_path,
-               DirEntry *out)
+               DirEntry *out, bool *is_self)
 {
+    *is_self = false;
     if (!e->have_href) return false;
     if (e->foreign) {
-        axl_warning("listing %s: skipping an entry outside the share", parent_path);
+        axl_warning("listing %s: skipping an href outside the share",
+                    parent_path);
         return false;
     }
     if (e->too_long) {
@@ -163,19 +204,33 @@ dav_entry_emit(const DavEntry *e, const char *parent_path,
         return false;
     }
 
-    /* Skip the self entry — PROPFIND Depth:1 returns the queried
-       resource plus its children. The self entry is whichever <href>
-       resolves to the parent_path (modulo trailing slash). decode_href
-       percent-decoded e->href; parent_path is the mount's own path,
-       raw bytes already -- decoding it again would turn a directory
-       named "100%41" into "100A" and leak the directory into its own
-       listing as a child. */
+    /* The self entry -- PROPFIND Depth:1 returns the queried resource
+       plus its children -- is the href that resolves to parent_path
+       itself (e->href is normalized, with no trailing separator; and
+       parent_path is the mount's own raw path: decoding it again would
+       turn a directory named "100%41" into "100A"). Every other href
+       must be a DIRECT child of parent_path; one that is not (a
+       grandchild, a sibling) is no entry of this listing, never shown
+       under its basename. */
     size_t hlen = axl_strlen(e->href);
     size_t plen = axl_strlen(parent_path);
-    while (hlen > 1 && e->href[hlen - 1] == '/') hlen--;
     while (plen > 1 && parent_path[plen - 1] == '/') plen--;
-    if (hlen == plen && axl_memcmp(e->href, parent_path, hlen) == 0)
+    if (hlen == plen && axl_memcmp(e->href, parent_path, hlen) == 0) {
+        *is_self = true;
         return false;
+    }
+    const char *slash = e->href;
+    for (const char *q = e->href; *q != '\0'; q++)
+        if (*q == '/') slash = q;
+    size_t dlen = (size_t)(slash - e->href);
+    bool   child = (plen == 1 && parent_path[0] == '/')
+                   ? dlen == 0
+                   : (dlen == plen && axl_memcmp(e->href, parent_path, plen) == 0);
+    if (!child || slash[1] == '\0') {
+        axl_warning("listing %s: skipping an href that is no child of it",
+                    parent_path);
+        return false;
+    }
 
     axl_memset(out, 0, sizeof(*out));
     if (e->name[0] != '\0') {
@@ -193,6 +248,22 @@ dav_entry_emit(const DavEntry *e, const char *parent_path,
 static int
 proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
 {
+    /* The collection is asked for with its trailing separator, and its
+       decoded server path is what a relative href resolves against
+       (RFC 3986 5.2): "x" in the answer for "/my share/sub/" is
+       "/my share/sub/x". */
+    char   dir_path[MAX_PATH_LEN + 1];
+    char   req_dir[sizeof(priv->base_path) + sizeof(dir_path)];
+    size_t plen  = axl_strlen(path);
+    bool   slash = plen > 0 && path[plen - 1] == '/';
+    int    n1    = axl_snprintf(dir_path, sizeof(dir_path), "%s%s", path,
+                                slash ? "" : "/");
+    int    n2    = axl_snprintf(req_dir, sizeof(req_dir), "%s%s",
+                                priv->base_path, dir_path);
+    if (n1 < 0 || (size_t)n1 >= sizeof(dir_path) ||
+        n2 < 0 || (size_t)n2 >= sizeof(req_dir))
+        return -1;
+
     AxlHashTable *hdrs = axl_hash_table_new_str();
     if (hdrs == NULL) return -1;
     axl_hash_table_insert(hdrs, "depth", axl_strdup("1"));
@@ -200,7 +271,7 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
                           axl_strdup("application/xml; charset=\"utf-8\""));
 
     AxlHttpClientResponse *resp = NULL;
-    int rc = webfs_http_request(priv, "PROPFIND", path, NULL, hdrs,
+    int rc = webfs_http_request(priv, "PROPFIND", dir_path, NULL, hdrs,
                                 k_propfind_allprop,
                                 sizeof(k_propfind_allprop) - 1, &resp);
     axl_free(axl_hash_table_lookup(hdrs, "depth"));
@@ -248,7 +319,8 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
     bool   in_displayname    = false;
     bool   in_resourcetype   = false;
     bool   in_size           = false;
-    bool   failed = false;   /* over the cap or out of memory */
+    bool   failed = false;   /* over the cap, out of memory, a bad href */
+    bool   saw_self = false;
     /* An element's text can arrive as several TEXT tokens -- a CDATA
        section splits it ("a<![CDATA[&b]]>c" is three) -- so href and
        displayname accumulate here and are taken whole at the element's
@@ -323,11 +395,14 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
             if (in_href &&
                 axl_xml_token_local_name_eq(&tok, "href")) {
                 in_href = false;
-                        if (!decode_href(axl_string_str(text), cur.href,
-                                 sizeof(cur.href)))
-                    cur.too_long = true;
-                else if (!strip_base(priv->base_path, cur.href))
-                    cur.foreign = true;
+                switch (href_to_mount_path(priv->base_path, req_dir,
+                                           axl_string_str(text), cur.href,
+                                           sizeof(cur.href))) {
+                    case HREF_ENTRY:    break;
+                    case HREF_FOREIGN:  cur.foreign  = true; break;
+                    case HREF_TOO_LONG: cur.too_long = true; break;
+                    default:            cur.bad      = true; break;
+                }
                 cur.have_href = true;
             } else if (in_status &&
                        axl_xml_token_local_name_eq(&tok, "status")) {
@@ -362,9 +437,16 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
                        axl_xml_token_local_name_eq(&tok, "response")) {
                 in_response = false;
                 DirEntry entry;
-                if (dav_entry_emit(&cur, path, &entry) &&
-                    webfs_listing_append(out, &entry, path) != 0)
+                bool     self = false;
+                if (cur.bad) {
+                    axl_error("listing %s: an href cannot be read; refused",
+                              path);
                     failed = true;   /* never a short listing */
+                } else if (dav_entry_emit(&cur, path, &entry, &self) &&
+                           webfs_listing_append(out, &entry, path) != 0) {
+                    failed = true;   /* never a short listing */
+                }
+                saw_self = saw_self || self;
             }
         }
     }
@@ -376,6 +458,15 @@ proto_list_dir(WebFsPrivate *priv, const char *path, AxlArray *out)
 
     if (parse_err) {
         axl_warning("PROPFIND XML parse error on %s", path);
+        return -1;
+    }
+    /* Without the listed collection itself among the hrefs, nothing says
+       the rest are its children: the share the hrefs are read against is
+       not where the server answered. An empty or short listing would pass
+       for the directory; fail it instead. */
+    if (!failed && !saw_self) {
+        axl_error("listing %s: the server's answer has no entry for the "
+                  "listed collection itself; refused", path);
         return -1;
     }
 

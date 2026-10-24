@@ -176,8 +176,23 @@ GET  /info                -> server info: {"version":"1.0","root":"/share"}
 
 The mount URL may name a share below the server's root -- e.g.
 `http://<host>:<port>/dav/fs0/` for another machine's `axl-webfs serve`
--- and every request then goes under that base path; WebDAV hrefs are
-read relative to it (an href outside it is no entry of the share).
+-- and every request then goes under that base path. A share path with a
+`.`, `..` or empty segment, or an encoded separator (`%2F`, `%5C`), is
+refused at mount time: the server would normalize it to another place.
+The WebDAV probe also asks for the share's root collection, so a share
+the server does not have is no mount rather than an empty volume.
+
+A PROPFIND href is read as RFC 3986 says: an absolute URI loses its
+scheme and authority, a relative reference resolves against the
+collection URL the PROPFIND was sent to (always with its trailing
+separator), and the decoded path is normalized (`.`, `..`) BEFORE it is
+matched against the share's base. An href outside the share -- including
+one that climbs out with `..` -- is no entry; one that is no direct
+child of the listed directory is no entry either, never shown under its
+basename. A listing that cannot be represented whole is refused, never
+shown short or empty: an href that cannot be read at all, or an answer
+without the listed collection's own entry (then nothing says the rest
+are its children).
 
 The mount driver supplies an `AxlFsProvider` callback table; the
 SDK invokes the callbacks for each `EFI_FILE_PROTOCOL` op the
