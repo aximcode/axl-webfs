@@ -18,7 +18,10 @@ Each --case builds a tree no real host directory can stand in for:
               `&amp;`/`&lt;`/`&gt;`, one split by a CDATA section into
               three text tokens. And names a client must encode: "what?.txt"
               (a '?' is a name byte, not a query) and a directory
-              "pct%41dir" (a '%' that must not be decoded again).
+              "pct%41dir" (a '%' that must not be decoded again). Over
+              WebDAV a MOVE renames an entry, logging the decoded path of
+              its Destination ("MOVE-DEST <path>"), so a rename in
+              "sp ace" shows how the client encoded that directory.
   big         150 files: a listing well past 4 KB and past 64 entries.
   huge        16385 files: one past the mount's WEBFS_LIST_MAX_ENTRIES.
   relaxed     JSON only: a root listing with a trailing comma -- valid
@@ -66,6 +69,23 @@ class Entry:
     dav_only: bool = False
 
 
+_URI_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    "-._~:/?#[]@!$&'()*+,;=%")
+
+
+def _valid_uri(uri: str) -> bool:
+    """Whether @p uri uses only RFC 3986 characters, every '%' starting an escape."""
+    if not uri or any(c not in _URI_CHARS for c in uri):
+        return False
+    hexdigits = "0123456789abcdefABCDEF"
+    for i, c in enumerate(uri):
+        if c == "%" and (i + 2 >= len(uri) or uri[i + 1] not in hexdigits
+                         or uri[i + 2] not in hexdigits):
+            return False
+    return True
+
+
 def _every_byte_encoded(name: str) -> str:
     """Percent-encode every byte of @p name -- legal, if unusual, in an href."""
     return "".join(f"%{b:02X}" for b in name.encode("utf-8"))
@@ -90,7 +110,9 @@ def build_tree(case: str) -> dict[str, list[Entry]]:
                   displayname="part1<![CDATA[&part2]]>.txt"),
             Entry("what?.txt", b"question\n"),
             Entry("pct%41dir"),
-        ], "/pct%41dir": [Entry("inner.txt", b"inner")]}
+            Entry("sp ace"),
+        ], "/pct%41dir": [Entry("inner.txt", b"inner")],
+           "/sp ace": [Entry("a.txt", b"rename me")]}
     if case == "relaxed":
         return {"/": [readme]}
     if case == "huge":
@@ -189,6 +211,29 @@ class ListingHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         self.do_GET()
+
+    def do_MOVE(self) -> None:
+        raw = self.headers.get("Destination", "")
+        if not _valid_uri(raw):
+            # A space, a non-ASCII byte or a bare '%' is no URI (RFC
+            # 3986): a strict server refuses it, as real ones do.
+            print(f"  MOVE-DEST-INVALID {raw!r}", flush=True)
+            self._send(400, b"bad destination\n", "text/plain")
+            return
+        src = unquote(urlparse(self.path).path).rstrip("/")
+        dest = unquote(urlparse(raw).path).rstrip("/")
+        print(f"  MOVE-DEST {dest}", flush=True)
+        entry = self._lookup(src) if self.webdav else None
+        src_dir, _, _ = src.rpartition("/")
+        dst_dir, _, dst_name = dest.rpartition("/")
+        siblings = self.tree.get(dst_dir or "/")
+        if entry is None or siblings is None or not dst_name:
+            self._send(409, b"conflict\n", "text/plain")
+            return
+        self.tree[src_dir or "/"].remove(entry)
+        entry.name = dst_name
+        siblings.append(entry)
+        self._send(201, b"", "text/plain")
 
     def do_OPTIONS(self) -> None:
         extra = {"Allow": "OPTIONS, GET, HEAD, PROPFIND"}

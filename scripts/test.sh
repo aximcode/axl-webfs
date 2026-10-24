@@ -963,6 +963,23 @@ NSHEOF
             rm -f "$LM_LOG"
         done
 
+        # A rename on the mount reaches the server (the fs-provider hands
+        # Shell `mv` to the mount since its version 2), and its WebDAV
+        # Destination names the directory encoded whole: a directory
+        # with a space must arrive as that name. The fixture logs the
+        # decoded path of each MOVE's Destination.
+        T="$LM_ARCH rename (dav)"
+        info "QEMU" "$T: Booting mount test..."
+        listing_mount entities dav \
+            'mv "fs1:\sp ace\a.txt" "fs1:\sp ace\b.txt"' "echo === LS ===" 'ls "fs1:\sp ace\"'
+        MV_DEST=$(grep -a "MOVE-DEST" /tmp/listing-server.log | sed 's/^ *MOVE-DEST //')
+        MV_LS=$(echo "$LM_OUT" | sed -n 's/.*=== LS ===\(.*\)=== OUT DONE ===.*/\1/p')
+        [ "$MV_DEST" = "/sp ace/b.txt" ] && echo "$MV_LS" | grep -q "  b\.txt" && \
+            ! echo "$MV_LS" | grep -q "  a\.txt" && \
+            pass "$T: Shell mv renames over WebDAV, Destination '/sp ace/b.txt'" || \
+            fail "$T: mv" "expected Destination '/sp ace/b.txt' and b.txt listed, got '$MV_DEST' and: ${MV_LS:0:200}"
+        rm -f "$LM_LOG"
+
         # A big directory lists completely: 151 files, a JSON listing of
         # ~19 KB and a PROPFIND of ~50 KB, past both a 4 KB body and a
         # 64-entry table.
