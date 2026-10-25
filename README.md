@@ -225,7 +225,7 @@ how one UEFI machine mounts another's volume -- its `axl-webfs serve`
 publishes each volume over WebDAV at `/dav/<volume>/`:
 
 ```
-FS0:\> axl-webfs.efi mount --protocol dav http://192.168.1.60:9876/dav/fs0/
+FS0:\> axl-webfs.efi mount --protocol dav http://192.0.2.10:9876/dav/fs0/
 FS0:\> map -r
 FS0:\> ls fs1:
 ```
