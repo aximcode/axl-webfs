@@ -433,6 +433,13 @@ echo === axl-webfs Integration Test ===
 fs0:
 axl-webfs.efi mount http://10.0.2.2:${SERVER_PORT}/
 map -r
+axl-webfs.efi serve -p 8080
+echo === TEST: status ===
+axl-webfs.efi status
+echo === TEST: status lines 0 ===
+axl-webfs.efi status -n 0
+echo === TEST: status done ===
+axl-webfs.efi serve-stop
 echo === TEST: ls mounted volume ===
 ls fs1:\\
 echo === TEST: read file ===
@@ -512,6 +519,24 @@ NSHEOF
         echo "$LS_ROOT" | grep -qxF "$LS_ROW" && \
             pass "$QEMU_ARCH: ls shows remote files (readme.txt)" || \
             fail "$QEMU_ARCH: ls" "no readme.txt row in: ${LS_ROOT:0:300}"
+
+        # status: each resident service's state line, then its own log's
+        # newest lines (a running service's lines stay off the console).
+        # serve's setup banner is in its log, in the transcript format.
+        STATUS_OUT=$(sed -n '/=== TEST: status ===/,/=== TEST: status lines 0 ===/p' \
+            "$SERIAL_LOG" 2>/dev/null | tr -d '\r' || true)
+        STATUS_N0=$(sed -n '/=== TEST: status lines 0 ===/,/=== TEST: status done ===/p' \
+            "$SERIAL_LOG" 2>/dev/null | tr -d '\r' | grep -vE '^===|^$|\[INFO\]  mem: ' || true)
+        echo "$STATUS_OUT" | grep -qx 'serve: running' && \
+            echo "$STATUS_OUT" | grep -qx 'mount: running' && \
+            pass "$QEMU_ARCH: status reports serve and mount running" || \
+            fail "$QEMU_ARCH: status" "state lines missing in: ${STATUS_OUT:0:400}"
+        echo "$STATUS_OUT" | grep -qE '^  [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{15} \[INFO \] webfs-serve: listening on http://' && \
+            pass "$QEMU_ARCH: status shows serve's own log (its listening line)" || \
+            fail "$QEMU_ARCH: status log" "no serve log line in: ${STATUS_OUT:0:400}"
+        [ "$(printf '%s\n' "$STATUS_N0" | paste -sd'|' -)" = "serve: running|mount: running" ] && \
+            pass "$QEMU_ARCH: status -n 0 prints the two state lines alone" || \
+            fail "$QEMU_ARCH: status -n 0" "got: $(printf '%s' "$STATUS_N0" | paste -sd'|' -)"
 
         grep -q "mount test content" "$SERIAL_LOG" 2>/dev/null && \
             pass "$QEMU_ARCH: type reads remote file content" || \
@@ -1760,6 +1785,9 @@ NSHEOF
     else
         DETACH_STAGE=$(mktemp -d)
         echo "detach test" > "$DETACH_STAGE/detach_test.txt"
+        # The status loop's idle wait (the Shell's `stall` spins a vCPU):
+        # the SDK's own sleep tool, from the tree the QEMU tests need.
+        SLEEP_EFI="$AXL_SDK_SRC/build/x64-debug/tools/sleep.efi"
 
         DETACH_NSH=$(mktemp --suffix=.nsh)
         cat > "$DETACH_NSH" <<'NSHEOF'
@@ -1767,6 +1795,14 @@ NSHEOF
 fs0:
 axl-webfs.efi serve -p 8080 -v --log fs0:\webfs.log
 echo === DETACHED ===
+for %i run (1 1200)
+  if exist fs0:\status.req then
+    type fs0:\status.req >a fs0:\status.txt
+    del -q fs0:\status.req
+    axl-webfs.efi status -n 300 >>a fs0:\status.txt
+  endif
+  sleep.efi 0.2
+endfor
 NSHEOF
 
         # Embedded-driver model: the serve driver is .incbin'd into
@@ -1777,6 +1813,7 @@ NSHEOF
         eval "$("$RUN_QEMU_SH" --arch X64 --timeout 300 \
             --net --hostfwd "${DETACH_PORT}:8080" \
             --extra "$DETACH_STAGE/detach_test.txt" \
+            --extra "$SLEEP_EFI" \
             --nsh "$DETACH_NSH" \
             --background \
             "$APP_EFI")"
@@ -1798,6 +1835,28 @@ NSHEOF
             done
 
             BASE="http://127.0.0.1:${DETACH_PORT}"
+
+            # A running service's request lines stay off the console and
+            # in its own log; `axl-webfs status` reads it. The guest's
+            # script runs it whenever this PUTs fs0:\status.req, into
+            # fs0:\status.txt after the request's own text -- a nonce, so
+            # only this call's answer is taken -- which this then GETs.
+            STATUS_SEQ=0
+            serve_status() {
+                local i out nonce
+                STATUS_SEQ=$((STATUS_SEQ + 1))
+                nonce="status-request-$$-$STATUS_SEQ"
+                curl -s -o /dev/null -X PUT --data-binary "$nonce"$'\n' "$BASE/fs0/status.req" 2>/dev/null || true
+                for i in $(seq 1 50); do
+                    out=$(curl -sf "$BASE/fs0/status.txt" 2>/dev/null | tr -d '\r' || true)
+                    if [ "$(head -1 <<< "$out")" = "$nonce" ] && grep -q '^mount: ' <<< "$out"; then
+                        printf '%s\n' "$out"
+                        return 0
+                    fi
+                    sleep 0.2
+                done
+                return 1
+            }
 
             if $READY; then
                 pass "serve: driver came up (HTTP responding)"
@@ -1905,14 +1964,11 @@ NSHEOF
                 fi
                 rm -f "$MULTI_CHUNK"
 
-                # Pubsub-driven console feedback fires on the deferred
-                # queue, so we need a beat for the line to land in
-                # the serial log after the PUT response is sent.
-                sleep 2
-                grep -qE "PUT /fs0/detach_upload.txt -> 201" \
-                    "$SERIAL_LOG" 2>/dev/null && \
-                    pass "serve: console feedback for PUT" || \
-                    fail "serve: console feedback" "no PUT line in serial log"
+                # The request line (pubsub, on the deferred queue) goes to
+                # serve's own log, not the console: read it with status.
+                serve_status | grep -qE " webfs-serve: PUT /fs0/detach_upload.txt -> 201" && \
+                    pass "serve: the PUT's request line is in serve's log (status)" || \
+                    fail "serve: request line" "no PUT line in \`axl-webfs status\`"
 
                 # ----------------------------------------------------
                 # WebDAV class-1 + MOVE smoke (axl_http_server_add_webdav
@@ -2183,10 +2239,12 @@ NSHEOF
                     # A live temp is no resource on ANY surface: a
                     # request naming it finds nothing. Its name comes
                     # from the -v log line the PUT's open writes.
-                    TEMP_NAME=$(grep -aoE "streams to temp ~AP[0-9A-F]{5}\.TMP" \
-                        "$SERIAL_LOG" 2>/dev/null | tail -1 | grep -oE "~AP[0-9A-F]{5}\.TMP" || true)
+                    # The newest atomic.txt temp is the hung PUT's (the
+                    # status trigger's own PUTs stream to temps too).
+                    TEMP_NAME=$(serve_status | grep -aoE "PUT fs0:/atomic\.txt: body streams to temp ~AP[0-9A-F]{5}\.TMP" \
+                        | tail -1 | grep -oE "~AP[0-9A-F]{5}\.TMP" || true)
                     if [ -z "$TEMP_NAME" ]; then
-                        fail "serve live temp: name" "no 'streams to temp' line in the -v log"
+                        fail "serve live temp: name" "no 'streams to temp' line in \`axl-webfs status\`"
                     else
                         pass "serve live temp: the -v log names the PUT's temp"
                         for LT in "GET|$BASE/fs0/$TEMP_NAME" \

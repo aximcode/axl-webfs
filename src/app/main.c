@@ -2,9 +2,10 @@
   axl-webfs -- AXL File Transfer Toolkit entry point.
 
   Builds a declarative AxlArgsNode verb tree (serve, mount, umount,
-  list-nics) and hands it to axl_args_run, which parses and dispatches.
-  Verb handlers and their flag/positional tables live in cmd-serve.c
-  and cmd-mount.c; list-nics is small and stays inline here.
+  status, list-nics) and hands it to axl_args_run, which parses and
+  dispatches. Verb handlers and their flag/positional tables live in
+  cmd-serve.c and cmd-mount.c; status and list-nics are small and stay
+  inline here.
 
   Copyright (c) 2026, AximCode. All rights reserved.
   SPDX-License-Identifier: Apache-2.0
@@ -13,8 +14,11 @@
 #include <axl.h>
 #include <axl/axl-args.h>
 #include <axl/axl-net.h>
+#include <axl/axl-service.h>
 
 #include "webfs-version.h"
+#include "mount/webfs-mount.h"
+#include "serve/webfs-serve.h"
 
 /* Verb handlers and flag tables defined in cmd-serve.c / cmd-mount.c. */
 extern const AxlArgDesc webfs_serve_flags[];
@@ -66,6 +70,31 @@ webfs_list_nics_handler(AxlArgs *a)
     return 0;
 }
 
+/* Each resident service's state line (running, degraded, stopping,
+   stopped), then the newest lines of its own log -- a running service's
+   loop lines stay off the console, and this is where they are read.
+   Exits as `status` does for a stopping service (either one), else 0: this
+   reports two services, neither of which need be running. */
+static int
+webfs_status_handler(AxlArgs *a)
+{
+    size_t lines = (size_t)axl_args_get_uint(a, "lines");
+    int    serve = axl_service_status_print(&webfs_serve, "serve", lines);
+    int    mount = axl_service_status_print(&webfs_mount, "mount", lines);
+
+    if (serve == AXL_SERVICE_EXIT_STOPPING || mount == AXL_SERVICE_EXIT_STOPPING) {
+        return AXL_SERVICE_EXIT_STOPPING;
+    }
+    return 0;
+}
+
+static const AxlArgDesc webfs_status_flags[] = {
+    { .name = "lines", .short_name = 'n', .type = AXL_ARG_U32,
+      .default_value = AXL_STRINGIFY(AXL_SERVICE_STATUS_LINES),
+      .help = "Log lines to show under each service (0 = none)" },
+    { 0 }
+};
+
 static const AxlArgsNode verbs[] = {
     { .name        = "serve",
       .help        = "Run HTTP file server",
@@ -82,6 +111,10 @@ static const AxlArgsNode verbs[] = {
     { .name        = "umount",
       .help        = "Unmount the previously mounted axl-webfs volume",
       .handler     = webfs_umount_handler },
+    { .name        = "status",
+      .help        = "Show the resident services and their recent log",
+      .flags       = webfs_status_flags,
+      .handler     = webfs_status_handler },
     { .name        = "list-nics",
       .help        = "List network interfaces",
       .handler     = webfs_list_nics_handler },

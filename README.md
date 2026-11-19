@@ -36,7 +36,7 @@ Two commands:
   same server publishes a WebDAV class-1 surface at `/dav` for
   Finder, Explorer, davfs2, or cadaver clients.
 
-Plus `umount` and `list-nics`.
+Plus `serve-stop`, `umount`, `status` and `list-nics`.
 
 ## Quick start
 
@@ -180,7 +180,7 @@ flowchart LR
     CURL["curl / browser"]
 
     subgraph UEFI["UEFI Host"]
-        APP["axl-webfs.efi<br/>(launcher + 2 embedded AxlService drivers)<br/>serve · serve-stop · mount · umount · list-nics"]
+        APP["axl-webfs.efi<br/>(launcher + 2 embedded AxlService drivers)<br/>serve · serve-stop · mount · umount · status · list-nics"]
         SERVE["axl-webfs-serve-dxe.efi<br/>(AxlService, embedded)<br/>HTTP file server"]
         MOUNT["axl-webfs-mount-dxe.efi<br/>(AxlService, embedded)<br/>EFI_FILE_PROTOCOL over HTTP"]
         FS["FSn: volume"]
@@ -271,6 +271,23 @@ only once it is complete, so a mismatch or a client hang-up leaves the
 previous file exactly as it was.
 
 </details>
+
+### `status`
+
+```
+axl-webfs.efi status [-n N]
+```
+
+Says how each resident service is -- `serve: running`, `mount: stopped`,
+`degraded (why)` or `stopping (...)` -- and under each, its newest N log
+lines (10 by default; `-n 0` for the state lines alone). What a running
+service logs from its loop (serve's line per request, for one) never
+reaches the screen -- it would land in the middle of whatever the Shell is
+printing -- and goes to a log the driver keeps instead: the last 8 KB, each
+line with its date and time, which `status` reads. What it logs while the
+Shell is calling it (the mount's warnings during `ls fs1:\`) still prints.
+serve's `--log` file, when given, keeps every line as before. Exits 5 when
+a service is stopping (a teardown failed), else 0.
 
 ### `list-nics`
 
